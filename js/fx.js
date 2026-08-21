@@ -210,7 +210,10 @@
     ctx.fillStyle = o.color || '#9df3ff';
     ctx.globalAlpha = o.alpha == null ? 1 : o.alpha;
     ctx.fillText(text, x, y);
-    if (o.double !== false) {
+    // Opt-in brighter core. The second pass is drawn with the blur off,
+    // so it costs a plain fillText instead of a second full shadow pass.
+    if (o.double) {
+      ctx.shadowBlur = 0;
       ctx.fillText(text, x, y);
     }
     ctx.restore();

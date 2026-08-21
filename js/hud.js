@@ -149,7 +149,9 @@
       C.WORLD_W / 2, C.WORLD_H / 2 + 20, {
         font: font(26, 700), color: '#eafcff', blur: 18, align: 'center'
       });
-    if (game.score >= game.hi && game.score > 0) {
+    // Strictly beating the record, not merely matching it. `game.hi` moves
+    // with the live score, so compare against the record this run started on.
+    if (game.score > game.baseHi && game.score > 0) {
       G(ctx, 'NEW  HI-SCORE!', C.WORLD_W / 2, C.WORLD_H / 2 + 66, {
         font: font(22, 800), color: '#ffd166', glow: C.COLORS.warn, blur: 20, align: 'center',
         alpha: 0.6 + 0.4 * Math.sin(game.time * 6)

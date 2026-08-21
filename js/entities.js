@@ -242,6 +242,16 @@
     ]
   ];
 
+  // Eye-highlight cells per species, as [row, colA, colB]. These MUST land
+  // on cells that are solid in that species' bitmap, otherwise the
+  // highlight floats detached from the body (shape 1 has no ink at
+  // columns 3/7 of row 2, so its eyes sit at columns 1/9).
+  var EYES = [
+    [2, 3, 7],
+    [2, 1, 9],
+    [2, 3, 7]
+  ];
+
   function Alien(col, row, type, color, score) {
     this.col = col;
     this.row = row;
@@ -261,7 +271,8 @@
   };
 
   Alien.prototype.draw = function (ctx, frame, bob) {
-    var shape = SHAPES[this.type % SHAPES.length];
+    var si = this.type % SHAPES.length;
+    var shape = SHAPES[si];
     var cols = shape[0].length;
     var rows = shape.length;
     var cw = this.w / cols;
@@ -286,10 +297,11 @@
         }
       }
     }
-    // Eye highlight.
+    // Eye highlight, on cells this species actually has ink in.
+    var eye = EYES[si];
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillRect(ox + cw * 3, oy + ch * 2, cw, ch);
-    ctx.fillRect(ox + cw * 7, oy + ch * 2, cw, ch);
+    ctx.fillRect(ox + cw * eye[1], oy + ch * eye[0], cw, ch);
+    ctx.fillRect(ox + cw * eye[2], oy + ch * eye[0], cw, ch);
   };
 
   /* ------------------------------ Swarm ----------------------------- */

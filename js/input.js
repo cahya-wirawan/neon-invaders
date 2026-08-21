@@ -40,7 +40,23 @@
     }
   }
 
+  // SI.Audio.unlock() is idempotent: it creates the context on the first
+  // call and afterwards only resumes a suspended one. Calling it on every
+  // gesture (not just the first) is what recovers audio after the OS or
+  // the browser interrupts/suspends the context mid-session.
+  function resumeAudio() {
+    var A = SI.Audio;
+    if (A && A.unlock) {
+      try {
+        A.unlock();
+      } catch (e) {
+        /* audio must never break input */
+      }
+    }
+  }
+
   function fireGesture() {
+    resumeAudio();
     if (gestureFired) {
       return;
     }

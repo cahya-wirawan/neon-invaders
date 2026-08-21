@@ -17,8 +17,10 @@
   function loadHi() {
     try {
       var v = window.localStorage.getItem(HI_KEY);
-      var n = parseInt(v, 10);
-      return isNaN(n) ? 0 : n;
+      // Corrupt storage must not poison the feature: a value like
+      // "1e999" parses to Infinity, which no score could ever beat.
+      var n = Math.floor(Number(v));
+      return (isFinite(n) && n >= 0) ? Math.min(n, 9999999) : 0;
     } catch (e) {
       return 0;
     }
@@ -46,6 +48,13 @@
     this.stateTimer = 0;
     this.score = 0;
     this.hi = loadHi();
+    // The hi-score as it stood when this run began: `hi` tracks the live
+    // score during play, so beating the record needs a stable reference.
+    this.baseHi = this.hi;
+    // What is actually in localStorage right now. flushHi() writes only
+    // when `hi` has moved past it, so persistence costs one setItem per
+    // improvement instead of one per scoring event.
+    this.savedHi = this.hi;
     this.lives = C.PLAYER.START_LIVES;
     this.wave = 1;
     this.nextExtraLife = 5000;
@@ -87,6 +96,7 @@
 
   Game.prototype.startGame = function () {
     this.score = 0;
+    this.baseHi = this.hi;
     this.lives = C.PLAYER.START_LIVES;
     this.wave = 1;
     this.nextExtraLife = 5000;
@@ -159,6 +169,10 @@
         if (Input.pausePressed() || Input.confirmPressed()) {
           this.setState(STATE.PLAYING);
           SI.Audio.startMusic(this.wave);
+          // pause silenced the saucer; bring it back if it is still flying.
+          if (this.ufo && !this.ufo.dead) {
+            SI.Audio.ufoStart();
+          }
         }
         break;
 
@@ -174,6 +188,7 @@
 
       case STATE.GAME_OVER:
         this.particles.update(dt);
+        this.flushHi();
         if (this.stateTimer > 1.2 && Input.confirmPressed()) {
           this.startGame();
         }
@@ -187,7 +202,9 @@
     w.dt = dt;
     w.livesLeft = this.lives;
     w.moveAxis = live ? Input.moveAxis() : 0;
-    w.wantFire = live ? Input.firing() : false;
+    // firePressed() catches taps that begin and end inside a single frame
+    // (touch, or keyboard faster than the refresh rate).
+    w.wantFire = live ? (Input.firing() || Input.firePressed()) : false;
     w.pointer = live ? Input.pointer() : null;
     return w;
   };
@@ -304,7 +321,9 @@
       // Both bullet kinds chew through bunkers.
       for (j = 0; j < this.bunkers.length; j++) {
         var bunker = this.bunkers[j];
-        var hit = bunker.hitTest(box);
+        // Pass travel direction so the scan starts at the row the shot
+        // actually reaches first (its swept box can span several rows).
+        var hit = bunker.hitTest(box, b.vy);
         if (hit) {
           bunker.damage(hit.x, hit.y, C.BUNKER.CELL * (b.from === 'player' ? 1.5 : 1.9));
           this.particles.emitSparks(hit.x, hit.y, C.COLORS.bunker, 8, 0, b.from === 'player' ? -1 : 1, 1.1);
@@ -327,18 +346,9 @@
           }
         }
       }
-
-      // Direct contact with the player is instantly fatal.
-      if (this.player.alive && this.player.invuln <= 0) {
-        var pbox = this.player.box();
-        for (i = 0; i < swarmAliens.length; i++) {
-          if (swarmAliens[i].alive && SI.aabb(pbox, swarmAliens[i].box())) {
-            this.swarm.killAlien(swarmAliens[i], world);
-            this.loseLife(world, false);
-            break;
-          }
-        }
-      }
+      // No alien-vs-player contact test: the swarm always trips the
+      // invasion floor (SWARM.FLOOR_Y) well before it can overlap the
+      // ship, and invasion already ends the run.
     }
   };
 
@@ -346,9 +356,11 @@
 
   Game.prototype.addScore = function (points) {
     this.score += points;
+    // Track the live hi-score for the HUD, but do not touch localStorage
+    // here: setItem is synchronous and this runs many times per second.
+    // gameOver() is what persists it.
     if (this.score > this.hi) {
       this.hi = this.score;
-      saveHi(this.hi);
     }
     if (this.score >= this.nextExtraLife) {
       this.nextExtraLife += 5000;
@@ -359,14 +371,12 @@
   };
 
   Game.prototype.loseLife = function (world, invasion) {
-    this.lives--;
+    // An invasion ends the run outright -- no point decrementing first.
+    this.lives = invasion ? 0 : this.lives - 1;
     this.world.livesLeft = this.lives;
     this.player.kill(world);
     this.flash = 1;
     SI.FX.addShake(invasion ? 30 : 20, 0.55);
-    if (invasion) {
-      this.lives = 0;
-    }
     if (this.lives <= 0) {
       this.lives = 0;
       this.gameOver();
@@ -378,8 +388,18 @@
     SI.Audio.stopMusic();
     SI.Audio.ufoStop();
     SI.Audio.gameOver();
+    this.flushHi();
+  };
+
+  // Idempotent: writes at most once per hi-score improvement. update()
+  // calls it again on the GAME_OVER screen because points can still be
+  // awarded after gameOver() inside the same collision pass.
+  Game.prototype.flushHi = function () {
     if (this.score > this.hi) {
       this.hi = this.score;
+    }
+    if (this.hi > this.savedHi) {
+      this.savedHi = this.hi;
       saveHi(this.hi);
     }
   };
@@ -437,6 +457,8 @@
   // Called when the tab is hidden: freeze play and silence the mix so
   // the music scheduler never runs against a throttled timer.
   Game.prototype.blurPause = function () {
+    // The tab may never come back -- don't lose a record run.
+    this.flushHi();
     if (this.state === STATE.PLAYING) {
       this.setState(STATE.PAUSED);
       SI.Audio.stopMusic();

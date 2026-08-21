@@ -50,7 +50,12 @@
 
   // Returns the world-space centre of the first solid cell overlapping
   // `box`, or null. Callers should bounding-box test first.
-  Bunker.prototype.hitTest = function (box) {
+  //
+  // `vy` is the projectile's vertical velocity. A swept bullet box can
+  // span several rows, so the scan must start at the row the projectile
+  // reaches first: top-down for shots falling (vy > 0), bottom-up for
+  // player shots climbing (vy < 0). Defaults to top-down.
+  Bunker.prototype.hitTest = function (box, vy) {
     if (!SI.aabb(box, this.box())) {
       return null;
     }
@@ -58,7 +63,11 @@
     var c1 = Math.min(this.cols - 1, Math.floor((box.x + box.w - this.x) / this.cell));
     var r0 = Math.max(0, Math.floor((box.y - this.y) / this.cell));
     var r1 = Math.min(this.rows - 1, Math.floor((box.y + box.h - this.y) / this.cell));
-    for (var r = r0; r <= r1; r++) {
+    var up = vy < 0;
+    var rStart = up ? r1 : r0;
+    var rEnd = up ? r0 : r1;
+    var rStep = up ? -1 : 1;
+    for (var r = rStart; up ? r >= rEnd : r <= rEnd; r += rStep) {
       for (var c = c0; c <= c1; c++) {
         if (this.cells[r * this.cols + c]) {
           return {

@@ -361,7 +361,16 @@
       return;
     }
     var stepDur = 60 / music.bpm / 4;
-    var horizon = now() + SCHEDULE_AHEAD;
+    var t = now();
+    // Catch-up clamp: if the main thread stalled past our schedule-ahead
+    // window, nextNoteTime is now in the past. Scheduling that backlog
+    // would fire dozens of notes at once (Web Audio clamps past times to
+    // currentTime), so drop the missed steps and restart just ahead.
+    if (music.nextNoteTime < t) {
+      music.nextNoteTime = t + 0.02;
+      music.step = 0;
+    }
+    var horizon = t + SCHEDULE_AHEAD;
     var guard = 0;
     while (music.nextNoteTime < horizon && guard++ < 64) {
       scheduleStep(music.step, music.nextNoteTime);

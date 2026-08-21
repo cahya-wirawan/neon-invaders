@@ -14,11 +14,21 @@
 
   var last = 0;
   var running = false;
+  var failures = 0;
+  var MAX_FAILURES = 5;
+
+  // Hard ceiling on the canvas backing store. A 8K display at dpr 2 would
+  // otherwise ask for a 60+ megapixel surface, which either fails to
+  // allocate or crawls; we step the dpr down until it fits.
+  var MAX_CANVAS_PIXELS = 16e6;
 
   function resize() {
     var cssW = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 960);
     var cssH = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 720);
-    var dpr = Math.min(window.devicePixelRatio || 1, C.MAX_DPR);
+    var dpr = SI.clamp(window.devicePixelRatio || 1, 0.5, C.MAX_DPR);
+    if (cssW * dpr * cssH * dpr > MAX_CANVAS_PIXELS) {
+      dpr = Math.max(1, Math.sqrt(MAX_CANVAS_PIXELS / (cssW * cssH)));
+    }
 
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
@@ -72,32 +82,71 @@
       dt = C.MAX_DT;
     }
 
-    // ---- update -------------------------------------------------
-    game.update(dt);
-    starfield.update(dt, game.starfieldBoost());
-    SI.FX.updateShake(dt);
+    try {
+      // ---- update -----------------------------------------------
+      game.update(dt);
+      starfield.update(dt, game.starfieldBoost());
+      SI.FX.updateShake(dt);
 
-    // ---- draw ---------------------------------------------------
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = '#04030b';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // ---- draw -------------------------------------------------
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#04030b';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    applyTransform();
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, C.WORLD_W, C.WORLD_H);
-    ctx.clip();
+      applyTransform();
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, C.WORLD_W, C.WORLD_H);
+      ctx.clip();
 
-    starfield.draw(ctx);
-    game.draw(ctx);
-    game.particles.draw(ctx);
-    game.drawHud(ctx);
-    SI.FX.drawOverlay(ctx);
+      starfield.draw(ctx);
+      game.draw(ctx);
+      game.particles.draw(ctx);
+      game.drawHud(ctx);
+      SI.FX.drawOverlay(ctx);
 
-    ctx.restore();
-    SI.Input.endFrame();
+      ctx.restore();
+      failures = 0;
+    } catch (err) {
+      // Circuit breaker: log the first failure only, then bail out after
+      // a few consecutive ones rather than flooding the console at 60Hz.
+      failures++;
+      if (failures === 1 && window.console && window.console.error) {
+        window.console.error('NEON INVADERS: frame error', err);
+      }
+      if (failures >= MAX_FAILURES) {
+        running = false;
+        if (window.console && window.console.error) {
+          window.console.error('NEON INVADERS: halted after ' + failures +
+            ' consecutive frame errors.');
+        }
+        drawFatal();
+      }
+    } finally {
+      // Must always run, or justPressed latches for the rest of the session.
+      SI.Input.endFrame();
+    }
+  }
+
+  // Last-resort static screen once the loop has given up.
+  function drawFatal() {
+    try {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#04030b';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#9df3ff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = '700 20px "Segoe UI", Arial, sans-serif';
+      ctx.fillText('SIGNAL LOST -- RELOAD TO RESTART',
+        canvas.width / 2, canvas.height / 2);
+    } catch (e) {
+      /* nothing left to do */
+    }
   }
 
   function onVisibility() {
@@ -106,6 +155,15 @@
     } else {
       // Reset the clock so the first frame back is not a huge delta.
       last = 0;
+      // The context may have been suspended while we were hidden. Only
+      // resume an existing one -- creating it still waits for a gesture.
+      if (SI.Audio && SI.Audio.ready()) {
+        try {
+          SI.Audio.unlock();
+        } catch (e) {
+          /* audio recovery is best-effort */
+        }
+      }
     }
   }
 
