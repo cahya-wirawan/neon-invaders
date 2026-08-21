@@ -1,0 +1,20 @@
+# Local environment / secrets -- never commit
+gauntlet-env.sh
+.gauntlet-env.sh.swp
+*.env
+.env
+.env.*
+
+# Tooling
+.claude/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+node_modules/
