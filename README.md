@@ -32,9 +32,9 @@ modules), so there is no CORS problem and nothing to install.
   corner of the page, loading the Firebase SDK from CDN only once you open it;
   until then, it makes no requests at all. See [`server/README.md`](server/README.md).
 - **Android / iOS** — Capacitor shells wrapping this exact web build, no engine
-  rewrite. See [`docs/MOBILE.md`](docs/MOBILE.md). Note: no APK/IPA has been
-  compiled and nothing has been run on a device; the platform projects are
-  scaffolding only.
+  rewrite. See [`docs/MOBILE.md`](docs/MOBILE.md). A real debug/release APK
+  has been compiled for Android; iOS is still scaffolding only (Xcode is
+  macOS-only). Neither has been installed or run on a device yet.
 
 Optionally, serve it over HTTP instead:
 
@@ -56,6 +56,13 @@ python3 -m http.server 8000
 Touch and mouse: press and hold — the ship steers toward your finger/cursor and
 fires continuously.
 
+Between waves you're offered a cannon upgrade (see "Gameplay" below): move the
+highlight with `←`/`→`/`A`/`D` or jump straight to a card with `1`–`4`, and
+confirm with `Space`/`Z`/`Enter` or a tap on the card. A pick made in the very
+first instant the screen appears is ignored — release the key first — so
+mashing fire through the wave-clear screen can't blow past the choice
+unread; left alone for 12 seconds it picks the highlighted card for you.
+
 Sound only starts after your first key press or tap: browsers require a user
 gesture before an `AudioContext` may run, so the context is created inside that
 first input handler.
@@ -75,6 +82,23 @@ formation moves faster, fires more often, fires faster bullets, allows more
 simultaneous shots, and starts lower on the screen. The table caps at wave 10, so
 later waves stay hard but never become impossible. Within a wave the formation
 also accelerates as its numbers thin out, and the music tempo rises with the wave.
+
+## Gameplay: evolving formations and cannon upgrades
+
+From wave 2 the swarm periodically breaks formation: a **wedge** (a V-shape,
+apex pointed at you) or a **dive**, where one column peels off and sweeps
+toward your position before rejoining the grid. From wave 3, one alien per
+wave is a visually distinct **commander** — kill it and any choreography in
+progress is cancelled instantly, grounding the swarm back to plain marching
+for the rest of that wave.
+
+Clearing a wave offers a choice of cannon upgrade (pick one — it replaces
+whatever you had, it doesn't stack): **spread shot** (three angled bullets
+per volley), **piercing laser** (survives multiple alien hits instead of
+dying on the first), **bouncing projectile** (ricochets off the side walls),
+or **temporary shield** (start the next wave invulnerable). See
+[`FEATURES.md`](FEATURES.md) for exactly what shipped versus what was
+deliberately left out of this round.
 
 ## Project layout
 
