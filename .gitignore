@@ -5,6 +5,23 @@ gauntlet-env.sh
 .env
 .env.*
 
+# Databases -- never commit user accounts or scores
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+server/data/
+
+# Generated: `node scripts/copy-web.js` stages the game here for Capacitor.
+# Authored source lives in the repo root (index.html, css/, js/).
+www/
+
+# Native build output. The android/ and ios/ project trees ARE committed;
+# Capacitor writes its own .gitignore inside each to exclude build artifacts.
+android/app/build/
+ios/App/Pods/
+ios/App/build/
+
 # Tooling
 .claude/
 

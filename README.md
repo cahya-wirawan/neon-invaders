@@ -1,8 +1,10 @@
 # NEON INVADERS
 
 A modern, neon-drenched take on Space Invaders that runs entirely in the browser.
-No build step, no bundler, no network requests, no asset files — every pixel is
-drawn with Canvas 2D and every sound is synthesized live with the Web Audio API.
+No build step, no bundler, no asset files — every pixel is drawn with Canvas 2D
+and every sound is synthesized live with the Web Audio API. The game itself
+still makes **zero network requests**; an optional, opt-in online leaderboard
+lives in `js/net.js` and stays completely dormant until you sign in.
 
 **Play it now: https://cahya-wirawan.github.io/neon-invaders/**
 
@@ -16,6 +18,21 @@ double-click index.html
 
 It works straight from `file://` — the scripts are plain `<script>` tags (not ES
 modules), so there is no CORS problem and nothing to install.
+
+> The root `package.json` exists only for the Capacitor CLI used by the mobile
+> shells. The game never needs it: `index.html` still runs with nothing
+> installed.
+
+## Optional extras
+
+- **Online accounts + leaderboard** — `server/` is a Node + Express + SQLite
+  backend (bcrypt-hashed passwords, JWT bearer auth). `js/net.js` adds a small
+  opt-in panel in the corner of the page; until you sign in, it makes no
+  requests at all. See [`server/README.md`](server/README.md).
+- **Android / iOS** — Capacitor shells wrapping this exact web build, no engine
+  rewrite. See [`docs/MOBILE.md`](docs/MOBILE.md). Note: no APK/IPA has been
+  compiled and nothing has been run on a device; the platform projects are
+  scaffolding only.
 
 Optionally, serve it over HTTP instead:
 
