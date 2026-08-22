@@ -41,20 +41,26 @@ unchanged, since Xcode is macOS-only and cannot exist in this container.
 ## Android: actually compiled
 
 `./gradlew assembleDebug` (and `assembleRelease`) were run for real against
-Gradle 8.11.1 (the project's own wrapper, not a system install) with a JDK 21
-and the Android command-line SDK newly installed into this environment. This
-produced:
+Gradle 8.11.1 (the project's own wrapper, not a system install), a JDK 21 and
+the Android command-line SDK (`ANDROID_HOME=/home/cahya/android-sdk` --
+`android/local.properties` is gitignored, so this path must be set again in
+any fresh environment). Rebuilt after the formations/upgradeable-cannon
+engine changes landed, via `node scripts/copy-web.js && npx cap sync android`
+followed by the Gradle build, producing:
 
 ```
-android/app/build/outputs/apk/debug/app-debug.apk       (3.98 MB)
+android/app/build/outputs/apk/debug/app-debug.apk       (4.02 MB)
 android/app/build/outputs/apk/release/app-release-unsigned.apk (3.03 MB)
 ```
 
 Both are genuine, valid APK archives (confirmed: proper DEX bytecode, correct
-Capacitor native bridge, correct asset layout). Critically, `assets/public/js/net.js`
-*inside* the debug APK is **byte-for-byte identical (MD5-verified)** to the
-current `js/net.js` in this repo -- so this is proof the build compiled the
-real, current, Firebase-enabled code, not something stale.
+Capacitor native bridge, correct asset layout, 17 files under
+`assets/public/`). Critically, `assets/public/js/game.js` and
+`assets/public/js/entities.js` *inside* the debug APK are **byte-for-byte
+identical (MD5-verified)** to the current `js/game.js`/`js/entities.js` in
+this repo -- so this is proof the build compiled the real, current code
+(Firebase auth *and* the evolving-formations/cannon-upgrade engine changes),
+not something stale from before either round.
 
 What this does **not** prove: `adb` is not installed here, so nothing has
 installed or launched this APK on an emulator or a real device. The bytes are
