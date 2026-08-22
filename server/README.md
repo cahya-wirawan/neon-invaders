@@ -127,20 +127,32 @@ limits, both derived from the actual game constants (`js/core.js`,
 for the full derivation with inline comments.
 
 **Bound 1 -- minimum elapsed time for the claimed wave.** 55 aliens
-(`SWARM.COLS 11 * SWARM.ROWS 5`) each need a separate shot at the player's
-`PLAYER.FIRE_COOLDOWN` of 0.28s, plus the 2.4s `WAVE_CLEAR` intermission
-between waves: **17.8s is the physical floor for one wave**, even for a
-player who never misses. Reaching wave *W* means clearing *W-1* waves, so:
+(`SWARM.COLS 11 * SWARM.ROWS 5`) have to be shot down at the player's
+`PLAYER.FIRE_COOLDOWN` of 0.28s per trigger pull, plus the 2.4s `WAVE_CLEAR`
+intermission between waves. One shot is *not* one alien: the between-wave
+cannon upgrade means the best case is **3 aliens per trigger pull** --
+`PIERCING LASER` kills `1 + UPGRADE.PIERCE_COUNT` (2) = 3, and a `SPREAD SHOT`
+volley puts 3 bullets up for one cooldown. So the floor is
+`ceil(55 / 3) = 19` shots: **7.72s is the physical floor for one wave**, even
+for a player who never misses. Reaching wave *W* means clearing *W-1* waves,
+so:
 
 ```
-minElapsedSecondsForWave(W) = (W - 1) * 17.8 * SCALE
+minElapsedSecondsForWave(W) = (W - 1) * 7.72 * SCALE
 ```
 
 `SCALE` defaults to 0.5 (env `RUN_MIN_SECONDS_PER_WAVE_SCALE`) -- deliberate
 safety margin against everything the model ignores (a slow client clock, a
 backgrounded tab, a player who reached wave *W* by dying on it rather than
-clearing it). At the default that's 8.9s/wave, roughly half of what's
+clearing it). At the default that's 3.86s/wave, roughly half of what's
 physically possible. Wave 1 has a bound of **zero** by construction.
+
+`BEST_ALIENS_PER_SHOT` in `src/anticheat.js` is a hand-maintained mirror of
+`js/core.js` (the server never loads browser code). **Raising
+`UPGRADE.PIERCE_COUNT`, or adding a wider spread, without raising it there
+turns a legitimate best-case run into a false `implausible_run` rejection** --
+which is exactly the regression that made the pierce upgrade's floor 7.72s
+instead of the pre-upgrade 17.8s.
 
 **Bound 2 -- maximum score per second of play.** Best sustainable alien rate
 is `SCORE.ROW` max (30) / 0.28s ~= 107/s; best UFO rate is `UFO.SCORES` max

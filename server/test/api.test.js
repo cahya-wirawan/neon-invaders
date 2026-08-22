@@ -21,7 +21,9 @@ const { createApp, coerceTrustProxy } = require('../src/app');
 const { createStore } = require('../src/db');
 const { createAuth } = require('../src/auth');
 const { createVerifier } = require('../src/firebase');
-const { createAntiCheat, SECONDS_PER_WAVE_FLOOR } = require('../src/anticheat');
+const {
+  createAntiCheat, SECONDS_PER_WAVE_FLOOR, SHOTS_PER_WAVE_FLOOR, BEST_ALIENS_PER_SHOT
+} = require('../src/anticheat');
 const { makeKeypair, claimsFor, signRs256 } = require('./helpers/tokens');
 
 const PROJECT = 'demo-neon-invaders';
@@ -407,7 +409,7 @@ test('score/wave validation still applies before any run lookup', async () => {
 /* --------------- BOUND 1: minimum elapsed time for the wave ------------- */
 
 test('BOUND 1: an impossibly fast wave claim -> 400 implausible_run, then 201 after waiting', async () => {
-  // scale 0.02 => 17.8 * 0.02 = 0.356s per wave. Wave 4 => ~1.07s required.
+  // scale 0.02 => 7.72 * 0.02 = 0.154s per wave. Wave 4 => ~0.46s required.
   const iso = await isolatedApp({ minSecondsPerWaveScale: 0.02, maxScorePerSecond: 100000 });
   try {
     const token = tokenFor('uid-b1', { name: 'BoundOne' });
@@ -451,12 +453,46 @@ test('BOUND 1: wave 1 has no time bound at all', async () => {
   }
 });
 
-test('the time bound is the documented (wave-1) * 17.8 * scale formula', () => {
+test('the time bound is the documented (wave-1) * 7.72 * scale formula', () => {
   const ac = createAntiCheat({ minSecondsPerWaveScale: 0.5 }, {});
-  assert.equal(Math.round(SECONDS_PER_WAVE_FLOOR * 10) / 10, 17.8);
+  /* 7.72, not the pre-upgrade 17.8: one trigger pull can now remove up to
+   * BEST_ALIENS_PER_SHOT aliens (pierce kills 1 + PIERCE_COUNT, a spread
+   * volley is 3 bullets), so a wave is ceil(55 / 3) = 19 shots, not 55.
+   * Assert the DERIVATION as well as the number, so a future edit that
+   * changes the floor has to change the model on purpose. */
+  assert.equal(BEST_ALIENS_PER_SHOT, 3);
+  assert.equal(SHOTS_PER_WAVE_FLOOR, Math.ceil(55 / BEST_ALIENS_PER_SHOT));
+  assert.equal(SHOTS_PER_WAVE_FLOOR, 19);
+  assert.equal(Math.round(SECONDS_PER_WAVE_FLOOR * 100) / 100, 7.72);
   assert.equal(ac.minElapsedSecondsForWave(1), 0);
-  assert.ok(Math.abs(ac.minElapsedSecondsForWave(2) - 8.9) < 1e-9);
-  assert.ok(Math.abs(ac.minElapsedSecondsForWave(11) - 89) < 1e-9);
+  assert.ok(Math.abs(ac.minElapsedSecondsForWave(2) - 3.86) < 1e-9);
+  assert.ok(Math.abs(ac.minElapsedSecondsForWave(11) - 38.6) < 1e-9);
+});
+
+test('BOUND 1 does NOT reject a legitimate best-case PIERCE run at any wave', () => {
+  /* The regression this replaced: with the old 17.8s floor, a player using the
+   * shipped PIERCING LASER upgrade beat the server's "physical minimum" and
+   * had a real score refused as implausible_run. Model the fastest run the
+   * game can actually produce -- wave 1 without an upgrade (55 shots), every
+   * wave after it at 19 shots -- and require the bound to accept all of it. */
+  const ac = createAntiCheat({ minSecondsPerWaveScale: 0.5 }, {});
+  const COOLDOWN = 0.28;
+  const INTERMISSION = 2.4;
+  const wave1 = 55 * COOLDOWN + INTERMISSION;                        // 17.8s
+  const laterWave = SHOTS_PER_WAVE_FLOOR * COOLDOWN + INTERMISSION;  // 7.72s
+  for (const wave of [2, 3, 10, 20, 50]) {
+    const fastestLegitimate = wave1 + (wave - 2) * laterWave;
+    assert.ok(
+      fastestLegitimate >= ac.minElapsedSecondsForWave(wave),
+      `wave ${wave}: legitimate ${fastestLegitimate.toFixed(2)}s < required ` +
+      `${ac.minElapsedSecondsForWave(wave).toFixed(2)}s -- false positive`
+    );
+  }
+  // ...while an instant claim at those same waves is still impossible.
+  for (const wave of [3, 10, 20]) {
+    assert.ok(ac.minElapsedSecondsForWave(wave) > 0.5,
+      `wave ${wave} must still need real wall-clock time`);
+  }
 });
 
 /* -------------------- BOUND 2: maximum score per second ----------------- */
@@ -496,7 +532,7 @@ test('the two bounds are INDEPENDENT: each can fail while the other passes', asy
    *   - claim B: wave 1, huge score     -> only the RATE bound can trip
    * Different error codes prove they are separate gates. */
   const iso = await isolatedApp({
-    minSecondsPerWaveScale: 1,      // 17.8s per wave -- wave 9 needs ~142s
+    minSecondsPerWaveScale: 1,      // 7.72s per wave -- wave 9 needs ~61.8s
     maxScorePerSecond: 1000,
     scoreGraceSeconds: 5
   });
