@@ -223,9 +223,9 @@ TOO_SOON="$(curl -s -o "$TMP/toosoon.json" -w '%{http_code}' -XPOST "$BASE/api/s
   -H "Authorization: Bearer $WAVE_TOKEN" -H 'Content-Type: application/json' \
   -d "{\"score\":500,\"wave\":10,\"runToken\":\"$WAVE_RUN\"}")"
 TOO_SOON_ERR="$(jsonfield error < "$TMP/toosoon.json")"
-note "wave=10 claimed immediately -> HTTP $TOO_SOON error=$TOO_SOON_ERR (bound ~8s at this scale)"
+note "wave=10 claimed immediately -> HTTP $TOO_SOON error=$TOO_SOON_ERR (bound ~3.5s at this scale)"
 
-note "sleeping 9s past the (4-1)*17.8*0.05 = 8.01s minimum..."
+note "sleeping 9s past the (10-1)*7.72*0.05 = 3.47s minimum..."
 sleep 9
 AFTER_WAIT="$(curl -s -o "$TMP/afterwait.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
   -H "Authorization: Bearer $WAVE_TOKEN" -H 'Content-Type: application/json' \
@@ -476,15 +476,45 @@ else
 fi
 
 # ---------------------------------------------------------------- AC13
-hdr "AC13: existing game files untouched; index.html has only the expected script tags"
-# NOTE: index.html's "+1 line" (js/net.js) was committed in the PRIOR Gauntlet
-# round, not this one -- so `git diff HEAD` on it is correctly empty now.
-# What this round must not have done is touch it further (no gstatic/firebase
-# tag added, no reordering), so that's checked structurally below rather than
-# by assuming an uncommitted diff still exists.
-EXISTING="js/core.js js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/entities.js js/props.js js/hud.js js/game.js js/main.js css/style.css"
-DIRTY="$(git diff --name-only HEAD -- $EXISTING index.html)"
-note "git diff HEAD on the 11 js files + css/style.css + index.html -> '${DIRTY:-<empty>}'"
+hdr "AC13: nothing outside this round's authorized scope changed; the engine regression suite passes"
+# THIS ROUND'S SCOPE IS DIFFERENT from every prior one. Earlier rounds forbade
+# ALL engine edits, so AC13 asserted the 11 js files + css/style.css were
+# byte-identical to HEAD. This round explicitly authorized editing four of
+# them -- js/core.js, js/entities.js, js/game.js, js/hud.js (evolving alien
+# formations + the cannon upgrade system) -- so a byte-identical assertion on
+# those four would be asserting something that is no longer true of this repo.
+#
+# It is replaced with the two checks that DO still hold:
+#   (a) everything the round was NOT authorized to touch is still untouched,
+#       and
+#   (b) the four authorized files pass scripts/check-game.js, which is the
+#       real regression gate for them from here on (its scenario 1 is a golden
+#       per-tick checksum against the PRE-feature game, so classic play being
+#       bit-identical is still proven -- just by behaviour, not by bytes).
+#
+# Authorized to change this round, hence excluded from (a):
+#   js/core.js js/entities.js js/game.js js/hud.js  (the two features)
+#   scripts/check-game.js                            (new harness)
+#   scripts/verify.sh                                (this retarget)
+#   server/src/anticheat.js server/README.md server/test/api.test.js
+#       (the pierce-upgrade false-positive fix: PIERCING LASER kills 3 aliens
+#        per shot, so the old 55-shots-per-wave time floor rejected real runs)
+
+# --- (a) untouched-outside-scope, tracked AND untracked -----------------
+FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js css/style.css index.html js/net.js"
+FROZEN_MOBILE="android ios capacitor.config.json package.json package-lock.json"
+DIRTY_ENGINE="$(git status --porcelain --untracked-files=all -- $FROZEN_ENGINE)"
+DIRTY_MOBILE="$(git status --porcelain --untracked-files=all -- $FROZEN_MOBILE)"
+DIRTY_SERVER="$(git status --porcelain --untracked-files=all -- server \
+  ':(exclude)server/src/anticheat.js' ':(exclude)server/README.md' \
+  ':(exclude)server/test/api.test.js')"
+DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
+  ':(exclude)scripts/check-game.js' ':(exclude)scripts/verify.sh')"
+DIRTY="$DIRTY_ENGINE$DIRTY_MOBILE$DIRTY_SERVER$DIRTY_SCRIPTS"
+note "7 frozen engine files + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
+note "android/ ios/ capacitor.config.json package*.json          -> '${DIRTY_MOBILE:-<clean>}'"
+note "server/ (minus the authorized anticheat fix + its doc/test) -> '${DIRTY_SERVER:-<clean>}'"
+note "pre-existing scripts/* (minus check-game.js + verify.sh)    -> '${DIRTY_SCRIPTS:-<clean>}'"
 
 GSTATIC_IN_HTML="$(grep -c 'gstatic\|firebase' index.html || true)"
 ORDER="$(grep -o 'js/[a-z]*\.js' index.html | paste -sd, -)"
@@ -492,10 +522,23 @@ EXPECTED="js/core.js,js/fx.js,js/audio.js,js/input.js,js/starfield.js,js/particl
 note "script order: $ORDER"
 note "gstatic/firebase references directly in index.html: $GSTATIC_IN_HTML (must be 0 -- the SDK is injected by net.js at runtime, never present in the HTML source)"
 
-if [ -z "$DIRTY" ] && [ "$ORDER" = "$EXPECTED" ] && [ "$GSTATIC_IN_HTML" = "0" ]; then
-  pass 13 "12 existing files + index.html all byte-identical to HEAD this round; script order is the original 11 tags + net.js; no gstatic/firebase reference added to index.html"
+# --- (b) the engine regression gate -------------------------------------
+CHECKGAME_OK=1
+if node scripts/check-game.js > "$TMP/checkgame.log" 2>&1; then
+  note "node scripts/check-game.js -> exit 0"
+  note "$(grep -E '^[0-9]+/[0-9]+ checks passed' "$TMP/checkgame.log" | tail -1)"
+  note "$(grep -c '^  PASS' "$TMP/checkgame.log") scenarios PASS, $(grep -c '^  FAIL' "$TMP/checkgame.log") FAIL"
 else
-  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML"
+  CHECKGAME_OK=0
+  note "node scripts/check-game.js FAILED:"
+  note "$(grep -E '^\s+FAIL|^  FAIL' "$TMP/checkgame.log" | head -10)"
+fi
+
+if [ -z "$DIRTY" ] && [ "$ORDER" = "$EXPECTED" ] && [ "$GSTATIC_IN_HTML" = "0" ] \
+   && [ "$CHECKGAME_OK" = "1" ]; then
+  pass 13 "everything outside this round's authorized scope is byte-identical to HEAD (7 engine files + css + index.html + net.js + server/ + android/ios/capacitor + pre-existing scripts); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; and scripts/check-game.js passes every scenario, which is what now gates js/core.js, js/entities.js, js/game.js and js/hud.js"
+else
+  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML check_game_ok=$CHECKGAME_OK"
 fi
 
 # ---------------------------------------------------------------- AC14
@@ -531,10 +574,13 @@ for r in "${RESULTS[@]}"; do
   case "$r" in AC*': FAIL'*) VERIFY_AC_FAILED=1 ;; esac
 done
 
-if [ "$NPM_TEST_OK" = "1" ] && [ "$CHECKNET_OK" = "1" ] && [ "$VERIFY_AC_FAILED" = "0" ]; then
-  pass 15 "npm test exit 0, check-net.js exit 0, and every AC1-AC14 above is PASS or the documented emulator-fallback PARTIAL"
+# CHECKGAME_OK was set by AC13 above; named here too so the engine suite is
+# explicitly part of the "full suite" claim, not only of AC13's.
+if [ "$NPM_TEST_OK" = "1" ] && [ "$CHECKNET_OK" = "1" ] \
+   && [ "${CHECKGAME_OK:-0}" = "1" ] && [ "$VERIFY_AC_FAILED" = "0" ]; then
+  pass 15 "npm test exit 0, check-net.js exit 0, check-game.js exit 0, and every AC1-AC14 above is PASS or the documented emulator-fallback PARTIAL"
 else
-  fail 15 "npm_test_ok=$NPM_TEST_OK checknet_ok=$CHECKNET_OK any_ac_failed=$VERIFY_AC_FAILED"
+  fail 15 "npm_test_ok=$NPM_TEST_OK checknet_ok=$CHECKNET_OK checkgame_ok=${CHECKGAME_OK:-0} any_ac_failed=$VERIFY_AC_FAILED"
 fi
 
 # ============================================================ REGRESSION
