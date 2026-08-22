@@ -20,24 +20,47 @@ verbatim and Capacitor packages that directory as the app's WebView content.
 
 ## What was **NOT** done -- read this before believing the app works
 
-This repository was built in a Linux container with **no Android SDK, no
-Xcode, no CocoaPods, no emulator, no device and no signing identity.**
-Therefore:
+This repository was originally built in a Linux container with no Android
+SDK, no Xcode, no CocoaPods, no emulator, no device and no signing identity.
+**That has since changed for Android**: a real JDK and the Android
+command-line SDK were installed into this same environment, and
+`./gradlew assembleDebug` (plus `assembleRelease`) actually ran and produced
+real `.apk` files -- see "Android: actually compiled" below. iOS is
+unchanged, since Xcode is macOS-only and cannot exist in this container.
 
 | Not done | Why |
 | --- | --- |
-| **No APK or AAB was ever compiled** | No Android SDK / `ANDROID_HOME`; Gradle was never invoked. |
-| **No IPA was ever compiled** | Xcode and `xcodebuild` are macOS-only. |
+| ~~No APK or AAB was ever compiled~~ **Compiled -- see below** | Android SDK + JDK were installed into this environment and Gradle ran for real. |
+| **No IPA was ever compiled** | Xcode and `xcodebuild` are macOS-only; still cannot exist in this container. |
 | **`pod install` never ran** | CocoaPods is not installed; `cap add ios` and `cap sync` both printed `Skipping pod install because CocoaPods is not installed`. `ios/App/Pods/` does not exist and `App.xcworkspace` is not usable until you run it. |
 | **`xcodebuild clean` never ran** | Same reason; `cap sync` printed `Unable to find "xcodebuild"`. |
-| **The app was never launched** on a device, emulator or simulator | None available. |
-| **Nothing was code-signed** | No keystore, no Apple Developer account, no provisioning profile. |
+| **The app was never launched** on a device, emulator or simulator | `adb` and an emulator/device are still not available in this environment. The APK's *bytes* are verified (see below); nothing has actually run it yet. |
+| **Nothing was code-signed** | The debug APK is signed with Gradle's auto-generated debug key (fine for local installs, not for any store); `app-release-unsigned.apk` is exactly what its name says -- built but not signed with a real release key. No keystore, no Apple Developer account, no provisioning profile exist here. |
 | **The icons are placeholders** | Procedural invader glyph on the game palette. Correctly sized and valid PNGs, but not store-quality art. |
 
-Everything above is verified only as *scaffolding that exists and contains the
-right files*, by file/directory existence and byte-comparison against `www/` --
-**not** by compilation. Treat "the Android app works" as unproven until
-someone runs step 1 below on a real machine.
+## Android: actually compiled
+
+`./gradlew assembleDebug` (and `assembleRelease`) were run for real against
+Gradle 8.11.1 (the project's own wrapper, not a system install) with a JDK 21
+and the Android command-line SDK newly installed into this environment. This
+produced:
+
+```
+android/app/build/outputs/apk/debug/app-debug.apk       (3.98 MB)
+android/app/build/outputs/apk/release/app-release-unsigned.apk (3.03 MB)
+```
+
+Both are genuine, valid APK archives (confirmed: proper DEX bytecode, correct
+Capacitor native bridge, correct asset layout). Critically, `assets/public/js/net.js`
+*inside* the debug APK is **byte-for-byte identical (MD5-verified)** to the
+current `js/net.js` in this repo -- so this is proof the build compiled the
+real, current, Firebase-enabled code, not something stale.
+
+What this does **not** prove: `adb` is not installed here, so nothing has
+installed or launched this APK on an emulator or a real device. The bytes are
+right; whether the app actually boots, renders, and plays correctly on
+Android remains to be seen. If you have `adb` and a connected device or
+running emulator: `adb install android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ---
 
@@ -45,12 +68,23 @@ someone runs step 1 below on a real machine.
 
 ### Android
 
-1. Install Android Studio (or the command-line SDK) and set `ANDROID_HOME`.
-2. `npm install && npm run cap:sync`
-3. `npx cap open android`, or headless: `cd android && ./gradlew assembleDebug`
-4. Verify the game renders, touch controls work, and audio unlocks on first tap.
-5. For release: create a keystore, configure `signingConfigs` in
-   `android/app/build.gradle`, then `./gradlew bundleRelease`.
+1. ~~Install Android Studio (or the command-line SDK) and set `ANDROID_HOME`.~~
+   **Done** -- a JDK and the command-line SDK are installed in this
+   environment.
+2. ~~`npm install && npm run cap:sync`~~ **Done.**
+3. ~~`npx cap open android`, or headless: `cd android && ./gradlew assembleDebug`~~
+   **Done, headless** -- `app-debug.apk` and `app-release-unsigned.apk` both
+   exist under `android/app/build/outputs/apk/`, verified as real APKs
+   containing the current, correct web assets (see "Android: actually
+   compiled" above).
+4. **Still to do:** install `adb` (part of Android SDK Platform-Tools) and
+   either connect a device or start an emulator, then
+   `adb install android/app/build/outputs/apk/debug/app-debug.apk`. Verify
+   the game renders, touch controls work, and audio unlocks on first tap.
+5. For a real release: create a keystore, configure `signingConfigs` in
+   `android/app/build.gradle`, then `./gradlew bundleRelease` for a signed
+   AAB (what Play Store wants) -- `app-release-unsigned.apk` above is the
+   unsigned intermediate, not something to distribute as-is.
 
 ### iOS
 
