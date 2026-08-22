@@ -54,10 +54,16 @@ function check(name, condition, detail) {
 
 function makeDocument() {
   const byId = new Map();
+  /* Every <script> node that net.js appends anywhere in this document, in
+   * order. The opt-in invariant (AC11) is asserted against this: at boot it
+   * must stay EMPTY, and the Firebase CDN tags may appear only after an
+   * explicit panel-open or sign-in. */
+  const scripts = [];
 
   function indexTree(node) {
     if (!node || typeof node !== 'object') return;
     if (node.id) byId.set(node.id, node);
+    if (node.tagName === 'SCRIPT') scripts.push(node);
     (node.childNodes || []).forEach(indexTree);
   }
 
@@ -69,12 +75,18 @@ function makeDocument() {
       className: '',
       type: '',
       value: '',
+      src: '',
+      async: false,
+      onload: null,
+      onerror: null,
       disabled: false,
       textContent: '',
       childNodes: [],
       style: {},
       parentNode: null,
       listeners: [],
+      setAttribute(k, v) { node[k] = v; },
+      getAttribute(k) { return node[k]; },
       get firstChild() {
         return this.childNodes.length ? this.childNodes[0] : null;
       },
@@ -123,8 +135,87 @@ function makeDocument() {
     getElementById: (id) => byId.get(id) || null,
     getElementsByTagName: (tag) => (String(tag).toLowerCase() === 'head' ? [head] : []),
     addEventListener() {},
-    _byId: byId
+    _byId: byId,
+    _scripts: scripts,
+    _scriptSrcs: () => scripts.map((s) => String(s.src || ''))
   };
+}
+
+/* A stand-in for the firebase-*-compat globals, so the sign-in path can be
+ * driven without loading anything from gstatic. Shaped exactly like the parts
+ * of the compat API net.js touches. */
+function makeFakeFirebase(options) {
+  const opts = options || {};
+  const calls = { initializeApp: 0, signIn: 0, signUp: 0, signOut: 0, getIdToken: [] };
+  let currentUser = null;
+
+  function makeUser(email) {
+    return {
+      email,
+      displayName: opts.displayName === undefined ? null : opts.displayName,
+      getIdToken(force) {
+        calls.getIdToken.push(!!force);
+        // Only the FORCED refresh fails: the initial sign-in must still work,
+        // otherwise there is no session to test the 401 path against.
+        if (opts.getIdTokenFails && force) {
+          return Promise.reject(new Error('token refresh failed'));
+        }
+        return Promise.resolve(force ? 'refreshed-id-token' : (opts.idToken || 'fake-id-token'));
+      }
+    };
+  }
+
+  const auth = () => ({
+    get currentUser() { return currentUser; },
+    signInWithEmailAndPassword(email) {
+      calls.signIn += 1;
+      if (opts.signInFails) {
+        const e = new Error('The password is invalid.');
+        e.code = 'auth/wrong-password';
+        return Promise.reject(e);
+      }
+      currentUser = makeUser(email);
+      return Promise.resolve({ user: currentUser });
+    },
+    createUserWithEmailAndPassword(email) {
+      calls.signUp += 1;
+      if (opts.signUpFails) {
+        const e = new Error('The email address is already in use.');
+        e.code = 'auth/email-already-in-use';
+        return Promise.reject(e);
+      }
+      currentUser = makeUser(email);
+      return Promise.resolve({ user: currentUser });
+    },
+    signOut() {
+      calls.signOut += 1;
+      currentUser = null;
+      return Promise.resolve();
+    }
+  });
+
+  const fb = {
+    apps: [],
+    initializeApp(config) {
+      calls.initializeApp += 1;
+      fb.apps.push({ config });
+      return { config };
+    },
+    app: () => fb.apps[0],
+    auth,
+    _calls: calls
+  };
+  return fb;
+}
+
+/* Configures net.js and drives a full Firebase sign-in through the real
+ * signIn() path (fake SDK pre-installed, so no script tag is needed). */
+async function fakeSignIn(Net, opts) {
+  Net.configure(Object.assign(
+    { baseUrl: 'http://localhost:3000', projectId: 'demo-proj', apiKey: 'public-api-key' },
+    (opts && opts.configure) || {}
+  ));
+  return Net.signIn((opts && opts.email) || 'pilot@example.com', 'hunter2hunter2');
 }
 
 function makeWindow() {
@@ -163,6 +254,12 @@ const quietConsole = { log() {}, warn() {}, error() {} };
 function loadNet(env) {
   const e = env || {};
   const win = e.window === undefined ? makeWindow() : e.window;
+  // Pre-installing window.firebase models "the compat SDK is already present",
+  // which lets the sign-in path be driven without any CDN fetch. Scenarios
+  // that test the LOADER itself deliberately leave this unset.
+  if (e.firebase !== undefined && win) {
+    win.firebase = e.firebase;
+  }
   const factory = new Function(
     'window', 'document', 'localStorage', 'fetch', 'AbortController', 'console',
     SOURCE + '\n//# sourceURL=net.js'
@@ -261,6 +358,42 @@ function fakeResponse(status, bodyText, textBehaviour) {
   };
 }
 
+
+/* A fake NEON INVADERS backend: issues run tokens and records score submits.
+ * Mirrors the real contract closely enough that net.js's run-token plumbing is
+ * genuinely exercised (a submit without a runToken is rejected, as the real
+ * server would with run_required). */
+function makeFakeServer(options) {
+  const opts = options || {};
+  const submitted = [];
+  let issued = 0;
+  const state = { scoresUp: opts.scoresUp !== false, scoreStatus: opts.scoreStatus || 201 };
+
+  const fetchImpl = async (url, init) => {
+    const u = String(url);
+    const o = init || {};
+    if (u.indexOf('/api/runs/start') !== -1) {
+      if (opts.runStartFails) return fakeResponse(503, '{"error":"unavailable"}');
+      issued += 1;
+      return fakeResponse(201, JSON.stringify({
+        runToken: 'run-token-' + issued, startedMs: Date.now(), expiresMs: Date.now() + 60000
+      }));
+    }
+    if (u.indexOf('/api/scores') !== -1 && o.method === 'POST') {
+      const body = JSON.parse(o.body);
+      if (!state.scoresUp) return fakeResponse(503, '{"error":"unavailable"}');
+      if (!body.runToken) return fakeResponse(400, '{"error":"run_required"}');
+      if (state.scoreStatus !== 201) {
+        return fakeResponse(state.scoreStatus, '{"error":"rejected"}');
+      }
+      submitted.push(body);
+      return fakeResponse(201, '{"accepted":true,"personalBest":{"score":0}}');
+    }
+    return fakeResponse(200, '{"entries":[]}');
+  };
+  return { fetch: fetchImpl, submitted, state, issuedCount: () => issued };
+}
+
 /* --------------------------- the scenarios ----------------------------- */
 
 async function scenario(name, fn) {
@@ -296,15 +429,36 @@ async function main() {
 
   await scenario('no server configured -> no_server, zero fetch calls', async () => {
     let calls = 0;
-    const { Net } = loadNet({ fetch: async () => { calls += 1; return fakeResponse(200, '{}'); } });
+    const { Net } = loadNet({
+      firebase: makeFakeFirebase(),
+      fetch: async () => { calls += 1; return fakeResponse(200, '{}'); }
+    });
     const results = await Promise.all([
-      Net.login('alice', 'password1'),
-      Net.register('alice', 'password1'),
-      Net.leaderboard(10)
+      Net.leaderboard(10),
+      Net.startRun(),
+      Net.submitScore(10, 1, 'some-run-token')
     ]);
     check('all resolve', results.every((r) => r && r.ok === false));
-    check('error is no_server', results.every((r) => r.error === 'no_server'),
-      JSON.stringify(results.map((r) => r.error)));
+    check('leaderboard error is no_server', results[0].error === 'no_server', results[0].error);
+    check('startRun without a session/server resolves not_logged_in',
+      results[1].error === 'not_logged_in', results[1].error);
+    check('submitScore without a session resolves not_logged_in',
+      results[2].error === 'not_logged_in', results[2].error);
+    check('fetch was never called', calls === 0, `calls=${calls}`);
+  });
+
+  await scenario('sign-in without a Firebase project/key never touches the network', async () => {
+    let calls = 0;
+    const { Net } = loadNet({
+      firebase: makeFakeFirebase(),
+      fetch: async () => { calls += 1; return fakeResponse(200, '{}'); }
+    });
+    Net.configure({ baseUrl: 'http://localhost:3000' });   // server set, firebase NOT
+    const signIn = await Net.signIn('pilot@example.com', 'hunter2hunter2');
+    const signUp = await Net.signUp('pilot@example.com', 'hunter2hunter2');
+    check('signIn resolves ok:false', signIn && signIn.ok === false);
+    check('error is no_firebase_config', signIn.error === 'no_firebase_config', signIn.error);
+    check('signUp resolves ok:false too', signUp && signUp.ok === false);
     check('fetch was never called', calls === 0, `calls=${calls}`);
   });
 
@@ -331,7 +485,7 @@ async function main() {
       fetch: () => Promise.reject(new TypeError('NetworkError when attempting to fetch resource.'))
     });
     Net.configure({ baseUrl: 'http://localhost:3000' });
-    const res = await Net.login('alice', 'password1');
+    const res = await Net.leaderboard(10);
     check('resolves with ok:false', res && res.ok === false);
     check('error is network', res.error === 'network', res.error);
     check('status() reports the error', Net.status().lastError.length > 0);
@@ -351,7 +505,7 @@ async function main() {
       fetch: async () => fakeResponse(500, '{"error":"internal_error"}')
     });
     Net.configure({ baseUrl: 'http://localhost:3000' });
-    const res = await Net.login('alice', 'password1');
+    const res = await Net.leaderboard(10);
     check('resolves with ok:false', res && res.ok === false);
     check('status is 500', res.status === 500, String(res.status));
     check('error surfaces from the body', res.error === 'internal_error', res.error);
@@ -363,7 +517,7 @@ async function main() {
       fetch: async () => fakeResponse(200, '<html>Sign in to the WiFi</html>')
     });
     Net.configure({ baseUrl: 'http://localhost:3000' });
-    const res = await Net.login('alice', 'password1');
+    const res = await Net.leaderboard(10);
     check('resolves ok:true with data:null (no JSON.parse throw)',
       res && res.ok === true && res.data === null);
     check('no token adopted from garbage', Net.status().loggedIn === false);
@@ -426,11 +580,11 @@ async function main() {
   await scenario('localStorage throws on every access', async () => {
     const { Net } = loadNet({
       localStorage: makeStorage('throwing'),
-      fetch: async () => fakeResponse(200, '{"token":"t","user":{"id":1,"username":"alice"}}')
+      firebase: makeFakeFirebase(),
+      fetch: async () => fakeResponse(200, '{}')
     });
-    Net.configure({ baseUrl: 'http://localhost:3000' });
-    const res = await Net.login('alice', 'password1');
-    check('login still succeeds in memory', res && res.ok === true);
+    const res = await fakeSignIn(Net);
+    check('sign-in still succeeds in memory', res && res.ok === true, JSON.stringify(res));
     check('session held in memory', Net.status().loggedIn === true);
     Net.logout();
     check('logout does not throw', Net.status().loggedIn === false);
@@ -456,18 +610,54 @@ async function main() {
     check('no fetch call', calls === 0, `calls=${calls}`);
   });
 
-  await scenario('401 on submit drops the dead token', async () => {
+  await scenario('401 from OUR server triggers ONE silent ID-token refresh + retry', async () => {
+    /* Firebase ID tokens expire after an hour, so a long session will get a
+     * 401 from our server through no fault of the player. One silent
+     * getIdToken(true) + retry must rescue it without signing them out. */
+    const fakeFb = makeFakeFirebase();
+    const seenAuth = [];
+    let scoreCalls = 0;
     const { Net } = loadNet({
-      fetch: async (url) => (String(url).indexOf('/login') !== -1
-        ? fakeResponse(200, '{"token":"t","user":{"id":1,"username":"alice"}}')
-        : fakeResponse(401, '{"error":"unauthorized"}'))
+      firebase: fakeFb,
+      fetch: async (url, opts) => {
+        const auth = (opts && opts.headers && opts.headers.Authorization) || '';
+        if (String(url).indexOf('/api/scores') !== -1 && opts.method === 'POST') {
+          scoreCalls += 1;
+          seenAuth.push(auth);
+          // The stale token is refused; the refreshed one is accepted.
+          return auth.indexOf('refreshed-id-token') !== -1
+            ? fakeResponse(201, '{"accepted":true}')
+            : fakeResponse(401, '{"error":"unauthorized"}');
+        }
+        return fakeResponse(200, '{"entries":[]}');
+      }
     });
-    Net.configure({ baseUrl: 'http://localhost:3000' });
-    await Net.login('alice', 'password1');
+    await fakeSignIn(Net);
+    check('signed in with the initial token', Net.status().loggedIn === true);
+
+    const res = await Net.submitScore(500, 2, 'rt-refresh');
+    check('the submit ultimately succeeded', res && res.ok === true, JSON.stringify(res));
+    check('it took exactly two attempts', scoreCalls === 2, `scoreCalls=${scoreCalls}`);
+    check('the first attempt used the stale token',
+      seenAuth[0] === 'Bearer fake-id-token', seenAuth[0]);
+    check('the retry used the refreshed token',
+      seenAuth[1] === 'Bearer refreshed-id-token', seenAuth[1]);
+    check('exactly one FORCED refresh was requested',
+      fakeFb._calls.getIdToken.filter(Boolean).length === 1,
+      JSON.stringify(fakeFb._calls.getIdToken));
+    check('the player is still signed in', Net.status().loggedIn === true);
+  });
+
+  await scenario('401 with no refreshable session still drops the dead token', async () => {
+    const { Net } = loadNet({
+      firebase: makeFakeFirebase({ getIdTokenFails: true }),
+      fetch: async () => fakeResponse(401, '{"error":"unauthorized"}')
+    });
+    await fakeSignIn(Net);
     check('logged in', Net.status().loggedIn === true);
-    const res = await Net.submitScore(500, 2);
+    const res = await Net.submitScore(500, 2, 'rt-dead');
     check('submit resolves ok:false', res && res.ok === false);
-    check('token discarded after 401', Net.status().loggedIn === false);
+    check('token discarded after an unrescuable 401', Net.status().loggedIn === false);
   });
 
   await scenario('game-over hook wraps setState without touching game.js', async () => {
@@ -481,25 +671,14 @@ async function main() {
     Game.STATE = STATE;
     win.SI = { Game, STATE };
 
-    const submitted = [];
-    const { Net } = loadNet({
-      window: win,
-      fetch: async (url, opts) => {
-        if (String(url).indexOf('/api/scores') !== -1 && opts.method === 'POST') {
-          submitted.push(JSON.parse(opts.body));
-          return fakeResponse(201, '{"accepted":true,"score":0,"personalBest":{"score":0}}');
-        }
-        if (String(url).indexOf('/login') !== -1) {
-          return fakeResponse(200, '{"token":"t","user":{"id":1,"username":"alice"}}');
-        }
-        return fakeResponse(200, '{"entries":[]}');
-      }
-    });
+    const server = makeFakeServer();
+    const submitted = server.submitted;
+    const { Net } = loadNet({ window: win, firebase: makeFakeFirebase(), fetch: server.fetch });
 
     check('original setState was wrapped', Game.prototype.setState.length >= 0
       && Game.prototype.setState.toString().indexOf('original.call') !== -1);
 
-    Net.configure({ baseUrl: 'http://localhost:3000' });
+    Net.configure({ baseUrl: 'http://localhost:3000', projectId: 'p', apiKey: 'k' });
     const game = new Game();
     win.SI.game = game;
 
@@ -512,10 +691,16 @@ async function main() {
     check('underlying setState still ran', game.state === STATE.GAME_OVER);
     check('original setState side effects preserved', calls.includes('GAME_OVER'));
 
-    await Net.login('alice', 'password1');
+    await fakeSignIn(Net);
 
-    // A fresh run: PLAYING resets the guard, GAME_OVER submits once.
+    // A fresh run: PLAYING resets the guard AND opens a server run;
+    // GAME_OVER submits once, quoting that run token.
     game.setState(STATE.PLAYING);
+    await new Promise((r) => setTimeout(r, 20));
+    check('entering PLAYING asked the server to start a run',
+      server.issuedCount() === 1, `issued=${server.issuedCount()}`);
+    check('status() exposes the run token', Net.status().runToken === 'run-token-1',
+      Net.status().runToken);
     game.score = 4200;
     game.wave = 5;
     game.setState(STATE.GAME_OVER);
@@ -524,6 +709,8 @@ async function main() {
     check('submitted the final score', submitted[0] && submitted[0].score === 4200,
       JSON.stringify(submitted[0]));
     check('submitted the wave', submitted[0] && submitted[0].wave === 5);
+    check('submitted the server-issued run token',
+      submitted[0] && submitted[0].runToken === 'run-token-1', JSON.stringify(submitted[0]));
 
     // Re-entering GAME_OVER (e.g. lives<=0 re-check) must not double-submit.
     game.setState(STATE.GAME_OVER);
@@ -531,9 +718,13 @@ async function main() {
     check('no duplicate submit for the same run', submitted.length === 1,
       JSON.stringify(submitted));
 
-    // Pause/resume must not clear the guard.
+    // Pause/resume must not clear the guard, nor open a second run.
+    const issuedBefore = server.issuedCount();
     game.setState(STATE.PAUSED);
     game.setState(STATE.PLAYING);
+    await new Promise((r) => setTimeout(r, 20));
+    check('resuming from PAUSED does NOT start a new server run',
+      server.issuedCount() === issuedBefore, `issued=${server.issuedCount()}`);
     game.setState(STATE.GAME_OVER);
     await new Promise((r) => setTimeout(r, 30));
     check('pause->resume->game over does not resubmit the same run',
@@ -548,26 +739,15 @@ async function main() {
     Game.STATE = STATE;
     win.SI = { Game, STATE };
 
-    const submitted = [];
-    const { Net } = loadNet({
-      window: win,
-      fetch: async (url, opts) => {
-        if (String(url).indexOf('/api/scores') !== -1 && opts.method === 'POST') {
-          submitted.push(JSON.parse(opts.body));
-          return fakeResponse(201, '{"accepted":true}');
-        }
-        if (String(url).indexOf('/login') !== -1) {
-          return fakeResponse(200, '{"token":"t","user":{"id":1,"username":"a"}}');
-        }
-        return fakeResponse(200, '{"entries":[]}');
-      }
-    });
-    Net.configure({ baseUrl: 'http://localhost:3000' });
-    await Net.login('a', 'password1');
+    const server = makeFakeServer();
+    const submitted = server.submitted;
+    const { Net } = loadNet({ window: win, firebase: makeFakeFirebase(), fetch: server.fetch });
+    await fakeSignIn(Net);
 
     const game = new Game();
     win.SI.game = game;
     game.setState(STATE.PLAYING);
+    await new Promise((r) => setTimeout(r, 20));
     game.score = 1000;
     game.setState(STATE.GAME_OVER);
     // Same synchronous frame: game.js can still award points after
@@ -587,21 +767,22 @@ async function main() {
     win.SI = { Game, STATE };
     const { Net } = loadNet({
       window: win,
+      firebase: makeFakeFirebase(),
       fetch: (url, opts) => {
         if (opts && opts.method === 'POST' && String(url).indexOf('/api/scores') !== -1) {
           throw new Error('boom');
         }
-        if (String(url).indexOf('/login') !== -1) {
-          return Promise.resolve(fakeResponse(200, '{"token":"t","user":{"id":1,"username":"a"}}'));
+        if (String(url).indexOf('/api/runs/start') !== -1) {
+          return Promise.resolve(fakeResponse(201, '{"runToken":"rt-1","startedMs":1,"expiresMs":2}'));
         }
         return Promise.resolve(fakeResponse(200, '{"entries":[]}'));
       }
     });
-    Net.configure({ baseUrl: 'http://localhost:3000' });
-    await Net.login('a', 'password1');
+    await fakeSignIn(Net);
     const game = new Game();
     win.SI.game = game;
     game.setState(STATE.PLAYING);
+    await new Promise((r) => setTimeout(r, 20));
     game.setState(STATE.GAME_OVER);
     await new Promise((r) => setTimeout(r, 40));
     check('game reached GAME_OVER despite the failing submit', game.state === STATE.GAME_OVER);
@@ -611,18 +792,16 @@ async function main() {
     const doc = makeDocument();
     const win = makeWindow();
     const inputJs = installFakeInputJs(win);   // registered first, as in index.html
-    let loginCalls = 0;
-    loadNet({
+    const fakeFb = makeFakeFirebase();
+    const { Net: shieldNet } = loadNet({
       window: win,
       document: doc,
-      fetch: async (url) => {
-        if (String(url).indexOf('/api/auth/login') !== -1) {
-          loginCalls += 1;
-          return fakeResponse(401, '{"error":"invalid_credentials"}');
-        }
-        return fakeResponse(200, '{"entries":[]}');
-      }
+      firebase: fakeFb,
+      fetch: async () => fakeResponse(200, '{"entries":[]}')
     });
+    // Firebase config must be present or Enter-to-submit short-circuits before
+    // ever reaching the SDK, which would make the NET-02 check vacuous.
+    shieldNet.configure({ baseUrl: 'http://localhost:3000', projectId: 'p', apiKey: 'k' });
 
     const captureKeydown = win.listeners.filter((l) => l.type === 'keydown' && l.capture);
     check('a capture-phase keydown listener was installed', captureKeydown.length === 1,
@@ -635,13 +814,21 @@ async function main() {
     const panel = doc.getElementById('ni-net');
     const toggle = doc.getElementById('ni-net-toggle');
     check('panel was mounted', !!panel && !!toggle);
+    /* Panel field order is: Server, Firebase project ID, Firebase web API key,
+     * Email, Password -- each preceded by its <label>, so the inputs sit at
+     * odd indices. */
     const body = panel.childNodes[1];
     const serverField = body.childNodes[1];
-    const usernameField = body.childNodes[3];
-    const passwordField = body.childNodes[5];
-    check('located the three panel inputs',
-      serverField.tagName === 'INPUT' && usernameField.tagName === 'INPUT' &&
+    const projectField = body.childNodes[3];
+    const apiKeyField = body.childNodes[5];
+    const usernameField = body.childNodes[7];
+    const passwordField = body.childNodes[9];
+    check('located all five panel inputs',
+      serverField.tagName === 'INPUT' && projectField.tagName === 'INPUT' &&
+      apiKeyField.tagName === 'INPUT' && usernameField.tagName === 'INPUT' &&
       passwordField.type === 'password');
+    check('the credential field is now an EMAIL input', usernameField.type === 'email',
+      usernameField.type);
 
     // 1. Typing into a panel field: input.js must never see the key.
     dispatchKey(win, serverField, { code: 'Space', key: ' ' });
@@ -677,13 +864,15 @@ async function main() {
     // 5. NET-02: Enter inside a credential field really does submit, even
     //    though the capture-phase stopImmediatePropagation() prevents the
     //    element's own target-phase onkeydown from running.
-    usernameField.value = 'alice';
-    passwordField.value = 'password1';
-    const before = loginCalls;
+    usernameField.value = 'pilot@example.com';
+    passwordField.value = 'hunter2hunter2';
+    projectField.value = 'demo-proj';
+    apiKeyField.value = 'public-api-key';
+    const before = fakeFb._calls.signIn;
     dispatchKey(win, passwordField, { code: 'Enter', key: 'Enter' });
-    await new Promise((r) => setTimeout(r, 20));
-    check('Enter in the password field triggers a sign-in (NET-02)',
-      loginCalls === before + 1, `loginCalls=${loginCalls}`);
+    await new Promise((r) => setTimeout(r, 30));
+    check('Enter in the password field triggers a Firebase sign-in (NET-02)',
+      fakeFb._calls.signIn === before + 1, `signIn calls=${fakeFb._calls.signIn}`);
     check('that Enter never reached input.js', inputJs.down.Enter !== true);
   });
 
@@ -695,30 +884,15 @@ async function main() {
     Game.STATE = STATE;
     win.SI = { Game, STATE };
 
-    const submitted = [];
-    let scoresUp = false;
-    const { Net } = loadNet({
-      window: win,
-      fetch: async (url, opts) => {
-        if (String(url).indexOf('/api/scores') !== -1 && opts.method === 'POST') {
-          if (!scoresUp) {
-            return fakeResponse(503, '{"error":"unavailable"}');
-          }
-          submitted.push(JSON.parse(opts.body));
-          return fakeResponse(201, '{"accepted":true}');
-        }
-        if (String(url).indexOf('/login') !== -1) {
-          return fakeResponse(200, '{"token":"t","user":{"id":1,"username":"a"}}');
-        }
-        return fakeResponse(200, '{"entries":[]}');
-      }
-    });
-    Net.configure({ baseUrl: 'http://localhost:3000' });
-    await Net.login('a', 'password1');
+    const server = makeFakeServer({ scoresUp: false });
+    const submitted = server.submitted;
+    const { Net } = loadNet({ window: win, firebase: makeFakeFirebase(), fetch: server.fetch });
+    await fakeSignIn(Net);
 
     const game = new Game();
     win.SI.game = game;
     game.setState(STATE.PLAYING);
+    await new Promise((r) => setTimeout(r, 20));
     game.score = 7777;
     game.wave = 6;
     game.setState(STATE.GAME_OVER);
@@ -728,29 +902,29 @@ async function main() {
     const pending = Net.status().pendingSubmit;
     check('the run is held as pending', !!pending && pending.score === 7777, JSON.stringify(pending));
     check('pending kept the wave too', pending && pending.wave === 6);
+    // The run token MUST travel with the pending record: a retry without it
+    // would be rejected by the real server with run_required.
+    check('pending kept the run token too', !!pending && pending.runToken === 'run-token-1',
+      JSON.stringify(pending));
 
-    // The server comes back; the next successful sign-in flushes the run.
-    scoresUp = true;
+    // The server comes back; the retry flushes the run.
+    server.state.scoresUp = true;
     await Net.flushPending();
     check('the pending run was submitted on retry', submitted.length === 1,
       JSON.stringify(submitted));
     check('retry sent the original score', submitted[0] && submitted[0].score === 7777);
+    check('retry carried the ORIGINAL run token through',
+      submitted[0] && submitted[0].runToken === 'run-token-1', JSON.stringify(submitted[0]));
     check('pending slot cleared after success', Net.status().pendingSubmit === null);
 
     // A rejected (non-retryable) submit must NOT be retained forever.
     const win2 = makeWindow();
+    const server2 = makeFakeServer({ scoreStatus: 400 });
     const { Net: Net2 } = loadNet({
-      window: win2,
-      fetch: async (url, opts) => {
-        if (String(url).indexOf('/api/scores') !== -1 && opts.method === 'POST') {
-          return fakeResponse(400, '{"error":"validation_error"}');
-        }
-        return fakeResponse(200, '{"token":"t","user":{"id":1,"username":"a"}}');
-      }
+      window: win2, firebase: makeFakeFirebase(), fetch: server2.fetch
     });
-    Net2.configure({ baseUrl: 'http://localhost:3000' });
-    await Net2.login('a', 'password1');
-    const rejected = await Net2.submitScore(10, 1);
+    await fakeSignIn(Net2);
+    const rejected = await Net2.submitScore(10, 1, 'rt-x');
     check('400 submit resolves ok:false', rejected && rejected.ok === false);
     check('a rejected submit is not queued for retry',
       Net2.status().pendingSubmit === null);
@@ -759,16 +933,22 @@ async function main() {
     const win3 = makeWindow();
     const { Net: Net3 } = loadNet({
       window: win3,
+      // getIdToken(true) fails, so the one silent refresh cannot rescue the
+      // 401 and the existing sign-out behaviour must still take over.
+      firebase: makeFakeFirebase({ getIdTokenFails: true }),
       fetch: async (url, opts) => {
         if (String(url).indexOf('/api/scores') !== -1 && opts.method === 'POST') {
           return fakeResponse(401, '{"error":"unauthorized"}');
         }
-        return fakeResponse(200, '{"token":"t","user":{"id":1,"username":"a"}}');
+        return fakeResponse(200, '{"entries":[]}');
       }
     });
-    Net3.configure({ baseUrl: 'http://localhost:3000' });
-    await Net3.login('a', 'password1');
-    await Net3.submitScore(10, 1);
+    Net3.configure({ baseUrl: 'http://localhost:3000', projectId: 'p', apiKey: 'k' });
+    // Sign in with a working token first, then make refreshes fail.
+    const fb3 = win3.firebase;
+    fb3._calls.getIdToken.length = 0;
+    await Net3.signIn('pilot@example.com', 'hunter2hunter2').catch(() => null);
+    await Net3.submitScore(10, 1, 'rt-y');
     check('401 still signs the player out', Net3.status().loggedIn === false);
     check('401 leaves nothing pending', Net3.status().pendingSubmit === null);
   });

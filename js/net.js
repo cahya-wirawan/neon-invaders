@@ -8,9 +8,19 @@
  *     from a <style> element, so css/style.css is untouched.
  *
  * It is OPT-IN. With no stored token and no configured server the file
- * performs ZERO network requests -- it only draws a small collapsed toggle
- * in the corner. The game keeps running offline, from file://, with the
- * backend down, or with fetch missing entirely.
+ * performs ZERO network requests AND injects ZERO <script> tags -- it only
+ * draws a small collapsed toggle in the corner. The Firebase Auth SDK is
+ * fetched from the CDN lazily, no earlier than the player opening the panel
+ * or clicking sign-in. The game keeps running offline, from file://, with the
+ * backend down, with the CDN blocked, or with fetch missing entirely.
+ *
+ * Identity is Firebase Auth (compat build, loaded lazily from gstatic), NOT
+ * this server: there is no register/login endpoint any more. The server only
+ * verifies the Firebase ID token this file sends as a bearer credential.
+ *
+ * Scores are bound to a server-issued RUN TOKEN: entering PLAYING calls
+ * POST /api/runs/start, and the game-over submit quotes that token so the
+ * server can measure how long the run really took.
  *
  * Every request is wrapped in try/catch AND .catch(), is bounded by a
  * timeout, and resolves (never rejects) with a plain result object. See
@@ -27,14 +37,33 @@
   var KEY_TOKEN = STORAGE_PREFIX + 'token';
   var KEY_USER = STORAGE_PREFIX + 'username';
   var KEY_PENDING = STORAGE_PREFIX + 'pendingSubmit';
+  /* Firebase web config. A Firebase "apiKey" is a PUBLIC identifier, not a
+   * secret -- it identifies the project to Google's endpoints and every
+   * Firebase web app ships it in plain client JavaScript. What actually
+   * protects data is Firebase Auth + security rules, not this string. Storing
+   * it in localStorage is therefore fine. */
+  var KEY_PROJECT = STORAGE_PREFIX + 'firebaseProjectId';
+  var KEY_APIKEY = STORAGE_PREFIX + 'firebaseApiKey';
 
   var DEFAULT_BASE = 'http://localhost:3000';
   var DEFAULT_TIMEOUT_MS = 8000;
+
+  /* Pinned deliberately: an unpinned "latest" URL would let a CDN change alter
+   * what runs in the player's browser. COMPAT builds, not the modular/ESM
+   * ones, because compat ships classic <script> globals -- so this works from
+   * file:// with no bundler and no CORS-blocked `import`, exactly like the
+   * rest of js/. */
+  var FIREBASE_VERSION = '11.10.0';
+  var FIREBASE_CDN = 'https://www.gstatic.com/firebasejs/' + FIREBASE_VERSION + '/';
+  var FIREBASE_SCRIPTS = ['firebase-app-compat.js', 'firebase-auth-compat.js'];
 
   var state = {
     baseUrl: '',
     token: '',
     username: '',
+    email: '',
+    projectId: '',
+    apiKey: '',
     timeoutMs: DEFAULT_TIMEOUT_MS,
     lastError: '',
     lastSubmit: null,
@@ -43,6 +72,11 @@
     // connection can send it. One slot, not a queue -- see NET-05.
     pending: null
   };
+
+  /* The server-issued run token for the run currently being played. `failed`
+   * latches when /api/runs/start did not give us one, so submitScore can fail
+   * loudly instead of queueing something the server will always reject. */
+  var runState = { token: '', startedMs: 0, failed: false };
 
   /* --------------------------- tiny helpers --------------------------- */
 
@@ -107,8 +141,15 @@
 
   /* ------------------------- pending submit slot ---------------------- */
 
-  function setPending(score, wave) {
-    state.pending = { score: clampScore(score), wave: clampWave(wave) };
+  /* The runToken is part of the pending record, not just the score: a retry
+   * without it would be rejected by the server with run_required, so the held
+   * run would be lost anyway. */
+  function setPending(score, wave, runToken) {
+    state.pending = {
+      score: clampScore(score),
+      wave: clampWave(wave),
+      runToken: typeof runToken === 'string' ? runToken : ''
+    };
     try {
       storeSet(KEY_PENDING, JSON.stringify(state.pending));
     } catch (e) {
@@ -134,7 +175,11 @@
       storeSet(KEY_PENDING, '');
       return null;
     }
-    return { score: clampScore(parsed.score), wave: clampWave(parsed.wave) };
+    return {
+      score: clampScore(parsed.score),
+      wave: clampWave(parsed.wave),
+      runToken: typeof parsed.runToken === 'string' ? parsed.runToken : ''
+    };
   }
 
   /* ------------------------------ transport --------------------------- */
@@ -283,6 +328,17 @@
     if (typeof o.timeoutMs === 'number' && o.timeoutMs > 0) {
       state.timeoutMs = o.timeoutMs;
     }
+    /* Firebase web config may also be supplied by an embedding page instead of
+     * being typed into the panel. Neither value is a secret (see KEY_APIKEY)
+     * and setting them does NOT load the SDK or touch the network. */
+    if (typeof o.projectId === 'string') {
+      state.projectId = o.projectId.trim();
+      storeSet(KEY_PROJECT, state.projectId);
+    }
+    if (typeof o.apiKey === 'string') {
+      state.apiKey = o.apiKey.trim();
+      storeSet(KEY_APIKEY, state.apiKey);
+    }
     return status();
   }
 
@@ -296,47 +352,298 @@
       lastSubmit: state.lastSubmit,
       personalBest: state.personalBest,
       pendingSubmit: state.pending
-        ? { score: state.pending.score, wave: state.pending.wave }
-        : null
+        ? {
+          score: state.pending.score,
+          wave: state.pending.wave,
+          runToken: state.pending.runToken || ''
+        }
+        : null,
+      projectId: state.projectId,
+      hasApiKey: !!state.apiKey,
+      // Exposed so scripts/check-net.js can assert the opt-in invariant.
+      sdkLoaded: !!fb(),
+      runToken: runState.token,
+      runFailed: runState.failed
     };
   }
 
-  function adoptSession(result) {
-    if (result && result.ok && result.data && result.data.token) {
-      state.token = String(result.data.token);
-      state.username = (result.data.user && result.data.user.username) || '';
-      storeSet(KEY_TOKEN, state.token);
-      storeSet(KEY_USER, state.username);
-      state.lastError = '';
+  /* ------------------------- Firebase Auth SDK ------------------------ *
+   *
+   * STRICTLY LAZY. Nothing here runs at boot. The two <script> tags are
+   * injected on the FIRST call to ensureSdk(), which happens only when the
+   * player opens the panel or clicks a sign-in button. A first-time visitor
+   * who never touches the panel causes zero network requests and zero script
+   * tags -- scripts/check-net.js asserts exactly that.
+   */
+
+  var sdkPromise = null;   // set on first ensureSdk() -- the double-load guard
+  var firebaseApp = null;
+
+  function fb() {
+    return typeof window !== 'undefined' ? window.firebase : undefined;
+  }
+
+  function loadScript(url) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      function finish(ok, message) {
+        if (settled) { return; }
+        settled = true;
+        resolve({ ok: ok, message: message || '' });
+      }
+      try {
+        var head = DOC.head || DOC.getElementsByTagName('head')[0] || DOC.body;
+        if (!head) {
+          finish(false, 'No document head to load the Firebase SDK into.');
+          return;
+        }
+        var node = DOC.createElement('script');
+        node.src = url;
+        node.async = true;
+        // A blocked CDN, an offline device or a CSP refusal must resolve a
+        // failure state -- never throw, never reject, never hang forever.
+        node.onload = function () { finish(true); };
+        node.onerror = function () {
+          finish(false, 'Could not load the Firebase SDK (offline or blocked).');
+        };
+        head.appendChild(node);
+      } catch (e) {
+        finish(false, (e && e.message) || 'Could not inject the Firebase SDK.');
+      }
+    });
+  }
+
+  /* Injects both compat scripts exactly once. Repeat calls reuse the same
+   * promise, so a second sign-in click adds no further tags. */
+  function ensureSdk() {
+    if (sdkPromise) { return sdkPromise; }
+    if (!HAS_PROMISE) {
+      return resolved(fail('no_promise', 'This browser has no Promise support.'));
     }
-    return result;
+    if (!DOC) {
+      return resolved(fail('no_document', 'No document to load the Firebase SDK into.'));
+    }
+    if (fb()) {
+      // Already present (host page loaded it, or a test injected one).
+      sdkPromise = resolved({ ok: true });
+      return sdkPromise;
+    }
+
+    var chain = resolved({ ok: true });
+    for (var i = 0; i < FIREBASE_SCRIPTS.length; i++) {
+      chain = chain.then((function (src) {
+        return function (prev) {
+          if (!prev || prev.ok === false) { return prev; }
+          return loadScript(FIREBASE_CDN + src);
+        };
+      })(FIREBASE_SCRIPTS[i]));
+    }
+
+    sdkPromise = chain.then(function (res) {
+      if (!res || res.ok === false) {
+        // Allow a later retry after a transient failure, but the tags already
+        // in the document are never duplicated by loadScript itself.
+        sdkPromise = null;
+        return fail('sdk_unavailable', (res && res.message) || 'Firebase SDK did not load.');
+      }
+      if (!fb()) {
+        sdkPromise = null;
+        return fail('sdk_unavailable', 'Firebase SDK loaded but did not register itself.');
+      }
+      return { ok: true };
+    })['catch'](function (e) {
+      sdkPromise = null;
+      return fail('sdk_unavailable', (e && e.message) || 'Firebase SDK did not load.');
+    });
+    return sdkPromise;
   }
 
-  function register(username, password) {
-    return request('POST', '/api/auth/register', {
-      username: String(username == null ? '' : username),
-      password: String(password == null ? '' : password)
-    }).then(adoptSession);
+  /* ensureSdk() + initializeApp(). Separate because opening the panel should
+   * warm the SDK without needing a project id yet. */
+  function ensureAuth() {
+    if (!state.projectId || !state.apiKey) {
+      return resolved(fail('no_firebase_config',
+        'Set a Firebase project ID and web API key in the panel first.'));
+    }
+    return ensureSdk().then(function (res) {
+      if (!res || res.ok === false) { return res; }
+      try {
+        var F = fb();
+        if (!firebaseApp) {
+          firebaseApp = (F.apps && F.apps.length)
+            ? F.app()
+            : F.initializeApp({
+              apiKey: state.apiKey,
+              authDomain: state.projectId + '.firebaseapp.com',
+              projectId: state.projectId
+            });
+        }
+        if (typeof F.auth !== 'function') {
+          return fail('sdk_unavailable', 'Firebase Auth is not available.');
+        }
+        return { ok: true };
+      } catch (e) {
+        return fail('firebase_init_failed', (e && e.message) || 'Firebase init failed.');
+      }
+    });
   }
 
-  function login(username, password) {
-    return request('POST', '/api/auth/login', {
-      username: String(username == null ? '' : username),
-      password: String(password == null ? '' : password)
-    }).then(adoptSession);
+  function currentFirebaseUser() {
+    try {
+      var F = fb();
+      if (!F || typeof F.auth !== 'function') { return null; }
+      return F.auth().currentUser || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function adoptFirebaseSession(idToken, username, email) {
+    state.token = String(idToken || '');
+    state.username = String(username || '');
+    state.email = String(email || '');
+    storeSet(KEY_TOKEN, state.token);
+    storeSet(KEY_USER, state.username);
+    state.lastError = '';
+    return { ok: true, status: 200, data: { username: state.username } };
+  }
+
+  /* Maps a Firebase error object onto this file's flat result shape. */
+  function firebaseFailure(e) {
+    var code = (e && e.code) || 'firebase_error';
+    var message = (e && e.message) || 'Sign-in failed.';
+    return { ok: false, status: 0, error: String(code), message: String(message) };
+  }
+
+  function finishSignIn(cred) {
+    var user = (cred && cred.user) || currentFirebaseUser();
+    if (!user || typeof user.getIdToken !== 'function') {
+      return resolved(fail('no_user', 'Firebase returned no user.'));
+    }
+    return Promise.resolve(user.getIdToken()).then(function (idToken) {
+      var name = user.displayName || '';
+      var mail = user.email || '';
+      if (!name && mail) { name = mail.split('@')[0]; }
+      return adoptFirebaseSession(idToken, name, mail);
+    }, function (e) {
+      return firebaseFailure(e);
+    });
+  }
+
+  function withEmailPassword(method, email, password) {
+    return ensureAuth().then(function (res) {
+      if (!res || res.ok === false) { return res; }
+      try {
+        var p = fb().auth()[method](
+          String(email == null ? '' : email),
+          String(password == null ? '' : password)
+        );
+        if (!p || typeof p.then !== 'function') {
+          return fail('firebase_error', 'Firebase did not return a promise.');
+        }
+        return p.then(finishSignIn, function (e) { return firebaseFailure(e); });
+      } catch (e) {
+        return firebaseFailure(e);
+      }
+    });
+  }
+
+  function signIn(email, password) {
+    return withEmailPassword('signInWithEmailAndPassword', email, password);
+  }
+
+  function signUp(email, password) {
+    return withEmailPassword('createUserWithEmailAndPassword', email, password);
+  }
+
+  /* One silent ID-token refresh. Firebase ID tokens expire after an hour, so a
+   * long session (or a token restored from localStorage) will eventually get a
+   * 401 from OUR server; this swaps in a fresh one and the caller retries
+   * once. Resolves true only if the token actually changed hands. */
+  function refreshIdToken() {
+    var user = currentFirebaseUser();
+    if (!user || typeof user.getIdToken !== 'function') {
+      return resolved(false);
+    }
+    try {
+      return Promise.resolve(user.getIdToken(true)).then(function (idToken) {
+        if (!idToken) { return false; }
+        state.token = String(idToken);
+        storeSet(KEY_TOKEN, state.token);
+        return true;
+      }, function () { return false; });
+    } catch (e) {
+      return resolved(false);
+    }
+  }
+
+  /* An authenticated request that survives one expired ID token. A 401 from
+   * OUR server (not from Firebase) triggers a single silent refresh + retry;
+   * if there is no SDK or no signed-in user, the caller's existing 401
+   * handling (logout) takes over unchanged. */
+  function authedRequest(method, path, body) {
+    return request(method, path, body, state.token).then(function (res) {
+      if (!res || res.status !== 401) { return res; }
+      return refreshIdToken().then(function (refreshed) {
+        if (!refreshed) { return res; }
+        return request(method, path, body, state.token);
+      });
+    });
   }
 
   function logout() {
+    try {
+      var F = fb();
+      if (F && typeof F.auth === 'function' && firebaseApp) {
+        var p = F.auth().signOut();
+        if (p && typeof p['catch'] === 'function') {
+          p['catch'](function () { /* signing out locally is enough */ });
+        }
+      }
+    } catch (e) {
+      /* the local session is cleared regardless */
+    }
     state.token = '';
     state.username = '';
+    state.email = '';
     state.personalBest = null;
     state.lastSubmit = null;
+    runState = { token: '', startedMs: 0, failed: false };
     storeSet(KEY_TOKEN, '');
     storeSet(KEY_USER, '');
     // A pending run belongs to the account that played it. Dropping it here
     // stops it from being re-attributed to whoever signs in next.
     clearPending();
     return status();
+  }
+
+  /* Kept under the historical names so the exported API is unchanged for
+   * callers (and for scripts/check-net.js); the mechanism behind them is now
+   * Firebase rather than /api/auth/*. */
+  function login(email, password) { return signIn(email, password); }
+  function register(email, password) { return signUp(email, password); }
+
+  /* ---------------------------- run tokens ---------------------------- */
+
+  /* Asks the server to open a run. Called when the game enters PLAYING, so the
+   * server's clock starts at the same moment the player's does. */
+  function startRun() {
+    runState = { token: '', startedMs: 0, failed: false };
+    if (!state.token || !state.baseUrl) {
+      runState.failed = true;
+      return resolved(fail('not_logged_in', 'Not signed in.'));
+    }
+    return authedRequest('POST', '/api/runs/start', null).then(function (res) {
+      if (res && res.ok && res.data && res.data.runToken) {
+        runState.token = String(res.data.runToken);
+        runState.startedMs = Number(res.data.startedMs) || 0;
+        runState.failed = false;
+      } else {
+        runState.failed = true;
+        if (res && res.status === 401) { logout(); }
+      }
+      return res;
+    });
   }
 
   /* A failure worth retrying later: no answer at all (offline / timeout /
@@ -348,13 +655,23 @@
     return s === 0 || s === 429 || s >= 500;
   }
 
-  function submitScore(score, wave) {
+  function submitScore(score, wave, runToken) {
     if (!state.token) {
       return resolved(fail('not_logged_in', 'Not signed in.'));
     }
     var s = clampScore(score);
     var w = clampWave(wave);
-    return request('POST', '/api/scores', { score: s, wave: w }, state.token)
+    var rt = typeof runToken === 'string' && runToken ? runToken : runState.token;
+    /* No run token means the server never opened a run for this play-through,
+     * so /api/scores would answer run_required forever. Fail TERMINALLY here
+     * rather than queueing something that can never succeed (which would also
+     * block the pending slot against the next, submittable run). */
+    if (!rt) {
+      clearPending();
+      return resolved(fail('no_run',
+        'This run was not registered with the server, so it cannot be submitted.'));
+    }
+    return authedRequest('POST', '/api/scores', { score: s, wave: w, runToken: rt })
       .then(function (res) {
         if (res && res.ok) {
           state.lastSubmit = { score: s, wave: w, at: Date.now() };
@@ -368,8 +685,9 @@
           // the pending slot.
           logout();
         } else if (isRetryable(res)) {
-          // Flaky wifi / backend down must not silently eat the run.
-          setPending(s, w);
+          // Flaky wifi / backend down must not silently eat the run. The run
+          // token travels with it so the retry is still a valid submission.
+          setPending(s, w, rt);
         } else {
           clearPending();
         }
@@ -384,14 +702,14 @@
     if (!p || !state.token || !state.baseUrl) {
       return resolved(null);
     }
-    return submitScore(p.score, p.wave);
+    return submitScore(p.score, p.wave, p.runToken);
   }
 
   function personalBest() {
     if (!state.token) {
       return resolved(fail('not_logged_in', 'Not signed in.'));
     }
-    return request('GET', '/api/scores/me', null, state.token)
+    return authedRequest('GET', '/api/scores/me', null)
       .then(function (res) {
         if (res && res.ok && res.data) {
           state.personalBest = res.data;
@@ -467,6 +785,10 @@
       try {
         if (s === STATE.PLAYING && previous !== STATE.PAUSED) {
           submittedThisRun = false;
+          /* A NEW run begins (resuming from PAUSED is the same run, so it is
+           * excluded). Ask the server to start its clock now, so the elapsed
+           * time it later measures covers the whole play-through. */
+          startRun()['catch'](function () { /* never surfaces */ });
         } else if (s === STATE.GAME_OVER && previous !== STATE.GAME_OVER) {
           // Deferred by one macrotask: game.js can still award points after
           // gameOver() inside the same collision pass (see flushHi), so the
@@ -600,6 +922,17 @@
     return state.baseUrl;
   }
 
+  function readFirebaseConfig() {
+    if (els && els.project) {
+      state.projectId = String(els.project.value || '').trim();
+      storeSet(KEY_PROJECT, state.projectId);
+    }
+    if (els && els.apiKey) {
+      state.apiKey = String(els.apiKey.value || '').trim();
+      storeSet(KEY_APIKEY, state.apiKey);
+    }
+  }
+
   function afterAuth(res) {
     if (res && res.ok) {
       renderStatus('Signed in as ' + state.username + '.');
@@ -614,15 +947,17 @@
 
   function doLogin() {
     readBase();
+    readFirebaseConfig();
     renderStatus('Signing in...');
-    login(els.username.value, els.password.value).then(afterAuth)
+    signIn(els.username.value, els.password.value).then(afterAuth)
       ['catch'](function () { renderStatus('Request failed.'); });
   }
 
   function doRegister() {
     readBase();
+    readFirebaseConfig();
     renderStatus('Creating account...');
-    register(els.username.value, els.password.value).then(afterAuth)
+    signUp(els.username.value, els.password.value).then(afterAuth)
       ['catch'](function () { renderStatus('Request failed.'); });
   }
 
@@ -679,12 +1014,23 @@
     var body = el('div', { id: 'ni-net-body' });
 
     var server = el('input', { type: 'text', value: state.baseUrl || DEFAULT_BASE, autocomplete: 'off', spellcheck: false });
-    var username = el('input', { type: 'text', autocomplete: 'username', spellcheck: false, maxLength: 20 });
-    var password = el('input', { type: 'password', autocomplete: 'current-password', maxLength: 72 });
+    /* Firebase project id + web API key. The API key is a PUBLIC project
+     * identifier, not a credential -- every Firebase web app ships it in
+     * plain client JavaScript -- so keeping it in a visible field and in
+     * localStorage leaks nothing. */
+    var project = el('input', { type: 'text', value: state.projectId, autocomplete: 'off', spellcheck: false });
+    var apiKey = el('input', { type: 'text', value: state.apiKey, autocomplete: 'off', spellcheck: false });
+    // Firebase signs in with an email, not the old free-form username.
+    var username = el('input', { type: 'email', autocomplete: 'username', spellcheck: false, maxLength: 254 });
+    var password = el('input', { type: 'password', autocomplete: 'current-password', maxLength: 128 });
 
     body.appendChild(el('label', { textContent: 'Server' }));
     body.appendChild(server);
-    body.appendChild(el('label', { textContent: 'Username' }));
+    body.appendChild(el('label', { textContent: 'Firebase project ID' }));
+    body.appendChild(project);
+    body.appendChild(el('label', { textContent: 'Firebase web API key' }));
+    body.appendChild(apiKey);
+    body.appendChild(el('label', { textContent: 'Email' }));
     body.appendChild(username);
     body.appendChild(el('label', { textContent: 'Password' }));
     body.appendChild(password);
@@ -709,6 +1055,7 @@
 
     els = {
       root: root, toggle: toggle, body: body, server: server,
+      project: project, apiKey: apiKey,
       username: username, password: password, login: loginBtn,
       register: registerBtn, logout: logoutBtn, status: statusEl, board: board
     };
@@ -725,7 +1072,14 @@
     toggle.onclick = function () {
       var open = root.className.indexOf('ni-open') !== -1;
       root.className = open ? '' : 'ni-open';
-      if (!open) { refreshBoard(); }
+      if (!open) {
+        /* OPENING the panel is the player's first explicit opt-in gesture, so
+         * this is the earliest point the Firebase SDK may be fetched. It is
+         * warmed here (rather than on the sign-in click) purely so the button
+         * feels instant; a visitor who never opens the panel loads nothing. */
+        ensureSdk()['catch'](function () { /* never surfaces */ });
+        refreshBoard();
+      }
       releaseFocus(toggle);
     };
     loginBtn.onclick = function () { doLogin(); releaseFocus(loginBtn); };
@@ -766,6 +1120,9 @@
     state.baseUrl = normaliseBase(storeGet(KEY_BASE));
     state.token = storeGet(KEY_TOKEN);
     state.username = storeGet(KEY_USER);
+    // Config only -- reading these does NOT load the SDK or touch the network.
+    state.projectId = storeGet(KEY_PROJECT);
+    state.apiKey = storeGet(KEY_APIKEY);
     state.pending = state.token ? loadPending() : null;
     if (!state.token) { storeSet(KEY_PENDING, ''); }
 
@@ -804,14 +1161,26 @@
   SI.Net = {
     configure: configure,
     status: status,
+    // Historical names, now backed by Firebase Auth.
     register: register,
     login: login,
+    // Preferred names.
+    signIn: signIn,
+    signUp: signUp,
     logout: logout,
+    startRun: startRun,
     submitScore: submitScore,
     flushPending: flushPending,
     leaderboard: leaderboard,
     personalBest: personalBest,
     // Exposed for scripts/check-net.js.
-    _internal: { request: request, hookGame: hookGame, boot: safeBoot }
+    _internal: {
+      request: request,
+      hookGame: hookGame,
+      boot: safeBoot,
+      ensureSdk: ensureSdk,
+      refreshIdToken: refreshIdToken,
+      FIREBASE_CDN: FIREBASE_CDN
+    }
   };
 })(window.SI = window.SI || {});
