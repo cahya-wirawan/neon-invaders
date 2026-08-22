@@ -4,6 +4,8 @@ A modern, neon-drenched take on Space Invaders that runs entirely in the browser
 No build step, no bundler, no network requests, no asset files — every pixel is
 drawn with Canvas 2D and every sound is synthesized live with the Web Audio API.
 
+**Play it now: https://cahya-wirawan.github.io/neon-invaders/**
+
 ## Run it
 
 Just open `index.html`:
