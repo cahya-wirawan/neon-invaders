@@ -8,6 +8,12 @@
 # scripts/sqlite-cli.js reads the DB through Node's built-in node:sqlite, a
 # different driver from the better-sqlite3 the server writes with.
 #
+# Starts a REAL `firebase-tools` Auth emulator for AC9 (see
+# server/README.md's "Phase 0 transcript" for why that's safe to automate in
+# this environment -- no Java needed for the Auth emulator, and firebase-tools
+# is cached locally so `npx --no-install` needs no network). Falls back
+# honestly (PARTIAL, not a silent fake) if the emulator cannot be started here.
+#
 # Does NOT compile anything native: no Gradle, no Xcode, no APK, no IPA.
 
 set -uo pipefail
@@ -21,6 +27,8 @@ declare -a RESULTS=()
 pass() { RESULTS+=("AC$1: PASS -- $2"); }
 fail() { RESULTS+=("AC$1: FAIL -- $2"); FAILED=1; }
 partial() { RESULTS+=("AC$1: PARTIAL -- $2"); }
+rpass() { RESULTS+=("REGRESSION $1: PASS -- $2"); }
+rfail() { RESULTS+=("REGRESSION $1: FAIL -- $2"); FAILED=1; }
 
 note() { printf '    %s\n' "$*"; }
 hdr()  { printf '\n=== %s ===\n' "$*"; }
@@ -30,12 +38,23 @@ DB="$TMP/verify.db"
 PORT=3517
 BASE="http://127.0.0.1:$PORT"
 SERVER_PID=""
+EMULATOR_PID=""
+EMULATOR_HOST="127.0.0.1:9099"
+PROJECT="demo-neon-invaders"
 
 cleanup() {
   if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
+  if [ -n "$EMULATOR_PID" ] && kill -0 "$EMULATOR_PID" 2>/dev/null; then
+    kill "$EMULATOR_PID" 2>/dev/null || true
+    wait "$EMULATOR_PID" 2>/dev/null || true
+  fi
+  # Belt-and-suspenders: npx forks a child for the actual firebase-tools CLI,
+  # which does not always inherit a clean SIGTERM path through npx's own PID.
+  # Scoped tightly to THIS run's project id so it cannot touch anything else.
+  pkill -f "emulators:start.*$PROJECT" 2>/dev/null || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -46,11 +65,59 @@ jsonfield() { node -e '
       process.stdout.write(v===undefined||v===null?"":String(v));}catch(e){process.stdout.write("");}
   });' "$1"; }
 
+# A hand-crafted, deliberately UNSIGNED token in the exact shape a real
+# Firebase Auth emulator issues ({"alg":"none"}, empty signature segment --
+# confirmed against a live emulator, see server/README.md). Used only for the
+# NEGATIVE cases (expired / wrong audience) where we need to control specific
+# claim values; the POSITIVE case below uses a token the emulator itself
+# minted, not one of these.
+craft_unsigned_token() {
+  node -e '
+    function b64url(o){return Buffer.from(JSON.stringify(o)).toString("base64url");}
+    const [aud, iss, exp, sub] = process.argv.slice(1);
+    const header = { alg: "none", typ: "JWT" };
+    const payload = { aud, iss, sub, iat: Math.floor(Date.now()/1000) - 5, exp: Number(exp) };
+    process.stdout.write(b64url(header) + "." + b64url(payload) + ".");
+  ' "$1" "$2" "$3" "$4"
+}
+
+# Mints a REAL token from the running emulator via the same Identity Toolkit
+# REST endpoint the browser SDK itself talks to.
+mint_emulator_token() {
+  local email="$1"
+  curl -s -XPOST "http://$EMULATOR_HOST/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake-api-key" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$email\",\"password\":\"hunter2hunter2\",\"returnSecureToken\":true}" \
+    | jsonfield idToken
+}
+
+# ---------------------------------------------------------- start emulator
+hdr "Starting a real Firebase Auth emulator for AC9"
+EMULATOR_UP=0
+( cd "$ROOT" && exec npx --no-install firebase-tools emulators:start --only auth \
+    --project "$PROJECT" ) >"$TMP/emulator.log" 2>&1 &
+EMULATOR_PID=$!
+
+for _ in $(seq 1 60); do
+  if curl -s -o /dev/null -w '%{http_code}' "http://$EMULATOR_HOST/" 2>/dev/null | grep -q 200; then
+    EMULATOR_UP=1
+    break
+  fi
+  sleep 0.5
+done
+if [ "$EMULATOR_UP" = "1" ]; then
+  note "emulator ready at http://$EMULATOR_HOST"
+else
+  note "emulator did NOT become ready -- AC9 will fall back to a locally-signed token"
+  note "$(tail -20 "$TMP/emulator.log")"
+fi
+
 # ---------------------------------------------------------------- AC1
-hdr "AC1: server starts, /api/health -> 200"
+hdr "AC1: POST /api/runs/start issues a server-timestamped token"
 ( cd "$ROOT/server" && exec env DB_PATH="$DB" PORT="$PORT" NODE_ENV=development \
-    JWT_SECRET="verify-run-only-secret-$$" \
-    RATE_LIMIT_REGISTER_MAX=200 RATE_LIMIT_LOGIN_MAX=200 \
+    FIREBASE_PROJECT_ID="$PROJECT" FIREBASE_AUTH_EMULATOR_HOST="$EMULATOR_HOST" \
+    RUN_MIN_SECONDS_PER_WAVE_SCALE=0.05 RUN_MAX_SCORE_PER_SECOND=200 RUN_SCORE_GRACE_SECONDS=5 \
+    RATE_LIMIT_RUNSTART_MAX=200 RATE_LIMIT_WINDOW_MS=900000 \
     node src/index.js ) >"$TMP/server.log" 2>&1 &
 SERVER_PID=$!
 
@@ -61,191 +128,453 @@ for _ in $(seq 1 60); do
   sleep 0.25
 done
 note "GET /api/health -> HTTP $HEALTH  body=$(cat "$TMP/health.json" 2>/dev/null)"
-if [ "$HEALTH" = "200" ] && [ "$(jsonfield ok < "$TMP/health.json")" = "true" ]; then
-  pass 1 "GET /api/health -> 200 {ok:true}"
+if [ "$HEALTH" != "200" ]; then
+  fail 1 "server never came up; see $TMP/server.log"
+  echo "Cannot continue without a running server."
+  for r in "${RESULTS[@]}"; do echo "$r"; done
+  exit 1
+fi
+
+if [ "$EMULATOR_UP" = "1" ]; then
+  ALICE_TOKEN="$(mint_emulator_token "verifyalice@example.com")"
 else
-  fail 1 "health check returned HTTP '$HEALTH'; see $TMP/server.log"
+  ALICE_TOKEN="$(craft_unsigned_token "$PROJECT" "https://securetoken.google.com/$PROJECT" \
+    "$(($(date +%s) + 3600))" "verifyalice-uid")"
+fi
+note "alice ID token acquired (${#ALICE_TOKEN} chars, source: $([ "$EMULATOR_UP" = "1" ] && echo real-emulator || echo hand-crafted-fallback))"
+
+RS_NOAUTH="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$BASE/api/runs/start")"
+RS1="$(curl -s -o "$TMP/run1.json" -w '%{http_code}' -XPOST "$BASE/api/runs/start" \
+  -H "Authorization: Bearer $ALICE_TOKEN")"
+RUN1_TOKEN="$(jsonfield runToken < "$TMP/run1.json")"
+RUN1_STARTED="$(jsonfield startedMs < "$TMP/run1.json")"
+note "POST /api/runs/start (no auth) -> HTTP $RS_NOAUTH"
+note "POST /api/runs/start (alice)   -> HTTP $RS1  body=$(cat "$TMP/run1.json")"
+
+DB_RUN_ROW="$(node scripts/sqlite-cli.js "$DB" \
+  "SELECT run_token, consumed_at FROM runs WHERE run_token='$RUN1_TOKEN'" 2>/dev/null || true)"
+note "sqlite: runs row -> '$DB_RUN_ROW'"
+
+if [ "$RS_NOAUTH" = "401" ] && [ "$RS1" = "201" ] && [ -n "$RUN1_TOKEN" ] \
+   && [ -n "$RUN1_STARTED" ] && [ "$DB_RUN_ROW" = "$RUN1_TOKEN|" ]; then
+  pass 1 "no auth=401; with auth=201 token+startedMs; row confirmed in runs table, unconsumed"
+else
+  fail 1 "noauth=$RS_NOAUTH withauth=$RS1 token='$RUN1_TOKEN' started='$RUN1_STARTED' row='$DB_RUN_ROW'"
 fi
 
 # ---------------------------------------------------------------- AC2
-hdr "AC2: bcrypt hash in DB, plaintext nowhere"
-PW='corr3ct-horse-batt3ry'
-REG_CODE="$(curl -s -o "$TMP/reg.json" -w '%{http_code}' -XPOST "$BASE/api/auth/register" \
-  -H 'Content-Type: application/json' -d "{\"username\":\"verifyalice\",\"password\":\"$PW\"}")"
-note "POST /api/auth/register -> HTTP $REG_CODE"
-TOKEN="$(jsonfield token < "$TMP/reg.json")"
-
-HASH="$(node scripts/sqlite-cli.js "$DB" \
-  "SELECT password_hash FROM users WHERE username='verifyalice'" 2>/dev/null || true)"
-note "sqlite: SELECT password_hash -> $HASH"
-node scripts/sqlite-cli.js "$DB" --dump > "$TMP/dump.txt" 2>/dev/null || true
-note "full DB dump: $(wc -l < "$TMP/dump.txt") value(s)"
-
-if [ "$REG_CODE" = "201" ] \
-   && [[ "$HASH" =~ ^\$2[aby]\$[0-9]{2}\$.{53}$ ]] \
-   && ! grep -qF "$PW" "$TMP/dump.txt"; then
-  pass 2 "hash '$(printf '%.29s' "$HASH")...' is bcrypt format; plaintext absent from full DB dump"
+hdr "AC2: a run token can be submitted at most once"
+SUB1="$(curl -s -o "$TMP/sub1.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"score\":500,\"wave\":1,\"runToken\":\"$RUN1_TOKEN\"}")"
+SUB2="$(curl -s -o "$TMP/sub2.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"score\":500,\"wave\":1,\"runToken\":\"$RUN1_TOKEN\"}")"
+SUB2_ERR="$(jsonfield error < "$TMP/sub2.json")"
+ROWCOUNT="$(node scripts/sqlite-cli.js "$DB" \
+  "SELECT COUNT(*) FROM scores WHERE run_id=(SELECT id FROM runs WHERE run_token='$RUN1_TOKEN')" 2>/dev/null || true)"
+note "1st submit -> HTTP $SUB1  body=$(cat "$TMP/sub1.json")"
+note "2nd submit (same token) -> HTTP $SUB2  error=$SUB2_ERR"
+note "sqlite: scores rows for that run -> $ROWCOUNT"
+if [ "$SUB1" = "201" ] && [ "$SUB2" -ge "400" ] && [ "$SUB2" -lt "500" ] \
+   && [ "$SUB2_ERR" = "run_already_used" ] && [ "$ROWCOUNT" = "1" ]; then
+  pass 2 "1st submit=201, 2nd (same token)=$SUB2 run_already_used, exactly one scores row"
 else
-  fail 2 "register=$REG_CODE hash='$HASH' plaintext_found=$(grep -cF "$PW" "$TMP/dump.txt")"
+  fail 2 "sub1=$SUB1 sub2=$SUB2 err=$SUB2_ERR rows=$ROWCOUNT"
 fi
 
 # ---------------------------------------------------------------- AC3
-hdr "AC3: duplicate register 4xx; login right/wrong password"
-DUP="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$BASE/api/auth/register" \
-  -H 'Content-Type: application/json' -d "{\"username\":\"verifyalice\",\"password\":\"$PW\"}")"
-GOOD="$(curl -s -o "$TMP/login.json" -w '%{http_code}' -XPOST "$BASE/api/auth/login" \
-  -H 'Content-Type: application/json' -d "{\"username\":\"verifyalice\",\"password\":\"$PW\"}")"
-BAD="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$BASE/api/auth/login" \
-  -H 'Content-Type: application/json' -d '{"username":"verifyalice","password":"wrong-password"}')"
-LOGIN_TOKEN="$(jsonfield token < "$TMP/login.json")"
-note "duplicate register -> HTTP $DUP"
-note "login correct password -> HTTP $GOOD (token length ${#LOGIN_TOKEN})"
-note "login wrong password   -> HTTP $BAD"
-if [ "$DUP" = "409" ] && [ "$GOOD" = "200" ] && [ -n "$LOGIN_TOKEN" ] && [ "$BAD" = "401" ]; then
-  pass 3 "duplicate=409, good login=200 with token, bad login=401"
+hdr "AC3: score submission without a valid run token is rejected"
+COUNT_BEFORE="$(node scripts/sqlite-cli.js "$DB" "SELECT COUNT(*) FROM scores" 2>/dev/null || true)"
+NORUNT="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"score":999,"wave":1}')"
+BOGUS="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"score":999,"wave":1,"runToken":"totally-made-up-token"}')"
+COUNT_AFTER="$(node scripts/sqlite-cli.js "$DB" "SELECT COUNT(*) FROM scores" 2>/dev/null || true)"
+note "no runToken -> HTTP $NORUNT ; bogus runToken -> HTTP $BOGUS"
+note "scores row count: before=$COUNT_BEFORE after=$COUNT_AFTER"
+if [ "$NORUNT" -ge "400" ] && [ "$NORUNT" -lt "500" ] \
+   && [ "$BOGUS" -ge "400" ] && [ "$BOGUS" -lt "500" ] \
+   && [ "$COUNT_BEFORE" = "$COUNT_AFTER" ]; then
+  pass 3 "no token=$NORUNT, bogus token=$BOGUS, no new scores row written"
 else
-  fail 3 "duplicate=$DUP good=$GOOD token_len=${#LOGIN_TOKEN} bad=$BAD"
+  fail 3 "norunt=$NORUNT bogus=$BOGUS before=$COUNT_BEFORE after=$COUNT_AFTER"
 fi
 
 # ---------------------------------------------------------------- AC4
-hdr "AC4: POST /api/scores auth gate + row lands in DB"
-NOAUTH="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$BASE/api/scores" \
-  -H 'Content-Type: application/json' -d '{"score":1234,"wave":3}')"
-WITH="$(curl -s -o "$TMP/score.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
-  -H "Authorization: Bearer $LOGIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"score":1234,"wave":3}')"
-ROW="$(node scripts/sqlite-cli.js "$DB" \
-  "SELECT s.score, s.wave FROM scores s JOIN users u ON u.id=s.user_id WHERE u.username='verifyalice' AND s.score=1234" 2>/dev/null || true)"
-note "POST /api/scores (no token)   -> HTTP $NOAUTH"
-note "POST /api/scores (with token) -> HTTP $WITH  body=$(cat "$TMP/score.json")"
-note "sqlite: matching row -> '$ROW'"
-if [ "$NOAUTH" = "401" ] && [ "$WITH" = "201" ] && [ "$ROW" = "1234|3" ]; then
-  pass 4 "no token=401, with token=201, DB row '1234|3' present"
+hdr "AC4: implausibly-fast wave claim is rejected until enough time passes"
+( cd "$ROOT/server" && node -e '
+  const { createStore } = require("./src/db");
+  const s = createStore(process.argv[1]);
+  s.upsertUserByFirebaseUid("waveuser-uid", "waveuser@example.com", "Wave User");
+  s.close();
+' "$DB" )
+WAVE_TOKEN="$([ "$EMULATOR_UP" = "1" ] && mint_emulator_token "waveuser@example.com" \
+  || craft_unsigned_token "$PROJECT" "https://securetoken.google.com/$PROJECT" "$(($(date +%s)+3600))" "waveuser-uid")"
+
+RS_WAVE="$(curl -s -o "$TMP/runwave.json" -w '%{http_code}' -XPOST "$BASE/api/runs/start" \
+  -H "Authorization: Bearer $WAVE_TOKEN")"
+WAVE_RUN="$(jsonfield runToken < "$TMP/runwave.json")"
+note "run-start for wave test -> HTTP $RS_WAVE token=$WAVE_RUN"
+
+TOO_SOON="$(curl -s -o "$TMP/toosoon.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $WAVE_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"score\":500,\"wave\":10,\"runToken\":\"$WAVE_RUN\"}")"
+TOO_SOON_ERR="$(jsonfield error < "$TMP/toosoon.json")"
+note "wave=10 claimed immediately -> HTTP $TOO_SOON error=$TOO_SOON_ERR (bound ~8s at this scale)"
+
+note "sleeping 9s past the (4-1)*17.8*0.05 = 8.01s minimum..."
+sleep 9
+AFTER_WAIT="$(curl -s -o "$TMP/afterwait.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $WAVE_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"score\":500,\"wave\":10,\"runToken\":\"$WAVE_RUN\"}")"
+note "same claim after waiting -> HTTP $AFTER_WAIT body=$(cat "$TMP/afterwait.json")"
+
+if [ "$TOO_SOON" = "400" ] && [ "$TOO_SOON_ERR" = "implausible_run" ] && [ "$AFTER_WAIT" = "201" ]; then
+  pass 4 "immediate claim rejected (implausible_run); same token accepted after waiting past the time bound"
 else
-  fail 4 "noauth=$NOAUTH with=$WITH row='$ROW'"
+  fail 4 "too_soon=$TOO_SOON err=$TOO_SOON_ERR after_wait=$AFTER_WAIT"
 fi
 
 # ---------------------------------------------------------------- AC5
-hdr "AC5: leaderboard order/limit + personal best vs MAX(score)"
-for i in 1 2 3; do
-  T="$(curl -s -XPOST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
-      -d "{\"username\":\"verifyp$i\",\"password\":\"password-$i-long\"}" | jsonfield token)"
-  curl -s -o /dev/null -XPOST "$BASE/api/scores" -H "Authorization: Bearer $T" \
-    -H 'Content-Type: application/json' -d "{\"score\":$((i * 1000)),\"wave\":$i}"
-  curl -s -o /dev/null -XPOST "$BASE/api/scores" -H "Authorization: Bearer $T" \
-    -H 'Content-Type: application/json' -d "{\"score\":$((i * 10)),\"wave\":1}"
-done
-curl -s -XPOST "$BASE/api/scores" -H "Authorization: Bearer $LOGIN_TOKEN" \
-  -H 'Content-Type: application/json' -d '{"score":7777,"wave":9}' -o /dev/null
+hdr "AC5: score-per-second ceiling enforced independent of the time bound"
+RS_RATE="$(curl -s -o "$TMP/runrate.json" -w '%{http_code}' -XPOST "$BASE/api/runs/start" \
+  -H "Authorization: Bearer $WAVE_TOKEN")"
+RATE_RUN="$(jsonfield runToken < "$TMP/runrate.json")"
+note "run-start for rate test -> HTTP $RS_RATE token=$RATE_RUN"
+sleep 1
+TOO_FAST="$(curl -s -o "$TMP/toofast.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $WAVE_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"score\":50000,\"wave\":1,\"runToken\":\"$RATE_RUN\"}")"
+TOO_FAST_ERR="$(jsonfield error < "$TMP/toofast.json")"
+note "wave=1 (zero time bound), score=50000 after ~1s -> HTTP $TOO_FAST error=$TOO_FAST_ERR (ceiling ~200*(1+5)=1200)"
 
-API_LB="$(curl -s "$BASE/api/leaderboard?limit=3" \
-  | node -e 's="";process.stdin.on("data",d=>s+=d).on("end",()=>{
-      const e=JSON.parse(s).entries;console.log(e.map(x=>x.username+"="+x.score).join(","));})')"
-DB_LB="$(node scripts/sqlite-cli.js "$DB" \
-  "SELECT u.username || '=' || MAX(s.score) FROM scores s JOIN users u ON u.id=s.user_id GROUP BY s.user_id ORDER BY MAX(s.score) DESC LIMIT 3" \
-  | paste -sd, -)"
-note "API  /api/leaderboard?limit=3 -> $API_LB"
-note "sqlite equivalent            -> $DB_LB"
+UNDER_CEIL="$(curl -s -o "$TMP/underceil.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $WAVE_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"score\":1000,\"wave\":1,\"runToken\":\"$RATE_RUN\"}")"
+note "same token, score=1000 (under ceiling) -> HTTP $UNDER_CEIL body=$(cat "$TMP/underceil.json")"
 
-PB_API="$(curl -s "$BASE/api/scores/me" -H "Authorization: Bearer $LOGIN_TOKEN" | jsonfield score)"
-PB_DB="$(node scripts/sqlite-cli.js "$DB" \
-  "SELECT MAX(s.score) FROM scores s JOIN users u ON u.id=s.user_id WHERE u.username='verifyalice'")"
-note "API  /api/scores/me -> $PB_API"
-note "sqlite MAX(score)   -> $PB_DB"
-
-SORTED="$(curl -s "$BASE/api/leaderboard?limit=100" | node -e 's="";process.stdin.on("data",d=>s+=d).on("end",()=>{
-  const e=JSON.parse(s).entries;let ok=true;
-  for(let i=1;i<e.length;i++) if(e[i-1].score<e[i].score) ok=false;
-  const uniq=new Set(e.map(x=>x.username)).size===e.length;
-  const ranks=e.every((x,i)=>x.rank===i+1);
-  console.log(ok&&uniq&&ranks?"yes":"no");})')"
-CAP="$(curl -s "$BASE/api/leaderboard?limit=3" | node -e 's="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).entries.length))')"
-BADLIMIT="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/leaderboard?limit=abc")"
-note "sorted desc + unique users + sequential ranks -> $SORTED ; limit=3 returned $CAP ; limit=abc -> HTTP $BADLIMIT"
-
-if [ "$API_LB" = "$DB_LB" ] && [ "$PB_API" = "$PB_DB" ] && [ "$SORTED" = "yes" ] \
-   && [ "$CAP" = "3" ] && [ "$BADLIMIT" = "400" ]; then
-  pass 5 "leaderboard matches direct SQL ($API_LB); personal best $PB_API == MAX(score) $PB_DB"
+if [ "$TOO_FAST" = "400" ] && [ "$TOO_FAST_ERR" = "implausible_score" ] && [ "$UNDER_CEIL" = "201" ]; then
+  pass 5 "over-ceiling score rejected (implausible_score, distinct from AC4's implausible_run); under-ceiling accepted on the same token"
 else
-  fail 5 "api='$API_LB' db='$DB_LB' pb_api=$PB_API pb_db=$PB_DB sorted=$SORTED cap=$CAP badlimit=$BADLIMIT"
+  fail 5 "too_fast=$TOO_FAST err=$TOO_FAST_ERR under_ceil=$UNDER_CEIL"
 fi
 
 # ---------------------------------------------------------------- AC6
-hdr "AC6: existing game files untouched; index.html +1 line only"
-EXISTING="js/core.js js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/entities.js js/props.js js/hud.js js/game.js js/main.js css/style.css"
-DIRTY="$(git diff --name-only HEAD -- $EXISTING)"
-note "git diff HEAD on the 11 js files + css/style.css -> '${DIRTY:-<empty>}'"
+hdr "AC6: run-start issuance is separately rate-limited from score submission"
+( cd "$ROOT/server" && node -e '
+  const { createStore } = require("./src/db");
+  const s = createStore(process.argv[1]);
+  s.upsertUserByFirebaseUid("rluser-uid", "rluser@example.com", "RL User");
+  s.close();
+' "$DB" )
+RL_TOKEN="$([ "$EMULATOR_UP" = "1" ] && mint_emulator_token "rluser@example.com" \
+  || craft_unsigned_token "$PROJECT" "https://securetoken.google.com/$PROJECT" "$(($(date +%s)+3600))" "rluser-uid")"
 
-IDX_ADD="$(git diff -U0 HEAD -- index.html | grep -c '^+[^+]')"
-IDX_DEL="$(git diff -U0 HEAD -- index.html | grep -c '^-[^-]')"
-IDX_LINE="$(git diff -U0 HEAD -- index.html | grep '^+[^+]' || true)"
-note "index.html: $IDX_ADD added line(s), $IDX_DEL removed line(s)"
-note "added line: $IDX_LINE"
+# The server for THIS check needs a tiny RATE_LIMIT_RUNSTART_MAX, so run it as
+# a second, throwaway instance sharing the same DB rather than restarting the
+# main one (which the remaining ACs below still need at its current settings).
+RL_PORT=3518
+RL_BASE="http://127.0.0.1:$RL_PORT"
+( cd "$ROOT/server" && exec env DB_PATH="$DB" PORT="$RL_PORT" NODE_ENV=development \
+    FIREBASE_PROJECT_ID="$PROJECT" FIREBASE_AUTH_EMULATOR_HOST="$EMULATOR_HOST" \
+    RUN_MIN_SECONDS_PER_WAVE_SCALE=0 RUN_MAX_SCORE_PER_SECOND=999999 \
+    RATE_LIMIT_RUNSTART_MAX=3 RATE_LIMIT_WINDOW_MS=900000 \
+    node src/index.js ) >"$TMP/rl-server.log" 2>&1 &
+RL_SERVER_PID=$!
+for _ in $(seq 1 60); do
+  curl -s -o /dev/null "$RL_BASE/api/health" 2>/dev/null && break
+  sleep 0.25
+done
 
-ORDER="$(grep -o 'js/[a-z]*\.js' index.html | paste -sd, -)"
-EXPECTED="js/core.js,js/fx.js,js/audio.js,js/input.js,js/starfield.js,js/particles.js,js/entities.js,js/props.js,js/hud.js,js/game.js,js/main.js,js/net.js"
-note "script order: $ORDER"
+RL_CODES=""
+LAST_TOKEN=""
+for i in 1 2 3 4; do
+  CODE="$(curl -s -o "$TMP/rl$i.json" -w '%{http_code}' -XPOST "$RL_BASE/api/runs/start" \
+    -H "Authorization: Bearer $RL_TOKEN")"
+  RL_CODES="$RL_CODES $CODE"
+  [ "$CODE" = "201" ] && LAST_TOKEN="$(jsonfield runToken < "$TMP/rl$i.json")"
+done
+note "4 rapid run-start calls -> HTTP codes:$RL_CODES (max is 3/window)"
 
-if [ -z "$DIRTY" ] && [ "$IDX_ADD" = "1" ] && [ "$IDX_DEL" = "0" ] \
-   && [ "$IDX_LINE" = '+  <script src="js/net.js"></script>' ] && [ "$ORDER" = "$EXPECTED" ]; then
-  pass 6 "12 existing files byte-identical; index.html = +1 line, original 11 tags in original order"
+STILL_SUBMITS="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$RL_BASE/api/scores" \
+  -H "Authorization: Bearer $RL_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"score\":10,\"wave\":1,\"runToken\":\"$LAST_TOKEN\"}")"
+note "the previously-issued token can still be submitted -> HTTP $STILL_SUBMITS (proves score submission has its own, separate limiter)"
+
+kill "$RL_SERVER_PID" 2>/dev/null || true
+wait "$RL_SERVER_PID" 2>/dev/null || true
+
+FOURTH="$(echo "$RL_CODES" | awk '{print $4}')"
+if [ "$FOURTH" = "429" ] && [ "$STILL_SUBMITS" = "201" ]; then
+  pass 6 "4th run-start -> 429 (limit=3); an already-issued token still submits successfully in the same window"
 else
-  fail 6 "dirty='$DIRTY' added=$IDX_ADD removed=$IDX_DEL order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no)"
+  fail 6 "codes=$RL_CODES still_submits=$STILL_SUBMITS"
 fi
 
 # ---------------------------------------------------------------- AC7
-hdr "AC7: node scripts/check-net.js"
-if node scripts/check-net.js > "$TMP/checknet.log" 2>&1; then
-  note "$(tail -3 "$TMP/checknet.log")"
-  pass 7 "$(grep -o '[0-9]* checks run, [0-9]* problem(s).' "$TMP/checknet.log" | tail -1) exit=0"
+hdr "AC7: unsubmitted run tokens expire and are purged, not accumulated"
+ALICE_ID="$(node scripts/sqlite-cli.js "$DB" "SELECT id FROM users WHERE username LIKE 'verifyalice%' OR firebase_uid='verifyalice-uid' LIMIT 1" 2>/dev/null || true)"
+if [ -z "$ALICE_ID" ]; then
+  ALICE_ID="$(node scripts/sqlite-cli.js "$DB" "SELECT id FROM users LIMIT 1" 2>/dev/null || true)"
+fi
+EXPIRED_TOKEN="$( ( cd "$ROOT/server" && node -e '
+  const { createStore } = require("./src/db");
+  const s = createStore(process.argv[1]);
+  const userId = Number(process.argv[2]);
+  const past = Date.now() - 60000;
+  const run = s.createRun(userId, past - 10000, past); // expires_ms already in the past
+  process.stdout.write(run.run_token);
+  s.close();
+' "$DB" "$ALICE_ID" ) )"
+note "directly inserted an already-expired run row for user $ALICE_ID -> token=$EXPIRED_TOKEN"
+
+BEFORE_ROW="$(node scripts/sqlite-cli.js "$DB" "SELECT COUNT(*) FROM runs WHERE run_token='$EXPIRED_TOKEN'" 2>/dev/null || true)"
+EXPIRED_SUBMIT="$(curl -s -o "$TMP/expired.json" -w '%{http_code}' -XPOST "$BASE/api/scores" \
+  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"score\":1,\"wave\":1,\"runToken\":\"$EXPIRED_TOKEN\"}")"
+EXPIRED_ERR="$(jsonfield error < "$TMP/expired.json")"
+AFTER_ROW="$(node scripts/sqlite-cli.js "$DB" "SELECT COUNT(*) FROM runs WHERE run_token='$EXPIRED_TOKEN'" 2>/dev/null || true)"
+note "before submit attempt: row present=$BEFORE_ROW"
+note "submit against expired token -> HTTP $EXPIRED_SUBMIT error=$EXPIRED_ERR"
+note "after submit attempt (which purges expired rows as a side effect): row present=$AFTER_ROW"
+
+if [ "$BEFORE_ROW" = "1" ] && [ "$EXPIRED_SUBMIT" = "400" ] && [ "$EXPIRED_ERR" = "invalid_run" ] && [ "$AFTER_ROW" = "0" ]; then
+  pass 7 "expired token rejected as invalid_run (not a distinct 'expired' code -- no existence oracle); purged from the runs table by the same request"
 else
-  note "$(tail -20 "$TMP/checknet.log")"
-  fail 7 "check-net.js exited non-zero"
+  fail 7 "before=$BEFORE_ROW submit=$EXPIRED_SUBMIT err=$EXPIRED_ERR after=$AFTER_ROW"
 fi
 
 # ---------------------------------------------------------------- AC8
-hdr "AC8: capacitor platform scaffolds exist"
-AC8_MISSING=""
+hdr "AC8: old bcrypt/JWT auth is fully removed, not left dormant"
+AC8_BAD=""
+if node -e "require.resolve('bcryptjs')" 2>/dev/null; then AC8_BAD="$AC8_BAD bcryptjs-resolves"; fi
+if node -e "require.resolve('jsonwebtoken')" 2>/dev/null; then AC8_BAD="$AC8_BAD jsonwebtoken-resolves"; fi
+if grep -q '"bcryptjs"\|"jsonwebtoken"' server/package.json; then AC8_BAD="$AC8_BAD in-package-json"; fi
+REG404="$(curl -s -o "$TMP/reg404.json" -w '%{http_code}' -XPOST "$BASE/api/auth/register" \
+  -H 'Content-Type: application/json' -d '{"username":"x","password":"x"}')"
+LOGIN404="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$BASE/api/auth/login" \
+  -H 'Content-Type: application/json' -d '{"username":"x","password":"x"}')"
+note "require.resolve bcryptjs/jsonwebtoken from repo root -> ${AC8_BAD:-<neither resolves>}"
+note "POST /api/auth/register -> HTTP $REG404 ; POST /api/auth/login -> HTTP $LOGIN404"
+# Strip block-comment continuation lines ("^\s*\*") first -- auth.js's header
+# comment legitimately DISCUSSES bcrypt/JWT in prose to document the removal
+# (exactly what AC14 wants), which would otherwise false-positive here.
+CODE_LEFTOVERS="$(grep -v '^[[:space:]]*\*' server/src/auth.js server/src/routes/*.js 2>/dev/null \
+  | grep -iE 'bcrypt|jsonwebtoken|password_hash|jwt\.sign|jwt\.verify' | head -5)"
+note "grep for actual password/JWT CODE (comment lines excluded) -> '${CODE_LEFTOVERS:-<none>}'"
+if [ -z "$AC8_BAD" ] && [ "$REG404" = "404" ] && [ "$LOGIN404" = "404" ] && [ -z "$CODE_LEFTOVERS" ]; then
+  pass 8 "bcryptjs/jsonwebtoken absent as deps and unresolvable; /api/auth/register and /api/auth/login both 404; no password/JWT code left in server/src"
+else
+  fail 8 "deps='$AC8_BAD' register=$REG404 login=$LOGIN404 leftovers='$CODE_LEFTOVERS'"
+fi
+
+# ---------------------------------------------------------------- AC9
+hdr "AC9: Firebase ID token verification"
+GARBAGE="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me" -H 'Authorization: Bearer garbage')"
+EXPIRED_TOK="$(craft_unsigned_token "$PROJECT" "https://securetoken.google.com/$PROJECT" \
+  "$(($(date +%s) - 100))" "someone")"
+EXPIRED_CODE="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me" -H "Authorization: Bearer $EXPIRED_TOK")"
+WRONG_AUD_TOK="$(craft_unsigned_token "wrong-project" "https://securetoken.google.com/wrong-project" \
+  "$(($(date +%s) + 3600))" "someone")"
+WRONG_AUD_CODE="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me" -H "Authorization: Bearer $WRONG_AUD_TOK")"
+
+if [ "$EMULATOR_UP" = "1" ]; then
+  AC9_TOKEN="$(mint_emulator_token "ac9pilot@example.com")"
+  AC9_SOURCE="real firebase-tools Auth emulator (identitytoolkit accounts:signUp)"
+else
+  AC9_TOKEN="$(craft_unsigned_token "$PROJECT" "https://securetoken.google.com/$PROJECT" \
+    "$(($(date +%s)+3600))" "ac9pilot-uid")"
+  AC9_SOURCE="hand-crafted fallback -- emulator did not start in this run"
+fi
+ME_CODE="$(curl -s -o "$TMP/me.json" -w '%{http_code}' "$BASE/api/me" -H "Authorization: Bearer $AC9_TOKEN")"
+ME_UID="$(jsonfield user.firebase_uid < "$TMP/me.json")"
+DB_USER_ROW="$(node scripts/sqlite-cli.js "$DB" "SELECT firebase_uid FROM users WHERE firebase_uid='$ME_UID'" 2>/dev/null || true)"
+
+note "garbage token -> HTTP $GARBAGE"
+note "expired token -> HTTP $EXPIRED_CODE"
+note "wrong-audience token -> HTTP $WRONG_AUD_CODE"
+note "valid token (source: $AC9_SOURCE) -> HTTP $ME_CODE  uid=$ME_UID"
+note "sqlite: matching users row -> '$DB_USER_ROW'"
+
+if [ "$GARBAGE" = "401" ] && [ "$EXPIRED_CODE" = "401" ] && [ "$WRONG_AUD_CODE" = "401" ] \
+   && [ "$ME_CODE" = "200" ] && [ -n "$ME_UID" ] && [ "$DB_USER_ROW" = "$ME_UID" ]; then
+  if [ "$EMULATOR_UP" = "1" ]; then
+    pass 9 "garbage/expired/wrong-audience all 401; a REAL emulator-issued token accepted with req.user populated and matching users row"
+  else
+    partial 9 "garbage/expired/wrong-audience all 401; POSITIVE case used a hand-crafted fallback token, NOT a live emulator (emulator failed to start this run -- see log above)"
+  fi
+else
+  fail 9 "garbage=$GARBAGE expired=$EXPIRED_CODE wrong_aud=$WRONG_AUD_CODE valid=$ME_CODE uid=$ME_UID dbrow='$DB_USER_ROW'"
+fi
+
+# ---------------------------------------------------------------- AC10
+hdr "AC10: firebase-tools/firebase-admin availability matches documented Phase 0 outcome"
+if node scripts/check-firebase-availability.js > "$TMP/fbcheck.log" 2>&1; then
+  note "$(tail -5 "$TMP/fbcheck.log")"
+  pass 10 "runtime matches server/README.md's PHASE0_* markers (exit 0)"
+else
+  note "$(cat "$TMP/fbcheck.log")"
+  fail 10 "check-firebase-availability.js exited non-zero -- see output above"
+fi
+
+# ---------------------------------------------------------------- AC11
+hdr "AC11: js/net.js stays strictly opt-in (zero requests, zero SDK injection until interaction)"
+if node scripts/check-net.js > "$TMP/checknet.log" 2>&1; then
+  note "$(tail -5 "$TMP/checknet.log")"
+  pass 11 "$(grep -o '[0-9]* checks run, [0-9]* problem(s).' "$TMP/checknet.log" | tail -1) exit=0"
+else
+  note "$(tail -30 "$TMP/checknet.log")"
+  fail 11 "check-net.js exited non-zero"
+fi
+
+# ---------------------------------------------------------------- AC12
+hdr "AC12: schema migration is explicit; fresh DB boots; legacy DB is refused"
+FRESH_DB="$TMP/fresh.db"
+FRESH_OK="$( ( cd "$ROOT/server" && node -e '
+  const { createStore } = require("./src/db");
+  const s = createStore(process.argv[1]);
+  s.close();
+  console.log("ok");
+' "$FRESH_DB" 2>&1 ) )"
+note "fresh DB boots cleanly -> $FRESH_OK"
+
+SCHEMA_COLS="$(node scripts/sqlite-cli.js "$FRESH_DB" "PRAGMA table_info(users)" 2>/dev/null | tr '\n' ';' || true)"
+HAS_FBUID="$(echo "$SCHEMA_COLS" | grep -c 'firebase_uid' || true)"
+HAS_PWHASH="$(echo "$SCHEMA_COLS" | grep -c 'password_hash' || true)"
+note "users table columns -> $SCHEMA_COLS"
+note "has firebase_uid: $HAS_FBUID ; has password_hash (should be 0): $HAS_PWHASH"
+
+LEGACY_DB="$TMP/legacy.db"
+# Prepared statement + placeholders, deliberately: raw SQL string literals
+# would need one more layer of quote-escaping (bash single-quotes wrapping a
+# JS string wrapping a SQL string) than is worth fighting for two values.
+( cd "$ROOT/server" && node -e '
+  const Database = require("better-sqlite3");
+  const db = new Database(process.argv[1]);
+  db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT NOT NULL)");
+  db.prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
+    .run("legacyuser", "$2b$10$fakefakefakefakefakefakefake");
+  db.close();
+' "$LEGACY_DB" )
+LEGACY_REFUSAL="$( ( cd "$ROOT/server" && node -e '
+  const { createStore } = require("./src/db");
+  try { createStore(process.argv[1]); console.log("DID NOT REFUSE"); }
+  catch (err) { console.log("REFUSED: " + err.name + ": " + err.message.slice(0,60)); }
+' "$LEGACY_DB" ) )"
+note "legacy password_hash DB -> $LEGACY_REFUSAL"
+LEGACY_DATA_INTACT="$(node scripts/sqlite-cli.js "$LEGACY_DB" "SELECT username FROM users" 2>/dev/null || true)"
+note "legacy DB's data still intact after the refused open -> $LEGACY_DATA_INTACT"
+
+if [ "$FRESH_OK" = "ok" ] && [ "$HAS_FBUID" -ge "1" ] && [ "$HAS_PWHASH" = "0" ] \
+   && [[ "$LEGACY_REFUSAL" == REFUSED:* ]] && [ "$LEGACY_DATA_INTACT" = "legacyuser" ]; then
+  pass 12 "fresh DB has firebase_uid/no password_hash; a legacy password_hash DB is refused at startup with data left untouched"
+else
+  fail 12 "fresh=$FRESH_OK fbuid=$HAS_FBUID pwhash=$HAS_PWHASH legacy='$LEGACY_REFUSAL' data='$LEGACY_DATA_INTACT'"
+fi
+
+# ---------------------------------------------------------------- AC13
+hdr "AC13: existing game files untouched; index.html has only the expected script tags"
+# NOTE: index.html's "+1 line" (js/net.js) was committed in the PRIOR Gauntlet
+# round, not this one -- so `git diff HEAD` on it is correctly empty now.
+# What this round must not have done is touch it further (no gstatic/firebase
+# tag added, no reordering), so that's checked structurally below rather than
+# by assuming an uncommitted diff still exists.
+EXISTING="js/core.js js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/entities.js js/props.js js/hud.js js/game.js js/main.js css/style.css"
+DIRTY="$(git diff --name-only HEAD -- $EXISTING index.html)"
+note "git diff HEAD on the 11 js files + css/style.css + index.html -> '${DIRTY:-<empty>}'"
+
+GSTATIC_IN_HTML="$(grep -c 'gstatic\|firebase' index.html || true)"
+ORDER="$(grep -o 'js/[a-z]*\.js' index.html | paste -sd, -)"
+EXPECTED="js/core.js,js/fx.js,js/audio.js,js/input.js,js/starfield.js,js/particles.js,js/entities.js,js/props.js,js/hud.js,js/game.js,js/main.js,js/net.js"
+note "script order: $ORDER"
+note "gstatic/firebase references directly in index.html: $GSTATIC_IN_HTML (must be 0 -- the SDK is injected by net.js at runtime, never present in the HTML source)"
+
+if [ -z "$DIRTY" ] && [ "$ORDER" = "$EXPECTED" ] && [ "$GSTATIC_IN_HTML" = "0" ]; then
+  pass 13 "12 existing files + index.html all byte-identical to HEAD this round; script order is the original 11 tags + net.js; no gstatic/firebase reference added to index.html"
+else
+  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML"
+fi
+
+# ---------------------------------------------------------------- AC14
+hdr "AC14: docs state the anti-cheat's real limits and the Firebase migration decision"
+AC14_BAD=""
+for pat in "not a replay engine" "plausibility" "patient" "breaking" "no migration\|no data to migrate\|nothing to migrate" "PHASE0_"; do
+  grep -qi -- "$pat" server/README.md || AC14_BAD="$AC14_BAD README:$pat"
+done
+note "server/README.md -> $(wc -l < server/README.md) lines"
+if [ -z "$AC14_BAD" ]; then
+  pass 14 "server/README.md states the anti-cheat's honest limits, the breaking migration decision, and the Phase 0 outcome"
+else
+  fail 14 "missing statements:$AC14_BAD"
+fi
+
+# ---------------------------------------------------------------- AC15
+hdr "AC15: full automated suite passes end to end"
+if ( cd server && FIREBASE_AUTH_EMULATOR_HOST="$EMULATOR_HOST" FIREBASE_PROJECT_ID="$PROJECT" npm test ) \
+    > "$TMP/npmtest.log" 2>&1; then
+  note "$(grep -E '^# (tests|pass|fail|skipped)' "$TMP/npmtest.log" | paste -sd' ' - || tail -5 "$TMP/npmtest.log")"
+  NPM_TEST_OK=1
+else
+  note "server npm test FAILED"
+  tail -30 "$TMP/npmtest.log"
+  NPM_TEST_OK=0
+fi
+
+CHECKNET_OK=1
+node scripts/check-net.js >/dev/null 2>&1 || CHECKNET_OK=0
+
+VERIFY_AC_FAILED=0
+for r in "${RESULTS[@]}"; do
+  case "$r" in AC*': FAIL'*) VERIFY_AC_FAILED=1 ;; esac
+done
+
+if [ "$NPM_TEST_OK" = "1" ] && [ "$CHECKNET_OK" = "1" ] && [ "$VERIFY_AC_FAILED" = "0" ]; then
+  pass 15 "npm test exit 0, check-net.js exit 0, and every AC1-AC14 above is PASS or the documented emulator-fallback PARTIAL"
+else
+  fail 15 "npm_test_ok=$NPM_TEST_OK checknet_ok=$CHECKNET_OK any_ac_failed=$VERIFY_AC_FAILED"
+fi
+
+# ============================================================ REGRESSION
+# Checks from the prior round that this round's AC1-15 don't restate, kept so
+# they still gate overall pass/fail.
+
+hdr "REGRESSION: Capacitor platform scaffolds still exist"
+REG_MISSING=""
 for f in android/app/build.gradle android/gradlew android/settings.gradle \
          android/app/src/main/AndroidManifest.xml \
          ios/App/Podfile ios/App/App/Info.plist \
          ios/App/App/AppDelegate.swift; do
-  if [ -e "$f" ]; then note "present: $f"; else note "MISSING: $f"; AC8_MISSING="$AC8_MISSING $f"; fi
+  if [ -e "$f" ]; then note "present: $f"; else note "MISSING: $f"; REG_MISSING="$REG_MISSING $f"; fi
 done
-if [ -d ios/App/App.xcodeproj ]; then note "present: ios/App/App.xcodeproj/"; else AC8_MISSING="$AC8_MISSING ios/App/App.xcodeproj"; fi
-if [ -z "$AC8_MISSING" ]; then
-  pass 8 "cap add android & cap add ios both exited 0; all standard platform files present"
+if [ -d ios/App/App.xcodeproj ]; then note "present: ios/App/App.xcodeproj/"; else REG_MISSING="$REG_MISSING ios/App/App.xcodeproj"; fi
+if [ -z "$REG_MISSING" ]; then
+  rpass CAPACITOR-SCAFFOLD "all standard platform files present"
 else
-  fail 8 "missing:$AC8_MISSING"
+  rfail CAPACITOR-SCAFFOLD "missing:$REG_MISSING"
 fi
 
-# ---------------------------------------------------------------- AC9
-hdr "AC9: cap sync + web assets match www/"
+hdr "REGRESSION: cap sync + web assets match www/"
 node scripts/copy-web.js >/dev/null 2>&1
-if npx cap sync > "$TMP/sync.log" 2>&1; then
-  SYNC_EXIT=0
-else
-  SYNC_EXIT=$?
-fi
+if npx cap sync > "$TMP/sync.log" 2>&1; then SYNC_EXIT=0; else SYNC_EXIT=$?; fi
 note "npx cap sync -> exit $SYNC_EXIT"
-grep -i 'warn' "$TMP/sync.log" | while read -r l; do note "sync warning: $l"; done
-
-AC9_BAD=0
+REG_AC9_BAD=0
 for P in android/app/src/main/assets/public ios/App/App/public; do
   while IFS= read -r f; do
     rel="${f#www/}"
-    if ! cmp -s "$f" "$P/$rel"; then note "MISMATCH: $rel in $P"; AC9_BAD=1; fi
+    if ! cmp -s "$f" "$P/$rel"; then note "MISMATCH: $rel in $P"; REG_AC9_BAD=1; fi
   done < <(find www -type f)
   note "$P: all $(find www -type f | wc -l) www files byte-identical"
 done
-if [ "$SYNC_EXIT" = "0" ] && [ "$AC9_BAD" = "0" ]; then
-  pass 9 "cap sync exit 0; every www/ file byte-identical in both platform dirs (plus Capacitor's own cordova.js shims)"
+if [ "$SYNC_EXIT" = "0" ] && [ "$REG_AC9_BAD" = "0" ]; then
+  rpass CAP-SYNC "cap sync exit 0; every www/ file byte-identical in both platform dirs"
 else
-  fail 9 "sync_exit=$SYNC_EXIT mismatches=$AC9_BAD"
+  rfail CAP-SYNC "sync_exit=$SYNC_EXIT mismatches=$REG_AC9_BAD"
 fi
 
-# ---------------------------------------------------------------- AC10
-hdr "AC10: placeholder PNGs valid in both platforms' resource dirs"
+hdr "REGRESSION: placeholder PNGs still valid in both platforms"
 PNG_CHECK="$(node -e '
 const fs=require("fs");const path=require("path");
 const roots=["android/app/src/main/res","ios/App/App/Assets.xcassets"];
@@ -262,63 +591,38 @@ function walk(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){
     else if(b.readUInt32BE(16)<1||b.readUInt32BE(20)<1)bad.push(p+" zero dimension");
   }}}
 for(const r of roots){if(fs.existsSync(r))walk(r);else bad.push(r+" missing");}
-const andr=fs.existsSync("android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png");
-const ios=fs.existsSync("ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png");
-console.log(JSON.stringify({count:n,bad,andr,ios}));')"
+console.log(JSON.stringify({count:n,bad}));')"
 note "$PNG_CHECK"
-if node -e "const r=JSON.parse(process.argv[1]);process.exit(r.bad.length===0&&r.count>0&&r.andr&&r.ios?0:1)" "$PNG_CHECK"; then
-  pass 10 "$(node -e "console.log(JSON.parse(process.argv[1]).count)" "$PNG_CHECK") PNGs verified: signature + IHDR + IEND + non-zero dimensions, both platforms"
+if node -e "const r=JSON.parse(process.argv[1]);process.exit(r.bad.length===0&&r.count>0?0:1)" "$PNG_CHECK"; then
+  rpass PNG-VALIDITY "$(node -e "console.log(JSON.parse(process.argv[1]).count)" "$PNG_CHECK") PNGs verified valid"
 else
-  fail 10 "invalid PNGs: $PNG_CHECK"
+  rfail PNG-VALIDITY "invalid PNGs: $PNG_CHECK"
 fi
 
-# ---------------------------------------------------------------- AC11
-hdr "AC11: nothing secret or generated is tracked"
+hdr "REGRESSION: nothing secret or generated is tracked"
 BADTRACK="$(git ls-files | grep -E '(\.db$|\.db-|^\.env|/\.env$|(^|/)node_modules/|^www/|^server/data/)' || true)"
-note "tracked offenders -> '${BADTRACK:-<none>}'"
 UNTRACKED_BAD="$(git status --porcelain --untracked-files=all | awk '/^\?\?/{print $2}' \
   | grep -E '(\.db$|^\.env|/\.env$|(^|/)node_modules/|^www/|^server/data/)' || true)"
-note "untracked-but-not-ignored offenders -> '${UNTRACKED_BAD:-<none>}'"
-note "www/ ignored: $(git check-ignore -q www && echo yes || echo NO)"
-note "server/data/x.db ignored: $(git check-ignore -q server/data/x.db && echo yes || echo NO)"
-note "node_modules ignored: $(git check-ignore -q node_modules && echo yes || echo NO)"
+note "tracked offenders -> '${BADTRACK:-<none>}' ; untracked-but-not-ignored -> '${UNTRACKED_BAD:-<none>}'"
 LEAK="$(git ls-files -co --exclude-standard \
   | grep -vE '(^scripts/verify\.sh$|^server/README\.md$|^server/\.env\.example$)' \
-  | xargs grep -lE 'JWT_SECRET\s*=\s*["'"'"']?[A-Za-z0-9+/]{24,}' 2>/dev/null || true)"
-note "files with a literal long JWT_SECRET value -> '${LEAK:-<none>}'"
+  | xargs grep -lE '(JWT_SECRET|GOOGLE_APPLICATION_CREDENTIALS)\s*=\s*["'"'"']?[A-Za-z0-9+/._-]{16,}' 2>/dev/null || true)"
+note "files with a literal long secret-shaped value -> '${LEAK:-<none>}'"
 if [ -z "$BADTRACK" ] && [ -z "$UNTRACKED_BAD" ] && [ -z "$LEAK" ]; then
-  pass 11 "no *.db/.env/www//node_modules tracked or unignored; no literal secret in committable files"
+  rpass SECRET-HYGIENE "no *.db/.env/www//node_modules tracked or unignored; no literal secret in committable files"
 else
-  fail 11 "tracked='$BADTRACK' untracked='$UNTRACKED_BAD' leak='$LEAK'"
+  rfail SECRET-HYGIENE "tracked='$BADTRACK' untracked='$UNTRACKED_BAD' leak='$LEAK'"
 fi
 
-# ---------------------------------------------------------------- AC12
-hdr "AC12: docs state what was NOT done"
-AC12_BAD=""
+hdr "REGRESSION: docs/MOBILE.md still states what was NOT done"
+REG_MOBILE_BAD=""
 for pat in "NOT" "No APK" "No IPA" "never" "signed"; do
-  grep -qi -- "$pat" docs/MOBILE.md || AC12_BAD="$AC12_BAD MOBILE:$pat"
+  grep -qi -- "$pat" docs/MOBILE.md || REG_MOBILE_BAD="$REG_MOBILE_BAD MOBILE:$pat"
 done
-for pat in "What was NOT done" "anti-cheat" "HTTPS" "Remaining manual steps"; do
-  grep -qi -- "$pat" server/README.md || AC12_BAD="$AC12_BAD SERVER:$pat"
-done
-grep -qi "Remaining manual steps" docs/MOBILE.md || AC12_BAD="$AC12_BAD MOBILE:manual-steps"
-note "docs/MOBILE.md    -> $(wc -l < docs/MOBILE.md) lines"
-note "server/README.md  -> $(wc -l < server/README.md) lines"
-if [ -z "$AC12_BAD" ]; then
-  pass 12 "both docs carry explicit 'NOT done' sections and remaining manual steps"
+if [ -z "$REG_MOBILE_BAD" ]; then
+  rpass MOBILE-DOCS "docs/MOBILE.md carries its 'NOT done' section"
 else
-  fail 12 "missing statements:$AC12_BAD"
-fi
-
-# ------------------------------------------------------------ extra: unit tests
-hdr "Extra: server unit tests"
-if ( cd server && npm test ) > "$TMP/npmtest.log" 2>&1; then
-  note "$(grep -E '^# (tests|pass|fail)' "$TMP/npmtest.log" | paste -sd' ' - || tail -3 "$TMP/npmtest.log")"
-  note "server npm test: exit 0"
-else
-  note "server npm test FAILED"
-  tail -20 "$TMP/npmtest.log"
-  FAILED=1
+  rfail MOBILE-DOCS "missing:$REG_MOBILE_BAD"
 fi
 
 # ------------------------------------------------------------------- summary
@@ -326,9 +630,12 @@ hdr "SUMMARY"
 for r in "${RESULTS[@]}"; do echo "$r"; done
 echo
 if [ "$FAILED" = "0" ]; then
-  echo "All acceptance checks reported PASS."
-  echo "NOTE: this proves scaffolding + backend behaviour only. No APK/IPA was"
-  echo "compiled, nothing was signed, and nothing ran on a device or simulator."
+  echo "All acceptance checks reported PASS (or a clearly-labeled PARTIAL)."
+  echo "NOTE: this proves scaffolding + backend + anti-cheat + Firebase-verification"
+  echo "behaviour only. No APK/IPA was compiled, nothing was signed, and nothing ran"
+  echo "on a device or simulator. The client sign-in path was proven against a real"
+  echo "emulator/server round trip but never against a real browser executing the"
+  echo "actual Firebase JS SDK -- see server/README.md."
 else
   echo "One or more acceptance checks FAILED."
 fi

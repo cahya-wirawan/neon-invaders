@@ -26,9 +26,11 @@ modules), so there is no CORS problem and nothing to install.
 ## Optional extras
 
 - **Online accounts + leaderboard** — `server/` is a Node + Express + SQLite
-  backend (bcrypt-hashed passwords, JWT bearer auth). `js/net.js` adds a small
-  opt-in panel in the corner of the page; until you sign in, it makes no
-  requests at all. See [`server/README.md`](server/README.md).
+  backend that verifies Firebase Authentication ID tokens (no passwords stored
+  locally) and checks submitted scores against server-tracked plausibility
+  bounds before accepting them. `js/net.js` adds a small opt-in panel in the
+  corner of the page, loading the Firebase SDK from CDN only once you open it;
+  until then, it makes no requests at all. See [`server/README.md`](server/README.md).
 - **Android / iOS** — Capacitor shells wrapping this exact web build, no engine
   rewrite. See [`docs/MOBILE.md`](docs/MOBILE.md). Note: no APK/IPA has been
   compiled and nothing has been run on a device; the platform projects are

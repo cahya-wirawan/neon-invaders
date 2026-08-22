@@ -14,10 +14,14 @@ exactly that: zero dependencies, zero network requests.** Three additive things
 now sit alongside it and must not leak into it:
 
 - `js/net.js` — an **opt-in** online accounts/leaderboard bridge. It performs no
-  network request until the player signs in through the panel it injects, and
-  it hooks game over by wrapping `SI.Game.prototype.setState` from the outside
+  network request until the player signs in through the panel it injects (the
+  Firebase Auth SDK itself is injected from CDN lazily, same trigger), and it
+  hooks game over by wrapping `SI.Game.prototype.setState` from the outside
   rather than editing `game.js`.
-- `server/` — Node + Express + SQLite backend (its own `package.json`).
+- `server/` — Node + Express + SQLite backend (its own `package.json`). Verifies
+  Firebase Authentication ID tokens (no local password storage) and checks
+  submitted scores against server-tracked plausibility bounds (not a replay
+  engine) via a server-issued run token — see `server/README.md`.
 - Root `package.json` + `capacitor.config.json` + `android/` + `ios/` — the
   Capacitor mobile shells. The root `package.json` holds the Capacitor CLI
   **only**; the game never requires an `npm install` to run.
