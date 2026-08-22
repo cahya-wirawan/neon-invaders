@@ -9,6 +9,7 @@
     PLAYING: 'PLAYING',
     PAUSED: 'PAUSED',
     WAVE_CLEAR: 'WAVE_CLEAR',
+    UPGRADE: 'UPGRADE',
     GAME_OVER: 'GAME_OVER'
   };
 
@@ -65,6 +66,16 @@
     this.bannerTime = 0;
     this.time = 0;
     this.invaded = false;
+    // Active cannon upgrade -- exactly one, chosen between waves. A new
+    // pick REPLACES this, upgrades never stack.
+    this.upgrade = 'none';
+    this.upgradeIndex = 0;
+    // The UPGRADE screen only accepts a confirm once the binding has been
+    // seen RELEASED while the screen is up -- see setState/confirmHeld.
+    this.upgradeArmed = false;
+    // Which state PAUSED must return to, and the pick clock frozen across it.
+    this.pausedFrom = null;
+    this.pausedTimer = 0;
 
     // Context handed to every entity update -- avoids entities importing
     // the game module (which would be a dependency cycle).
@@ -100,6 +111,8 @@
     this.lives = C.PLAYER.START_LIVES;
     this.wave = 1;
     this.nextExtraLife = 5000;
+    this.upgrade = 'none';
+    this.upgradeIndex = 0;
     this.particles.clear();
     this.startWave(1);
     this.setState(STATE.PLAYING);
@@ -128,9 +141,53 @@
     }
   };
 
+  // True while ANY confirm binding is physically down. confirmPressed() is an
+  // edge, so it cannot answer this on its own; isDown/pointer can.
+  Game.prototype.confirmHeld = function () {
+    var Input = SI.Input;
+    var p = Input.pointer();
+    return !!(Input.isDown('Space') || Input.isDown('KeyZ') ||
+              Input.isDown('Enter') || (p && (p.firing || p.active)));
+  };
+
   Game.prototype.setState = function (s) {
     this.state = s;
     this.stateTimer = 0;
+    if (s === STATE.UPGRADE) {
+      // A confirm binding that is ALREADY down when the screen opens (the
+      // fire key held through WAVE_CLEAR, a finger resting on the glass) must
+      // never lock a card in: it has to be released at least once first.
+      this.upgradeArmed = !this.confirmHeld();
+    }
+  };
+
+  // PAUSED remembers where it came from, and freezes that state's clock.
+  // STATE.UPGRADE needs both: its stateTimer IS the auto-select countdown.
+  Game.prototype.pause = function (from) {
+    this.pausedFrom = from;
+    this.pausedTimer = this.stateTimer;
+    this.setState(STATE.PAUSED);
+    SI.Audio.stopMusic();
+    SI.Audio.ufoStop();
+  };
+
+  Game.prototype.resume = function () {
+    var back = this.pausedFrom || STATE.PLAYING;
+    var timer = this.pausedTimer;
+    this.pausedFrom = null;
+    this.setState(back);
+    if (back === STATE.UPGRADE) {
+      // Give back exactly the countdown that was on screen, and make the
+      // player release the key that resumed before it can also pick a card.
+      this.stateTimer = timer;
+      this.upgradeArmed = false;
+      return;
+    }
+    SI.Audio.startMusic(this.wave);
+    // pause silenced the saucer; bring it back if it is still flying.
+    if (this.ufo && !this.ufo.dead) {
+      SI.Audio.ufoStart();
+    }
   };
 
   /* ------------------------------ update ---------------------------- */
@@ -157,9 +214,7 @@
 
       case STATE.PLAYING:
         if (Input.pausePressed()) {
-          this.setState(STATE.PAUSED);
-          SI.Audio.stopMusic();
-          SI.Audio.ufoStop();
+          this.pause(STATE.PLAYING);
           break;
         }
         this.updatePlaying(dt);
@@ -167,12 +222,7 @@
 
       case STATE.PAUSED:
         if (Input.pausePressed() || Input.confirmPressed()) {
-          this.setState(STATE.PLAYING);
-          SI.Audio.startMusic(this.wave);
-          // pause silenced the saucer; bring it back if it is still flying.
-          if (this.ufo && !this.ufo.dead) {
-            SI.Audio.ufoStart();
-          }
+          this.resume();
         }
         break;
 
@@ -180,10 +230,24 @@
         this.particles.update(dt);
         this.player.update(dt, this.syncWorld(dt, false));
         if (this.stateTimer > 2.4) {
-          this.startWave(this.wave + 1);
-          this.setState(STATE.PLAYING);
-          SI.Audio.startMusic(this.wave);
+          // The wave no longer starts here: the player picks a cannon
+          // first, and applyUpgrade() is what calls startWave().
+          this.upgradeIndex = 0;
+          this.setState(STATE.UPGRADE);
         }
+        break;
+
+      case STATE.UPGRADE:
+        // The pick window is pausable too: PICK_TIMEOUT is a real clock and a
+        // player who has to step away would otherwise be handed whatever card
+        // happened to be highlighted.
+        if (Input.pausePressed()) {
+          this.pause(STATE.UPGRADE);
+          break;
+        }
+        this.particles.update(dt);
+        this.player.update(dt, this.syncWorld(dt, false));
+        this.updateUpgradePick(dt);
         break;
 
       case STATE.GAME_OVER:
@@ -206,7 +270,104 @@
     // (touch, or keyboard faster than the refresh rate).
     w.wantFire = live ? (Input.firing() || Input.firePressed()) : false;
     w.pointer = live ? Input.pointer() : null;
+    // Entities never reach into game.js: the active upgrade and the ship's
+    // x (which a diving column aims at) travel through `world` like
+    // everything else.
+    w.upgrade = this.upgrade;
+    w.playerX = this.player.x;
     return w;
+  };
+
+  /* -------------------------- cannon upgrade ------------------------ */
+
+  // Hit-test for tapping a card. Geometry lives in hud.js so the drawing
+  // and the hit box can never drift apart.
+  Game.prototype.upgradeCardAt = function (x, y) {
+    var ids = C.UPGRADE.IDS;
+    if (!SI.HUD || typeof SI.HUD.upgradeCardRect !== 'function') {
+      return -1;
+    }
+    for (var i = 0; i < ids.length; i++) {
+      var r = SI.HUD.upgradeCardRect(i, ids.length);
+      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+        return i;
+      }
+    }
+    return -1;
+  };
+
+  Game.prototype.updateUpgradePick = function (dt) {
+    var Input = SI.Input;
+    var U = C.UPGRADE;
+    var n = U.IDS.length;
+    var i;
+
+    if (Input.justPressed('ArrowLeft') || Input.justPressed('KeyA')) {
+      this.upgradeIndex = (this.upgradeIndex + n - 1) % n;
+    }
+    if (Input.justPressed('ArrowRight') || Input.justPressed('KeyD')) {
+      this.upgradeIndex = (this.upgradeIndex + 1) % n;
+    }
+    for (i = 0; i < n; i++) {
+      if (Input.justPressed('Digit' + (i + 1))) {
+        this.upgradeIndex = i;
+      }
+    }
+
+    // Touch: ONLY a genuine pointer-down edge moves the highlight, and only
+    // when it lands on a card. Reading a held/resting pointer every frame
+    // would silently overwrite the arrow keys on any device with a
+    // touchscreen, and would make an idle finger "choose" a card.
+    var p = Input.pointer();
+    var tapEdge = Input.justPressed('Pointer');
+    var tappedCard = -1;
+    if (tapEdge && p) {
+      tappedCard = this.upgradeCardAt(p.x, p.y);
+      if (tappedCard >= 0) {
+        this.upgradeIndex = tappedCard;
+      }
+    }
+
+    // Gate 1: the confirm binding must have been RELEASED at least once since
+    // the screen opened. Fire and confirm share Space/Z/tap, so without this
+    // the key still held down from WAVE_CLEAR locks in card 0 instantly.
+    if (!this.upgradeArmed && !this.confirmHeld()) {
+      this.upgradeArmed = true;
+    }
+
+    var keyEdge = Input.justPressed('Enter') || Input.justPressed('Space') ||
+                  Input.justPressed('KeyZ');
+    var edge = Input.confirmPressed();
+    // A tap that missed every card is not a choice -- only a key edge or a
+    // tap ON a card may confirm.
+    if (edge && !keyEdge && tapEdge && tappedCard < 0) {
+      edge = false;
+    }
+
+    // Gate 2: a minimum dwell, which is what stops a player mashing fire
+    // through the screen (they release constantly, so gate 1 alone lets them
+    // straight through) from picking before the cards can be read.
+    var confirmed = this.upgradeArmed && this.stateTimer >= U.MIN_DWELL && edge;
+    if (confirmed || this.stateTimer >= U.PICK_TIMEOUT) {
+      this.applyUpgrade(U.IDS[this.upgradeIndex]);
+    }
+  };
+
+  Game.prototype.applyUpgrade = function (id) {
+    var ids = C.UPGRADE.IDS;
+    // Defence in depth: an id that is not in IDS has no Player.fire branch and
+    // no HUD entry, so fall back to the first real one rather than shipping
+    // the player a cannon that does nothing.
+    this.upgrade = ids.indexOf(id) >= 0 ? id : ids[0];
+    this.startWave(this.wave + 1);
+    // MUST come after startWave(): it calls player.reset(true), which
+    // unconditionally overwrites invuln with PLAYER.INVULN_TIME.
+    if (this.upgrade === 'shield') {
+      this.player.invuln = C.UPGRADE.SHIELD_TIME;
+    }
+    this.setState(STATE.PLAYING);
+    SI.Audio.extraLife();
+    SI.Audio.startMusic(this.wave);
   };
 
   Game.prototype.updatePlaying = function (dt) {
@@ -275,7 +436,14 @@
             if (SI.aabb(box, a.box())) {
               this.swarm.killAlien(a, world);
               this.addScore(a.score);
-              b.dead = true;
+              // PIERCING LASER: survives the kill and flies on. One alien
+              // per bullet per frame either way -- at MAX_DT a shot covers
+              // far less than a grid row, so nothing is skipped.
+              if (b.pierce > 0) {
+                b.pierce--;
+              } else {
+                b.dead = true;
+              }
               hitAlien = true;
               break;
             }
@@ -318,7 +486,9 @@
         }
       }
 
-      // Both bullet kinds chew through bunkers.
+      // Both bullet kinds chew through bunkers. Deliberately unchanged for
+      // a piercing shot: the laser cuts through ALIENS, not through your
+      // own cover, so camping behind a bunker still costs you the shot.
       for (j = 0; j < this.bunkers.length; j++) {
         var bunker = this.bunkers[j];
         // Pass travel direction so the scan starts at the row the shot
@@ -459,10 +629,10 @@
   Game.prototype.blurPause = function () {
     // The tab may never come back -- don't lose a record run.
     this.flushHi();
-    if (this.state === STATE.PLAYING) {
-      this.setState(STATE.PAUSED);
-      SI.Audio.stopMusic();
-      SI.Audio.ufoStop();
+    // STATE.UPGRADE freezes here too: its stateTimer is the auto-select
+    // countdown, and a hidden tab must not spend it.
+    if (this.state === STATE.PLAYING || this.state === STATE.UPGRADE) {
+      this.pause(this.state);
     }
     SI.Input.reset();
   };

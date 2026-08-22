@@ -35,8 +35,7 @@ To check a change, run it in a browser:
 python3 -m http.server 8000   # then visit http://localhost:8000/
 ```
 
-The additive parts do have checks. Run them after touching `js/net.js`,
-`server/`, or the Capacitor scaffold:
+Run these after touching `js/net.js`, `server/`, or the Capacitor scaffold:
 
 ```
 bash scripts/verify.sh        # every acceptance check, prints AC1..AC12
@@ -44,16 +43,32 @@ node scripts/check-net.js     # js/net.js offline/error-path harness
 cd server && npm test         # backend API tests (node:test)
 ```
 
+and this one after touching the swarm formations, the cannon upgrades, or
+anything they reach — `js/core.js`, `js/entities.js`, `js/game.js`, `js/hud.js`:
+
+```
+node scripts/check-game.js    # formations + upgrades, headless, 14 scenarios
+```
+
 or just open `index.html` directly (`file://` works too, since scripts are
 classic `<script>` tags, not ES modules, so there's no CORS issue).
 
-The **game itself** has no automated tests — verify changes to `js/core.js` …
-`js/main.js` and `css/style.css` by playing it: start a wave, fire, take
-damage, clear a wave, trigger the UFO, pause/resume, and resize the window,
-checking the browser console for errors. The **additive parts** (`js/net.js`,
-`server/`, the Capacitor scaffold) *do* have automated tests — the three
-commands listed just above — and all three must pass before you commit a change
-to those areas.
+`scripts/check-game.js` loads the real game files through `new Function` with
+stubbed canvas/audio/input (same trick as `check-net.js` — no jsdom, no
+dependencies) and drives `SI.Game` tick by tick under a seeded PRNG. Its first
+scenario is a **golden checksum**: a scripted wave-1 run must digest to exactly
+the value the game produced *before* formations and upgrades existed, which is
+what proves the grid-anchor/offset split left classic play bit-identical. That
+digest is a pinned constant in the file — re-measure it against the pre-feature
+commit if you ever have to change it, never paste in whatever the current code
+emits.
+
+Beyond that the **game itself** still has no automated coverage — verify
+changes to `js/fx.js`, `js/audio.js`, `js/input.js`, `js/starfield.js`,
+`js/particles.js`, `js/props.js`, `js/main.js` and `css/style.css` by playing
+it: start a wave, fire, take damage, clear a wave (and pick an upgrade),
+trigger the UFO, pause/resume, and resize the window, checking the browser
+console for errors.
 
 ## Architecture
 
@@ -104,11 +119,35 @@ the loop and show a static "SIGNAL LOST" screen rather than spinning forever
 in a broken state.
 
 **State machine (`game.js`).** `SI.Game` drives `STATE.{MENU, PLAYING,
-PAUSED, WAVE_CLEAR, GAME_OVER}` via `setState`/`update`, and owns collision
-resolution, scoring, and wave progression. Difficulty is table-driven —
-`SI.CONFIG.WAVES` (in `core.js`) controls formation speed, fire rate, bullet
-speed, and max simultaneous shots per wave, capped at wave 10 so late waves
-stay hard without becoming unfair.
+PAUSED, WAVE_CLEAR, UPGRADE, GAME_OVER}` via `setState`/`update`, and owns
+collision resolution, scoring, and wave progression. Difficulty is
+table-driven — `SI.CONFIG.WAVES` (in `core.js`) controls formation speed, fire
+rate, bullet speed, and max simultaneous shots per wave, capped at wave 10 so
+late waves stay hard without becoming unfair.
+
+`STATE.UPGRADE` sits between `WAVE_CLEAR` and the next `PLAYING`: it is the
+cannon-refit screen, and `applyUpgrade()` — not `WAVE_CLEAR` — is what calls
+`startWave()`. Exactly one upgrade is active at a time and a new pick replaces
+the old one. Because fire and confirm share Space/Z/tap, the pick needs *two*
+gates before it will accept a confirm: the binding must be seen released after
+the screen opens (`upgradeArmed`), and `UPGRADE.MIN_DWELL` must have elapsed —
+without both, the key still held down from dismissing `WAVE_CLEAR` instantly
+locks in card 0. `PAUSED` remembers where it came from (`pausedFrom`) and
+restores the frozen `stateTimer`, because on the upgrade screen that timer *is*
+the `PICK_TIMEOUT` auto-select countdown.
+
+**Formations: grid anchor vs. offset (`entities.js`).** From
+`FORMATION.FROM_WAVE` up, the swarm periodically choreographs a wedge or a
+column dive. Every alien carries a grid anchor (`gx`/`gy`), a formation offset
+(`fx`/`fy`) and the effective position (`x`/`y`) that everything else draws,
+shoots and collides against; effective = anchor + offset × eased `k`. Only the
+anchor is moved by the classic march, and edge bounce, descent and the invasion
+floor are all decided from `gridBounds()`, never from the displaced positions —
+which is what makes it impossible for choreography to advance or delay an
+invasion. With no formation running, `k` is 0 and `x`/`y` are exactly `gx`/`gy`,
+so classic play is bit-identical (proven by `check-game.js`'s golden checksum).
+One commander per wave from `COMMANDER.FROM_WAVE` up choreographs the swarm:
+kill it and formations are cancelled and disabled for the rest of the wave.
 
 **Audio (`audio.js`).** One `AudioContext`, created lazily inside the first
 user-gesture handler (`SI.Input.onFirstGesture`, wired up in `main.js`) —

@@ -22,15 +22,46 @@
     this.dead = false;
     this.age = 0;
     this.prevY = y;
+    // Cannon-upgrade fields. All three are inert at their defaults, and a
+    // default bullet must stay byte-for-byte the bullet this game always
+    // had: vx === 0 means no horizontal integration and the original
+    // y-only swept box.
+    this.vx = 0;
+    this.prevX = x;
+    this.pierce = 0;
+    this.bounce = 0;
   }
 
   Bullet.prototype.update = function (dt, world) {
     this.prevY = this.y;
+    this.prevX = this.x;
     this.y += this.vy * dt;
+    this.x += this.vx * dt;
     this.age += dt;
     if (this.y < -40 || this.y > C.WORLD_H + 40) {
       this.dead = true;
       return;
+    }
+    if (this.vx !== 0) {
+      var lo = this.w / 2;
+      var hi = C.WORLD_W - this.w / 2;
+      if (this.x < lo || this.x > hi) {
+        if (this.bounce > 0) {
+          this.bounce--;
+          // Reflect within the same step so the shot never renders or
+          // collides from outside the world.
+          this.x = this.x < lo ? (lo + (lo - this.x)) : (hi - (this.x - hi));
+          this.x = SI.clamp(this.x, lo, hi);
+          this.vx = -this.vx;
+          if (world.particles) {
+            world.particles.emitSparks(this.x, this.y, this.color, 5, this.vx > 0 ? 1 : -1, 0, 0.9);
+          }
+        } else {
+          // Same semantics as leaving the world vertically.
+          this.dead = true;
+          return;
+        }
+      }
     }
     if (world.particles && Math.random() < 0.6) {
       world.particles.emitTrail(this.x, this.y + (this.vy > 0 ? -6 : 6), this.color, 9, 0.2);
@@ -38,11 +69,17 @@
   };
 
   // Swept box: covers the travel since the previous frame so fast
-  // bullets cannot tunnel through thin targets.
+  // bullets cannot tunnel through thin targets. Angled shots (vx !== 0)
+  // sweep horizontally too; straight shots keep the original expression.
   Bullet.prototype.box = function () {
     var top = Math.min(this.y, this.prevY) - this.h / 2;
     var bottom = Math.max(this.y, this.prevY) + this.h / 2;
-    return { x: this.x - this.w / 2, y: top, w: this.w, h: bottom - top };
+    if (this.vx === 0) {
+      return { x: this.x - this.w / 2, y: top, w: this.w, h: bottom - top };
+    }
+    var left = Math.min(this.x, this.prevX) - this.w / 2;
+    var right = Math.max(this.x, this.prevX) + this.w / 2;
+    return { x: left, y: top, w: right - left, h: bottom - top };
   };
 
   Bullet.prototype.draw = function (ctx) {
@@ -67,6 +104,9 @@
     this.tilt = 0;
     this.thrust = 0;
     this.pulse = 0;
+    // Alternates the launch side of a bouncing shot -- deterministic, so
+    // the upgrade adds no entropy to the RNG stream.
+    this.bounceSide = 1;
   }
 
   Player.prototype.reset = function (full) {
@@ -83,6 +123,48 @@
 
   Player.prototype.box = function () {
     return { x: this.x - this.w / 2 + 4, y: this.y - this.h / 2, w: this.w - 8, h: this.h };
+  };
+
+  // Spawns the volley for the currently active cannon upgrade. With no
+  // upgrade this is exactly the single straight shot the game always
+  // fired. One muzzle spark + one shoot() per volley stays the caller's
+  // job, so SPREAD is not three times as loud.
+  Player.prototype.fire = function (world) {
+    var U = C.UPGRADE;
+    var bx = this.x;
+    var by = this.y - this.h / 2 - 6;
+    var speed = C.BULLET.PLAYER_SPEED;
+    var up = world.upgrade || 'none';
+    var b, i, ang;
+
+    if (up === 'spread') {
+      var angles = [-U.SPREAD_ANGLE, 0, U.SPREAD_ANGLE];
+      for (i = 0; i < angles.length; i++) {
+        ang = angles[i];
+        b = new Bullet(bx, by, -speed * Math.cos(ang), 'player', C.COLORS.bullet);
+        b.vx = speed * Math.sin(ang);
+        world.spawnBullet(b);
+      }
+      return;
+    }
+
+    b = new Bullet(bx, by, -speed, 'player', C.COLORS.bullet);
+    if (up === 'pierce') {
+      b.pierce = U.PIERCE_COUNT;
+      b.color = C.COLORS.playerGlow;
+    } else if (up === 'bounce') {
+      b.bounce = U.BOUNCE_MAX;
+      b.vx = U.BOUNCE_VX * this.bounceSide;
+      // A bouncing shot climbs SLOWER than a normal one (BOUNCE_VY, not
+      // PLAYER_SPEED). At the standard 720 it leaves the top of the world in
+      // 0.93s and covers only ~520 units sideways, which is not enough to
+      // reach a wall from mid-screen -- the upgrade would be inert. See the
+      // arithmetic in CONFIG.UPGRADE.
+      b.vy = -U.BOUNCE_VY;
+      this.bounceSide = -this.bounceSide;
+      b.color = C.COLORS.warn;
+    }
+    world.spawnBullet(b);
   };
 
   Player.prototype.update = function (dt, world) {
@@ -127,13 +209,7 @@
     this.cooldown -= dt;
     if (world.wantFire && this.cooldown <= 0) {
       this.cooldown = C.PLAYER.FIRE_COOLDOWN;
-      world.spawnBullet(new Bullet(
-        this.x,
-        this.y - this.h / 2 - 6,
-        -C.BULLET.PLAYER_SPEED,
-        'player',
-        C.COLORS.bullet
-      ));
+      this.fire(world);
       if (world.particles) {
         world.particles.emitSparks(this.x, this.y - this.h / 2 - 6, C.COLORS.player, 6, 0, -1, 0.5);
       }
@@ -259,8 +335,18 @@
     this.color = color;
     this.score = score;
     this.alive = true;
+    // x/y are the EFFECTIVE position: everything that collides, draws or
+    // shoots reads these. gx/gy are the grid anchor moved by the classic
+    // march logic; fx/fy are the formation offset. Effective = anchor +
+    // offset * k, so with no formation running (k === 0) x === gx and
+    // y === gy exactly -- the classic game, bit for bit.
     this.x = 0;
     this.y = 0;
+    this.gx = 0;
+    this.gy = 0;
+    this.fx = 0;
+    this.fy = 0;
+    this.commander = false;
     this.w = C.SWARM.ALIEN_W;
     this.h = C.SWARM.ALIEN_H;
     this.hitFlash = 0;
@@ -283,6 +369,11 @@
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     SI.FX.drawGlow(ctx, SI.FX.glow(this.color), this.x, this.y + bob, this.w * 1.8, 0.4);
+    // The commander reads as a distinct unit through a wider second halo
+    // -- still an additive sprite blit, never per-alien shadowBlur.
+    if (this.commander) {
+      SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.commander), this.x, this.y + bob, this.w * 3.1, 0.5);
+    }
     ctx.restore();
 
     ctx.globalAlpha = 1;
@@ -302,6 +393,16 @@
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.fillRect(ox + cw * eye[1], oy + ch * eye[0], cw, ch);
     ctx.fillRect(ox + cw * eye[2], oy + ch * eye[0], cw, ch);
+
+    // Commander crown: three chevron pips above the body.
+    if (this.commander) {
+      ctx.fillStyle = '#fffbe0';
+      ctx.fillRect(ox + cw * 2, oy - ch * 1.4, cw * 1.2, ch * 1.1);
+      ctx.fillRect(ox + cw * 4.9, oy - ch * 2.1, cw * 1.2, ch * 1.8);
+      ctx.fillRect(ox + cw * 7.8, oy - ch * 1.4, cw * 1.2, ch * 1.1);
+      ctx.fillStyle = C.COLORS.commander;
+      ctx.fillRect(ox + cw * 1.6, oy - ch * 0.5, this.w * 0.72, ch * 0.6);
+    }
   };
 
   /* ------------------------------ Swarm ----------------------------- */
@@ -328,11 +429,35 @@
       var color = C.COLORS.alienRows[r % C.COLORS.alienRows.length];
       for (var c = 0; c < S.COLS; c++) {
         var a = new Alien(c, r, type, color, C.SCORE.ROW[r] || 10);
-        a.x = S.ORIGIN_X + c * S.CELL_W;
-        a.y = cfg.startY + r * S.CELL_H;
+        a.gx = S.ORIGIN_X + c * S.CELL_W;
+        a.gy = cfg.startY + r * S.CELL_H;
+        a.x = a.gx;
+        a.y = a.gy;
         this.aliens.push(a);
         this.total++;
       }
+    }
+
+    /* -------------------------- choreography ------------------------ */
+    // Below FORMATION.FROM_WAVE nothing here touches Math.random(), so an
+    // early wave draws exactly the same random stream as it always did.
+    var F = C.FORMATION;
+    this.formation = null;
+    this.formationsEnabled = wave >= F.FROM_WAVE;
+    this.formationTimer = Infinity;
+    this.formationCount = 0;
+    if (this.formationsEnabled) {
+      this.formationTimer = F.FIRST_DELAY + SI.rand(0, F.MAX_GAP - F.MIN_GAP);
+    }
+
+    this.commander = null;
+    if (wave >= C.COMMANDER.FROM_WAVE) {
+      // Row 0 occupies indices 0 .. COLS-1 of `aliens`.
+      var cmd = this.aliens[SI.randInt(0, S.COLS - 1)];
+      cmd.commander = true;
+      cmd.score += C.COMMANDER.SCORE_BONUS;
+      cmd.color = C.COLORS.commander;
+      this.commander = cmd;
     }
   }
 
@@ -352,6 +477,22 @@
       if (a.x - a.w / 2 < minX) { minX = a.x - a.w / 2; }
       if (a.x + a.w / 2 > maxX) { maxX = a.x + a.w / 2; }
       if (a.y + a.h / 2 > maxY) { maxY = a.y + a.h / 2; }
+    }
+    return { minX: minX, maxX: maxX, maxY: maxY };
+  };
+
+  // Bounds of the GRID ANCHORS, ignoring any formation offset. Edge
+  // bounce, descent and the invasion floor are all decided from these,
+  // which is what makes it impossible for choreography to advance or
+  // delay an invasion.
+  Swarm.prototype.gridBounds = function () {
+    var minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (var i = 0; i < this.aliens.length; i++) {
+      var a = this.aliens[i];
+      if (!a.alive) { continue; }
+      if (a.gx - a.w / 2 < minX) { minX = a.gx - a.w / 2; }
+      if (a.gx + a.w / 2 > maxX) { maxX = a.gx + a.w / 2; }
+      if (a.gy + a.h / 2 > maxY) { maxY = a.gy + a.h / 2; }
     }
     return { minX: minX, maxX: maxX, maxY: maxY };
   };
@@ -378,7 +519,7 @@
     this.bob = Math.sin(this.frameTimer * 6) * 1.2;
 
     var dx = this.dir * speed * dt;
-    var b = this.bounds();
+    var b = this.gridBounds();
     var margin = C.SWARM.MARGIN;
     var hitEdge = (this.dir > 0 && b.maxX + dx > C.WORLD_W - margin) ||
                   (this.dir < 0 && b.minX + dx < margin);
@@ -390,7 +531,7 @@
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
         if (a.alive) {
-          a.y += C.SWARM.DESCEND;
+          a.gy += C.SWARM.DESCEND;
         }
       }
       if (world.onDescend) {
@@ -400,7 +541,7 @@
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
         if (a.alive) {
-          a.x += dx;
+          a.gx += dx;
         }
       }
     }
@@ -409,6 +550,10 @@
       a = this.aliens[i];
       if (a.hitFlash > 0) { a.hitFlash -= dt; }
     }
+
+    // Writes the effective x/y for this tick. With no formation running
+    // it is a plain `x = gx; y = gy`.
+    this.updateFormation(dt, world);
 
     // Aliens shoot: timer + probability, from the lowest alien in a
     // random occupied column so nobody shoots through a friend.
@@ -433,8 +578,154 @@
       }
     }
 
-    if (this.bounds().maxY >= C.SWARM.FLOOR_Y && world.onInvasion) {
+    if (this.gridBounds().maxY >= C.SWARM.FLOOR_Y && world.onInvasion) {
       world.onInvasion();
+    }
+  };
+
+  /* --------------------------- formations --------------------------- */
+
+  // Drops every alien back onto its grid anchor immediately, with no
+  // easing, and forgets the formation in flight.
+  Swarm.prototype.snapToGrid = function () {
+    for (var i = 0; i < this.aliens.length; i++) {
+      var a = this.aliens[i];
+      a.fx = 0;
+      a.fy = 0;
+      a.x = a.gx;
+      a.y = a.gy;
+    }
+    this.formation = null;
+  };
+
+  Swarm.prototype.endFormation = function () {
+    this.snapToGrid();
+    this.formationTimer = SI.rand(C.FORMATION.MIN_GAP, C.FORMATION.MAX_GAP);
+  };
+
+  // `kind` may be 'wedge', 'dive', or null to alternate.
+  Swarm.prototype.startFormation = function (kind, world) {
+    var F = C.FORMATION;
+    var S = C.SWARM;
+    var i, a;
+
+    if (!kind) {
+      kind = (this.formationCount % 2 === 0) ? 'wedge' : 'dive';
+    }
+    for (i = 0; i < this.aliens.length; i++) {
+      this.aliens[i].fx = 0;
+      this.aliens[i].fy = 0;
+    }
+
+    var col = -1;
+    if (kind === 'dive') {
+      var cols = [];
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (a.alive && cols.indexOf(a.col) < 0) { cols.push(a.col); }
+      }
+      if (!cols.length) { return null; }
+      col = SI.pick(cols);
+      // Sampled ONCE, at dive start: the column commits to where the ship
+      // was, it does not track it.
+      var targetX = (world && typeof world.playerX === 'number') ?
+        world.playerX : C.WORLD_W / 2;
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (!a.alive || a.col !== col) { continue; }
+        a.fy = F.DIVE_DEPTH;
+        a.fx = targetX - a.gx;
+      }
+    } else {
+      // V-shape: apex at the centre column, pinched inwards.
+      var m = (S.COLS - 1) / 2;
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (!a.alive) { continue; }
+        var d = Math.abs(a.col - m);
+        a.fy = m > 0 ? F.WEDGE_DEPTH * (1 - d / m) : F.WEDGE_DEPTH;
+        a.fx = -(a.col - m) * F.WEDGE_PINCH;
+      }
+    }
+
+    this.formation = { kind: kind, phase: 0, t: 0, k: 0, col: col };
+    this.formationCount++;
+    return this.formation;
+  };
+
+  // Advances the ease-in -> hold -> ease-out phase clock, then writes the
+  // effective positions for this tick.
+  Swarm.prototype.updateFormation = function (dt, world) {
+    var F = C.FORMATION;
+    var f = this.formation;
+
+    if (f) {
+      f.t += dt;
+      if (f.phase === 0) {
+        if (f.t >= F.EASE_IN) {
+          f.phase = 1;
+          f.t = 0;
+          f.k = 1;
+        } else {
+          f.k = SI.smoothstep(f.t / F.EASE_IN);
+        }
+      } else if (f.phase === 1) {
+        f.k = 1;
+        if (f.t >= F.HOLD) {
+          f.phase = 2;
+          f.t = 0;
+        }
+      } else if (f.t >= F.EASE_OUT) {
+        this.endFormation();
+      } else {
+        f.k = 1 - SI.smoothstep(f.t / F.EASE_OUT);
+      }
+    } else if (this.formationsEnabled) {
+      this.formationTimer -= dt;
+      if (this.formationTimer <= 0) {
+        if (this.aliveCount() >= F.MIN_ALIVE) {
+          this.startFormation(null, world);
+        } else {
+          this.formationTimer = SI.rand(F.MIN_GAP, F.MAX_GAP);
+        }
+      }
+    }
+
+    this.applyFormation();
+  };
+
+  Swarm.prototype.applyFormation = function () {
+    var F = C.FORMATION;
+    var f = this.formation;
+    var i, a, ox, oy, ex, ey;
+
+    if (!f) {
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (!a.alive) { continue; }
+        a.x = a.gx;
+        a.y = a.gy;
+      }
+      return;
+    }
+
+    for (i = 0; i < this.aliens.length; i++) {
+      a = this.aliens[i];
+      if (!a.alive) { continue; }
+      ox = a.fx * f.k;
+      oy = a.fy * f.k;
+      ex = a.gx + ox;
+      ey = a.gy + oy;
+      if (ox !== 0) {
+        ex = SI.clamp(ex, F.EDGE_PAD, C.WORLD_W - F.EDGE_PAD);
+      }
+      if (oy > 0) {
+        // Never push an alien deeper than MAX_Y, and never pull one that
+        // is already deeper than that back UP (the grid owns descent).
+        ey = Math.max(a.gy, Math.min(ey, F.MAX_Y));
+      }
+      a.x = ex;
+      a.y = ey;
     }
   };
 
@@ -468,6 +759,24 @@
     }
     if (world.shake) {
       world.shake(5, 0.16);
+    }
+
+    // Commander down: the swarm loses its choreographer. Any formation in
+    // flight is cancelled INSTANTLY (not eased out) -- the snap is hidden
+    // behind the commander's own explosion -- and no further formation
+    // can start for the rest of this wave.
+    if (alien.commander) {
+      if (world && world.particles) {
+        world.particles.emitExplosion(alien.x, alien.y, C.COLORS.commander, 34, 1.4);
+        world.particles.emitSparks(alien.x, alien.y, '#fffbe0', 16, 0, 0, Math.PI);
+      }
+      if (world && world.shake) {
+        world.shake(14, 0.32);
+      }
+      this.commander = null;
+      this.formationsEnabled = false;
+      this.formationTimer = Infinity;
+      this.snapToGrid();
     }
   };
 

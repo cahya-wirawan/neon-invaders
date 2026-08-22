@@ -79,6 +79,60 @@
       { speed: 92, fire: 0.36, bulletSpeed: 430, startY: 200, maxAlienBullets: 8 }
     ],
 
+    // Evolving swarm choreography. A formation only ever writes the
+    // per-alien OFFSET (fx/fy); the grid anchor (gx/gy) keeps marching
+    // under the untouched classic rules, so a formation can neither
+    // advance nor delay the invasion floor.
+    FORMATION: {
+      FROM_WAVE: 2,     // wave 1 stays the plain classic swarm
+      FIRST_DELAY: 6,   // seconds before the first formation of a wave
+      MIN_GAP: 7,
+      MAX_GAP: 12,
+      EASE_IN: 1.1,
+      HOLD: 1.4,
+      EASE_OUT: 1.1,
+      MIN_ALIVE: 6,     // too few aliens left -> no formation, it looks silly
+      WEDGE_DEPTH: 78,  // how far the centre column dips in a wedge
+      WEDGE_PINCH: 9,   // horizontal squeeze per column away from centre
+      DIVE_DEPTH: 150,
+      EDGE_PAD: 46      // effective x is clamped into [PAD, WORLD_W - PAD]
+    },
+
+    // One commander per wave from FROM_WAVE up. Killing it cancels the
+    // formation in flight and grounds the swarm for the rest of the wave.
+    COMMANDER: {
+      FROM_WAVE: 3,
+      SCORE_BONUS: 150
+    },
+
+    // Between-wave cannon upgrade. Exactly one is active at a time: a new
+    // pick REPLACES the previous one, it never stacks.
+    UPGRADE: {
+      IDS: ['spread', 'pierce', 'bounce', 'shield'],
+      PICK_TIMEOUT: 12,   // auto-confirm so an idle session never hangs
+      // Two independent gates guard the pick (see game.js): the confirm
+      // binding must be RELEASED once after the screen opens, and this many
+      // seconds must pass. The release gate alone loses to a player mashing
+      // fire; the dwell alone loses to one who waits and then mashes. 1.0s is
+      // long enough to read four cards, short enough not to feel like a stall.
+      MIN_DWELL: 1,
+      SPREAD_ANGLE: 0.2,  // radians, applied as -a / 0 / +a
+      PIERCE_COUNT: 2,    // extra aliens a laser survives after the first
+      // Bounce tuning. A shot spawns at y = PLAYER.Y - PLAYER.H/2 - 6 = 629
+      // and dies at y < -40, so it lives 669 / BOUNCE_VY seconds; in that time
+      // it covers 669 * BOUNCE_VX / BOUNCE_VY world units horizontally. The
+      // widest gap any legal shot can face is from a ship at its movement
+      // limit (x = 38) fired at the FAR wall (x = 958) -- 920 units. With
+      // vy 360 / vx 560 the shot covers 669 * 560/360 = 1040 units, so it
+      // reaches a wall from every position on the field; from near an edge it
+      // covers the extra 956 for the second reflection too, which is why
+      // BOUNCE_MAX is 2 rather than a number nothing can reach.
+      BOUNCE_MAX: 2,      // wall reflections before the shot expires
+      BOUNCE_VX: 560,
+      BOUNCE_VY: 360,     // slower climb than BULLET.PLAYER_SPEED, on purpose
+      SHIELD_TIME: 6
+    },
+
     COLORS: {
       player: '#5ffbf1',
       playerGlow: '#1ce8ff',
@@ -89,9 +143,20 @@
       warn: '#ffd166',
       bunker: '#54ffa8',
       ufo: '#ffb0f7',
+      commander: '#ffe066',
       alienRows: ['#ff6ad5', '#c774f7', '#8a7bff', '#5ad2ff', '#63ffc9']
     }
   };
+
+  // Hard ceiling on a formation's effective y -- and y is an alien's CENTRE,
+  // so the half-height has to be part of the derivation. collide() starts
+  // grinding bunkers once an alien's BOTTOM edge (y + ALIEN_H / 2) reaches
+  // BUNKER.Y - 4, i.e. once its centre reaches
+  //   546 - 4 - 28/2 = 528.
+  // The extra 12 is margin, giving 516: choreography can reach neither the
+  // bunkers nor the invasion line at SWARM.FLOOR_Y (610).
+  CONFIG.FORMATION.MAX_Y =
+    CONFIG.BUNKER.Y - 4 - CONFIG.SWARM.ALIEN_H / 2 - 12;
 
   // Wave tuning lookup with a sane cap on difficulty.
   function waveConfig(wave) {
@@ -106,6 +171,12 @@
 
   function lerp(a, b, t) {
     return a + (b - a) * t;
+  }
+
+  // Hermite ease, 0..1 -> 0..1 with zero slope at both ends.
+  function smoothstep(t) {
+    var x = t < 0 ? 0 : (t > 1 ? 1 : t);
+    return x * x * (3 - 2 * x);
   }
 
   function rand(min, max) {
@@ -161,6 +232,7 @@
   SI.waveConfig = waveConfig;
   SI.clamp = clamp;
   SI.lerp = lerp;
+  SI.smoothstep = smoothstep;
   SI.rand = rand;
   SI.randInt = randInt;
   SI.pick = pick;
