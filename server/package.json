@@ -1,0 +1,22 @@
+{
+  "name": "neon-invaders-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Accounts + high-score backend for NEON INVADERS.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^13.0.3",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
