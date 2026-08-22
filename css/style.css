@@ -38,3 +38,44 @@ body {
   outline: none;
   cursor: crosshair;
 }
+
+#repo-link {
+  position: absolute;
+  z-index: 10;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid rgba(111, 217, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(4, 3, 11, 0.55);
+  backdrop-filter: blur(2px);
+  color: #9df3ff;
+  font: 700 12px "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  text-transform: uppercase;
+  opacity: 0.6;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity 0.15s ease, border-color 0.15s ease, text-shadow 0.15s ease;
+}
+
+#repo-link svg {
+  display: block;
+  fill: currentColor;
+}
+
+#repo-link:hover,
+#repo-link:focus-visible {
+  opacity: 1;
+  border-color: rgba(157, 243, 255, 0.8);
+  text-shadow: 0 0 8px rgba(157, 243, 255, 0.8);
+}
+
+#repo-link:focus-visible {
+  outline: 2px solid #9df3ff;
+  outline-offset: 2px;
+}
