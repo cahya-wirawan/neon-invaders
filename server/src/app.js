@@ -5,7 +5,9 @@
 const express = require('express');
 const { createStore } = require('./db');
 const { createAuth } = require('./auth');
-const { createAuthRoutes, createMeRoute } = require('./routes/auth');
+const { createAntiCheat } = require('./anticheat');
+const { createMeRoute } = require('./routes/me');
+const { createRunRoutes } = require('./routes/runs');
 const { createScoreRoutes } = require('./routes/scores');
 
 /* Origins the mobile + web builds actually load from:
@@ -138,6 +140,11 @@ function createApp(options) {
   const opts = options || {};
   const store = opts.store || createStore(opts.dbPath || ':memory:');
   const auth = opts.auth || createAuth(opts.authOptions);
+  // Plausibility bounds for score submission. Tests shrink these (tiny TTL,
+  // scale 0, low ceiling) via opts.antiCheat; operators tune them via env.
+  const antiCheat = opts.antiCheat && opts.antiCheat.minElapsedSecondsForWave
+    ? opts.antiCheat
+    : createAntiCheat(opts.antiCheat, opts.env);
 
   const app = express();
   app.disable('x-powered-by');
@@ -176,9 +183,13 @@ function createApp(options) {
     res.status(200).json({ ok: true, service: 'neon-invaders-server' });
   });
 
-  app.use('/api/auth', createAuthRoutes(store, auth, opts.rateLimit));
+  /* There is deliberately NO '/api/auth' mount any more. /api/auth/register
+   * and /api/auth/login are not special-cased, not stubbed and not redirected
+   * -- they simply fall through to the 404 handler below, like any other path
+   * this server does not serve. Firebase Auth owns sign-in now. */
   app.use('/api', createMeRoute(store, auth));
-  app.use('/api', createScoreRoutes(store, auth));
+  app.use('/api', createRunRoutes(store, auth, antiCheat, opts.rateLimit));
+  app.use('/api', createScoreRoutes(store, auth, antiCheat));
 
   app.use((req, res) => {
     res.status(404).json({ error: 'not_found', path: req.path });
@@ -201,6 +212,7 @@ function createApp(options) {
 
   app.locals.store = store;
   app.locals.auth = auth;
+  app.locals.antiCheat = antiCheat;
   return app;
 }
 

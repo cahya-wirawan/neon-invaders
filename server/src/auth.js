@@ -1,168 +1,129 @@
-/* auth.js -- password hashing, JWT issue/verify, bearer middleware,
- * input validation and the in-memory rate limiter.
+/* auth.js -- bearer middleware over Firebase ID tokens, plus the in-memory
+ * rate limiter.
  *
- * Passwords: bcryptjs (pure JS -- no node-gyp / native bcrypt install risk).
- * Sessions: stateless JWT bearer tokens, NOT cookies. The mobile builds load
- * from capacitor://localhost, https://localhost and null (file://) origins,
- * where SameSite cookie semantics are unusable.
+ * BREAKING CHANGE. This file used to hash passwords with bcryptjs and issue
+ * its own HS256 JWTs. All of that is GONE -- there is no password, no
+ * password_hash column, no JWT_SECRET, no /api/auth/register and no
+ * /api/auth/login. Identity now comes from Firebase Auth: the browser signs
+ * in against Google, and this server only ever VERIFIES the resulting ID
+ * token. See server/README.md for the migration decision and its cost.
+ *
+ * Sessions are still stateless bearer tokens, NOT cookies, for the same
+ * reason as before: the mobile builds load from capacitor://localhost,
+ * https://localhost and null (file://) origins, where SameSite cookie
+ * semantics are unusable.
  */
 'use strict';
 
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const { createVerifier } = require('./firebase');
 
-/* Dev-only fallback so `npm start` works with zero setup. It is deliberately
- * named to be obvious in a stack trace, log line or grep. It is NOT a secret
- * and must never be used off a developer laptop -- production startup is
- * refused when JWT_SECRET is unset (see resolveJwtSecret). */
-const INSECURE_DEV_ONLY_JWT_SECRET =
-  'neon-invaders-INSECURE-DEV-ONLY-FALLBACK-do-not-use-in-production';
-
+/* Kept from the old file, repurposed: this is no longer a validator for a
+ * user-supplied username (there is no signup form any more) but the charset
+ * a username DERIVED from a Firebase profile is sanitised down to. */
 const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
-const PASSWORD_MIN = 8;
-// bcrypt only reads the first 72 bytes; refuse longer rather than silently
-// truncating (bcryptjs 3.x throws on >72 bytes anyway).
-const PASSWORD_MAX = 72;
-
-function resolveJwtSecret(env) {
-  const e = env || process.env;
-  const secret = (e.JWT_SECRET || '').trim();
-  if (secret) {
-    return secret;
-  }
-  if (e.NODE_ENV === 'production') {
-    throw new Error(
-      'JWT_SECRET is not set and NODE_ENV=production. Refusing to start with ' +
-        'the insecure dev fallback. See server/.env.example.'
-    );
-  }
-  // eslint-disable-next-line no-console
-  console.warn(
-    '[neon-invaders] WARNING: JWT_SECRET is not set. Falling back to ' +
-      'INSECURE_DEV_ONLY_JWT_SECRET. Tokens are forgeable by anyone who has ' +
-      'read this source file. Set JWT_SECRET before exposing this server.'
-  );
-  return INSECURE_DEV_ONLY_JWT_SECRET;
-}
 
 function createAuth(options) {
   const opts = options || {};
-  const secret = opts.jwtSecret || resolveJwtSecret(opts.env);
-  const expiresIn = opts.expiresIn || process.env.JWT_EXPIRES_IN || '30d';
-  const rounds = Number(opts.rounds || process.env.BCRYPT_ROUNDS || 10);
+  const env = opts.env || process.env;
+  const projectId = String(
+    opts.projectId === undefined ? env.FIREBASE_PROJECT_ID || '' : opts.projectId || ''
+  ).trim();
 
-  const effectiveRounds = Number.isFinite(rounds) ? rounds : 10;
-
-  /* A real bcrypt hash of a value nobody can log in with, computed once per
-   * auth instance at the SAME work factor as real passwords. /login compares
-   * against it when the username does not exist, so "no such user" costs the
-   * same wall-clock time as "wrong password" and the endpoint is genuinely not
-   * a username oracle (SRV-05). */
-  const dummyPasswordHash = bcrypt.hashSync(
-    'dummy-password-for-timing',
-    effectiveRounds
-  );
-
-  function hashPassword(plain) {
-    return bcrypt.hash(plain, effectiveRounds);
-  }
-
-  function verifyPassword(plain, hash) {
-    // A malformed/empty stored hash must resolve false, never throw.
-    return bcrypt.compare(plain, hash).catch(() => false);
-  }
-
-  function issueToken(user) {
-    return jwt.sign({ username: user.username }, secret, {
-      subject: String(user.id),
-      expiresIn,
-      algorithm: 'HS256'
+  const verifier =
+    opts.verifier ||
+    createVerifier({
+      projectId,
+      emulatorHost: env.FIREBASE_AUTH_EMULATOR_HOST,
+      env
     });
-  }
 
-  function verifyToken(token) {
+  function verifyIdToken(token) {
+    // Always a rejected promise on failure, never a throw, so callers can use
+    // one code path.
     try {
-      return jwt.verify(token, secret, { algorithms: ['HS256'] });
+      return Promise.resolve(verifier.verifyIdToken(token));
     } catch (err) {
-      return null;
+      return Promise.reject(err);
     }
   }
 
-  /* Express middleware. Requires `Authorization: Bearer <jwt>` and a user row
-   * that still exists; sets req.user = { id, username }. */
+  function unauthorized(res, message) {
+    if (res.headersSent) {
+      return undefined;
+    }
+    return res.status(401).json({ error: 'unauthorized', message });
+  }
+
+  /* Express middleware. Requires `Authorization: Bearer <firebase id token>`.
+   *
+   * ASYNC, unlike the JWT version it replaces -- Firebase verification does
+   * I/O (admin/jwks modes). Express 4 does NOT await a promise returned from
+   * middleware, so an unhandled rejection here would hang the request and
+   * crash the process on Node's default unhandledRejection behaviour. The
+   * whole body is therefore inside one try/catch and this function can never
+   * reject. Every failure -- malformed header, bad token, verifier throwing,
+   * DNS failure while fetching Google's certs -- becomes 401, never 500. That
+   * does mean an outage at Google is reported to the player as "signed out"
+   * rather than "server problem"; see README.
+   */
   function requireAuth(store) {
-    return function (req, res, next) {
-      const header = req.get('authorization') || '';
-      const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-      if (!match) {
-        return res
-          .status(401)
-          .json({ error: 'unauthorized', message: 'Missing bearer token.' });
+    return async function requireFirebaseAuth(req, res, next) {
+      try {
+        const header = req.get('authorization') || '';
+        const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+        if (!match) {
+          return unauthorized(res, 'Missing bearer token.');
+        }
+
+        let claims;
+        try {
+          claims = await verifyIdToken(match[1].trim());
+        } catch (err) {
+          return unauthorized(res, 'Invalid or expired token.');
+        }
+        if (!claims || typeof claims.uid !== 'string' || !claims.uid) {
+          return unauthorized(res, 'Invalid or expired token.');
+        }
+
+        // First sight of a Firebase uid creates the local row; later sights
+        // reuse it. This is the only way a users row is ever created.
+        const user = store.upsertUserByFirebaseUid(claims.uid, claims.email, claims.name);
+        if (!user) {
+          return unauthorized(res, 'Account could not be resolved.');
+        }
+
+        req.user = {
+          id: user.id,
+          firebase_uid: user.firebase_uid,
+          username: user.username,
+          email: user.email === undefined ? null : user.email
+        };
+        return next();
+      } catch (err) {
+        // A store failure is genuinely ours, so let the 500 handler see it --
+        // but only for errors raised OUTSIDE token verification, which is
+        // already fully handled above.
+        return next(err);
       }
-      const payload = verifyToken(match[1].trim());
-      if (!payload || !payload.sub) {
-        return res
-          .status(401)
-          .json({ error: 'unauthorized', message: 'Invalid or expired token.' });
-      }
-      const user = store.findUserById(Number(payload.sub));
-      if (!user) {
-        return res
-          .status(401)
-          .json({ error: 'unauthorized', message: 'Account no longer exists.' });
-      }
-      req.user = { id: user.id, username: user.username };
-      return next();
     };
   }
 
   return {
-    dummyPasswordHash,
-    hashPassword,
-    verifyPassword,
-    issueToken,
-    verifyToken,
+    verifyIdToken,
     requireAuth,
-    usesInsecureFallbackSecret: secret === INSECURE_DEV_ONLY_JWT_SECRET
+    mode: verifier.mode,
+    projectId: verifier.projectId,
+    emulatorHost: verifier.emulatorHost
   };
-}
-
-/* ------------------------------ validation ------------------------------ */
-
-function validateCredentials(body) {
-  const b = body && typeof body === 'object' ? body : {};
-  const errors = [];
-
-  const username = typeof b.username === 'string' ? b.username.trim() : null;
-  if (username === null || !USERNAME_RE.test(username)) {
-    errors.push(
-      'username must be 3-20 characters of A-Z, a-z, 0-9, underscore or hyphen'
-    );
-  }
-
-  const password = typeof b.password === 'string' ? b.password : null;
-  if (password === null) {
-    errors.push('password must be a string');
-  } else if (
-    password.length < PASSWORD_MIN ||
-    password.length > PASSWORD_MAX ||
-    Buffer.byteLength(password, 'utf8') > PASSWORD_MAX
-  ) {
-    errors.push(
-      `password must be ${PASSWORD_MIN}-${PASSWORD_MAX} characters (and at ` +
-        `most ${PASSWORD_MAX} bytes)`
-    );
-  }
-
-  return { ok: errors.length === 0, errors, username, password };
 }
 
 /* --------------------------- rate limiting ------------------------------ */
 
 /* Deliberately in-memory: single-process, resets on restart, not a defence
- * against a distributed attacker. It exists to blunt trivial credential
- * stuffing / signup floods. A real deployment should put a proper limiter
- * (nginx, Cloudflare, redis-backed) in front. */
+ * against a distributed attacker. It exists to blunt trivial floods. A real
+ * deployment should put a proper limiter (nginx, Cloudflare, redis-backed) in
+ * front. Each call site builds its OWN instance, so buckets never share
+ * counters -- run-start issuance and score submission are limited separately. */
 function createRateLimiter(options) {
   const opts = options || {};
   const windowMs = Number(opts.windowMs) > 0 ? Number(opts.windowMs) : 900000;
@@ -206,10 +167,5 @@ function createRateLimiter(options) {
 module.exports = {
   createAuth,
   createRateLimiter,
-  validateCredentials,
-  resolveJwtSecret,
-  INSECURE_DEV_ONLY_JWT_SECRET,
-  USERNAME_RE,
-  PASSWORD_MIN,
-  PASSWORD_MAX
+  USERNAME_RE
 };

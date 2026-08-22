@@ -14,9 +14,10 @@
     "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
-    "bcryptjs": "^3.0.2",
     "better-sqlite3": "^13.0.3",
-    "express": "^4.21.2",
-    "jsonwebtoken": "^9.0.2"
+    "express": "^4.21.2"
+  },
+  "optionalDependencies": {
+    "firebase-admin": "^14.3.0"
   }
 }

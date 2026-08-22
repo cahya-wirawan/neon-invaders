@@ -26,24 +26,53 @@ function main() {
   const port = Number(process.env.PORT) || 3000;
   const dbPath = process.env.DB_PATH || path.resolve(__dirname, '..', 'data', 'neon-invaders.db');
 
+  /* Replaces the old "refuse to start in production without JWT_SECRET"
+   * check. This server no longer issues tokens, so there is no secret to
+   * protect -- but without a project id it cannot check a token's audience,
+   * and a verifier that accepts any audience accepts tokens minted by ANY
+   * Firebase project. That is the production-fatal misconfiguration now. */
+  const projectId = String(process.env.FIREBASE_PROJECT_ID || '').trim();
+  if (!projectId && process.env.NODE_ENV === 'production') {
+    console.error(
+      '[neon-invaders] startup refused: FIREBASE_PROJECT_ID is not set and ' +
+        'NODE_ENV=production. Without it no ID token can be checked against an ' +
+        'audience, so tokens from any Firebase project would be accepted. ' +
+        'See server/.env.example.'
+    );
+    process.exit(1);
+    return;
+  }
+  if (!projectId) {
+    console.warn(
+      '[neon-invaders] WARNING: FIREBASE_PROJECT_ID is not set. Every ' +
+        'authenticated request will be rejected with 401 until it is.'
+    );
+  }
+
   let auth;
+  let store;
   try {
-    // Throws when NODE_ENV=production and JWT_SECRET is unset.
     auth = createAuth();
+    // Throws IncompatibleDatabaseError on a legacy bcrypt-era database file.
+    store = createStore(dbPath);
   } catch (err) {
     console.error('[neon-invaders] startup refused:', err.message);
     process.exit(1);
     return;
   }
 
-  const store = createStore(dbPath);
   const app = createApp({ store, auth });
 
   const server = app.listen(port, () => {
     console.log(`[neon-invaders] listening on http://localhost:${port}`);
     console.log(`[neon-invaders] database: ${dbPath}`);
-    if (auth.usesInsecureFallbackSecret) {
-      console.log('[neon-invaders] JWT secret: INSECURE DEV FALLBACK (set JWT_SECRET)');
+    console.log(`[neon-invaders] firebase project: ${projectId || '(unset)'}`);
+    console.log(`[neon-invaders] token verification mode: ${auth.mode}`);
+    if (auth.mode === 'emulator' || process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+      console.log(
+        `[neon-invaders] FIREBASE_AUTH_EMULATOR_HOST=${process.env.FIREBASE_AUTH_EMULATOR_HOST} ` +
+          '-- emulator ID tokens are UNSIGNED. Never set this in production.'
+      );
     }
   });
 

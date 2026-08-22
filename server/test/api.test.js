@@ -3,6 +3,11 @@
  * no vitest, no supertest.
  *
  *   node --test test/
+ *
+ * Identity comes from locally-minted RS256 tokens verified through the real
+ * `jwks` code path (see test/helpers/tokens.js) -- no network, no Firebase
+ * project, no credentials. There is no register/login to test any more:
+ * those endpoints were deleted and must 404.
  */
 'use strict';
 
@@ -15,24 +20,76 @@ const path = require('node:path');
 const { createApp, coerceTrustProxy } = require('../src/app');
 const { createStore } = require('../src/db');
 const { createAuth } = require('../src/auth');
+const { createVerifier } = require('../src/firebase');
+const { createAntiCheat, SECONDS_PER_WAVE_FLOOR } = require('../src/anticheat');
+const { makeKeypair, claimsFor, signRs256 } = require('./helpers/tokens');
 
-const TEST_SECRET = 'test-only-secret-not-used-anywhere-else';
+const PROJECT = 'demo-neon-invaders';
+const KEYS = makeKeypair();
 
 let tmpDir;
 let store;
 let server;
 let base;
 
+function tokenFor(uid, overrides) {
+  return signRs256(KEYS, claimsFor(PROJECT, Object.assign({ sub: uid }, overrides || {})));
+}
+
+function buildAuth() {
+  return createAuth({
+    projectId: PROJECT,
+    verifier: createVerifier({
+      projectId: PROJECT,
+      adminLoader: () => null, // force the offline fallback path
+      staticKeys: KEYS.staticKeys,
+      env: {}
+    })
+  });
+}
+
+/* Spins up an isolated app (own DB, own limiters, own bounds) for tests that
+ * need non-default anti-cheat settings. */
+async function isolatedApp(antiCheatOptions, rateLimit) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neon-iso-'));
+  const isoStore = createStore(path.join(dir, 'iso.db'));
+  const app = createApp({
+    store: isoStore,
+    auth: buildAuth(),
+    antiCheat: Object.assign({ ttlMs: 60000 }, antiCheatOptions || {}),
+    rateLimit: rateLimit || {}
+  });
+  const srv = app.listen(0);
+  await new Promise((r) => srv.once('listening', r));
+  const url = `http://127.0.0.1:${srv.address().port}`;
+  return {
+    url,
+    store: isoStore,
+    async close() {
+      await new Promise((r) => srv.close(r));
+      try {
+        isoStore.close();
+      } catch (err) {
+        /* ignore */
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+}
+
 test.before(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neon-invaders-test-'));
   store = createStore(path.join(tmpDir, 'test.db'));
-  const auth = createAuth({ jwtSecret: TEST_SECRET, rounds: 4 });
   const app = createApp({
     store,
-    auth,
-    // Generous enough that the happy-path tests never trip it; the 429 test
-    // uses its own app with max:2.
-    rateLimit: { registerMax: 500, loginMax: 500 }
+    auth: buildAuth(),
+    /* No bounds in the shared app: its tests submit within milliseconds of
+     * run-start, which the DEFAULT rate ceiling correctly rejects (200/s x a
+     * 5s grace = 1000 points max at elapsed 0). That is the bound working, not
+     * a bug -- a real run is minutes old by the time it is submitted. The two
+     * bounds get their own dedicated apps, with their own settings, below. */
+    antiCheat: { ttlMs: 60000, minSecondsPerWaveScale: 0, maxScorePerSecond: 1000000 },
+    rateLimit: { runStartMax: 5000 }
   });
   server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
@@ -51,7 +108,7 @@ test.after(async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-async function call(method, url, body, token) {
+async function callAt(root, method, url, body, token) {
   const headers = {};
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -59,7 +116,7 @@ async function call(method, url, body, token) {
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
-  const res = await fetch(base + url, {
+  const res = await fetch(root + url, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body)
@@ -73,6 +130,18 @@ async function call(method, url, body, token) {
   return { status: res.status, body: json, headers: res.headers };
 }
 
+function call(method, url, body, token) {
+  return callAt(base, method, url, body, token);
+}
+
+async function startRun(root, token) {
+  const res = await callAt(root, 'POST', '/api/runs/start', undefined, token);
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  return res.body;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /* ------------------------------- health -------------------------------- */
 
 test('GET /api/health returns 200 {ok:true}', async () => {
@@ -81,462 +150,676 @@ test('GET /api/health returns 200 {ok:true}', async () => {
   assert.equal(res.body.ok, true);
 });
 
-/* ------------------------------ register ------------------------------- */
+/* ----------------------- old auth is really gone ------------------------ */
 
-test('register creates a user and returns a token', async () => {
-  const res = await call('POST', '/api/auth/register', {
-    username: 'alice',
-    password: 'correct-horse-1'
-  });
-  assert.equal(res.status, 201);
-  assert.equal(typeof res.body.token, 'string');
-  assert.equal(res.body.user.username, 'alice');
-  assert.equal(typeof res.body.user.id, 'number');
-});
-
-test('register stores a bcrypt hash, never the plaintext', () => {
-  const row = store.findUserByUsername('alice');
-  assert.ok(row, 'user row exists');
-  assert.match(row.password_hash, /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/);
-  assert.notEqual(row.password_hash, 'correct-horse-1');
-  assert.ok(!row.password_hash.includes('correct-horse-1'));
-});
-
-test('duplicate register is 409, case-insensitively', async () => {
-  const same = await call('POST', '/api/auth/register', {
-    username: 'alice',
-    password: 'another-password'
-  });
-  assert.equal(same.status, 409);
-
-  const cased = await call('POST', '/api/auth/register', {
-    username: 'ALICE',
-    password: 'another-password'
-  });
-  assert.equal(cased.status, 409);
-});
-
-test('register rejects bad usernames and short passwords with 400', async () => {
-  const cases = [
-    { username: 'ab', password: 'longenough1' },
-    { username: 'has space', password: 'longenough1' },
-    { username: 'a'.repeat(21), password: 'longenough1' },
-    { username: 'bad!chars', password: 'longenough1' },
-    { username: 'validname', password: 'short' },
-    { username: 'validname', password: 'x'.repeat(73) },
-    { username: 'validname' },
-    {}
-  ];
-  for (const body of cases) {
-    const res = await call('POST', '/api/auth/register', body);
-    assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(body)}`);
-    assert.equal(res.body.error, 'validation_error');
-  }
-});
-
-/* -------------------------------- login -------------------------------- */
-
-test('login with the right password returns 200 + token', async () => {
-  const res = await call('POST', '/api/auth/login', {
-    username: 'alice',
-    password: 'correct-horse-1'
-  });
-  assert.equal(res.status, 200);
-  assert.equal(typeof res.body.token, 'string');
-  assert.equal(res.body.user.username, 'alice');
-});
-
-test('login with the wrong password is 401', async () => {
-  const res = await call('POST', '/api/auth/login', {
-    username: 'alice',
-    password: 'wrong-password-x'
-  });
-  assert.equal(res.status, 401);
-  assert.equal(res.body.error, 'invalid_credentials');
-});
-
-test('login for an unknown user is 401 with the same body (no oracle)', async () => {
-  const unknown = await call('POST', '/api/auth/login', {
-    username: 'nobody-here',
-    password: 'wrong-password-x'
-  });
-  assert.equal(unknown.status, 401);
-  assert.equal(unknown.body.error, 'invalid_credentials');
-});
-
-test('login runs a bcrypt compare even for an unknown user (SRV-05)', async () => {
-  /* Deterministic rather than a wall-clock measurement: the timing oracle
-   * existed because the "no such user" branch skipped verifyPassword entirely,
-   * so counting the compares proves the fix without a flaky timer. */
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neon-invaders-timing-'));
-  const timingStore = createStore(path.join(dir, 'timing.db'));
-  const realAuth = createAuth({ jwtSecret: TEST_SECRET, rounds: 4 });
-  const compares = [];
-  const spyAuth = Object.assign({}, realAuth, {
-    verifyPassword(plain, hash) {
-      compares.push(hash);
-      return realAuth.verifyPassword(plain, hash);
-    }
-  });
-  const app = createApp({ store: timingStore, auth: spyAuth });
-  const srv = app.listen(0);
-  await new Promise((r) => srv.once('listening', r));
-  const url = `http://127.0.0.1:${srv.address().port}/api/auth`;
-
-  const post = (path_, body) =>
-    fetch(url + path_, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-  await post('/register', { username: 'realuser', password: 'realpassword1' });
-  compares.length = 0;
-
-  const known = await post('/login', { username: 'realuser', password: 'wrongpassword1' });
-  const unknown = await post('/login', { username: 'nosuchuser', password: 'wrongpassword1' });
-
-  await new Promise((r) => srv.close(r));
-  timingStore.close();
-  fs.rmSync(dir, { recursive: true, force: true });
-
-  assert.equal(known.status, 401);
-  assert.equal(unknown.status, 401);
-  assert.equal(compares.length, 2, 'both logins must run exactly one compare');
-  // The unknown-user compare uses a real bcrypt hash at the same work factor.
-  assert.match(compares[1], /^\$2[aby]\$04\$[./A-Za-z0-9]{53}$/);
-  assert.equal(compares[1], realAuth.dummyPasswordHash);
-  assert.notEqual(compares[0], compares[1]);
-});
-
-/* --------------------------------- me ---------------------------------- */
-
-test('GET /api/me without a token is 401', async () => {
-  const res = await call('GET', '/api/me');
-  assert.equal(res.status, 401);
-});
-
-test('GET /api/me with a garbage token is 401', async () => {
-  const res = await call('GET', '/api/me', undefined, 'not.a.jwt');
-  assert.equal(res.status, 401);
-});
-
-test('a token signed with a different secret is rejected', async () => {
-  const otherAuth = createAuth({ jwtSecret: 'a-completely-different-secret' });
-  const forged = otherAuth.issueToken({ id: 1, username: 'alice' });
-  const res = await call('GET', '/api/me', undefined, forged);
-  assert.equal(res.status, 401);
-});
-
-/* -------------------------------- scores ------------------------------- */
-
-test('POST /api/scores without a token is 401', async () => {
-  const res = await call('POST', '/api/scores', { score: 100, wave: 1 });
-  assert.equal(res.status, 401);
-});
-
-test('POST /api/scores with a token is 201 and updates personal best', async () => {
-  const login = await call('POST', '/api/auth/login', {
-    username: 'alice',
-    password: 'correct-horse-1'
-  });
-  const token = login.body.token;
-
-  const first = await call('POST', '/api/scores', { score: 1200, wave: 3 }, token);
-  assert.equal(first.status, 201);
-  assert.equal(first.body.accepted, true);
-  assert.equal(first.body.score, 1200);
-  assert.equal(first.body.personalBest.score, 1200);
-
-  // A lower later score must not lower the personal best.
-  const second = await call('POST', '/api/scores', { score: 300, wave: 1 }, token);
-  assert.equal(second.status, 201);
-  assert.equal(second.body.personalBest.score, 1200);
-
-  const me = await call('GET', '/api/scores/me', undefined, token);
-  assert.equal(me.status, 200);
-  assert.equal(me.body.score, 1200);
-
-  // Direct DB read agrees with the API.
-  const dbBest = store.db
-    .prepare('SELECT MAX(score) AS m FROM scores WHERE user_id = ?')
-    .get(login.body.user.id);
-  assert.equal(dbBest.m, 1200);
-});
-
-test('POST /api/scores rejects non-integer / out-of-range scores', async () => {
-  const login = await call('POST', '/api/auth/login', {
-    username: 'alice',
-    password: 'correct-horse-1'
-  });
-  const token = login.body.token;
-
-  const bad = [
-    { score: 'abc', wave: 1 },
-    { score: 12.5, wave: 1 },
-    { score: -1, wave: 1 },
-    { score: 10000000, wave: 1 },
-    { score: null, wave: 1 },
-    { score: 100, wave: 0 },
-    { score: 100, wave: 1.5 },
-    { score: 100, wave: 100000 },
-    {}
-  ];
-  for (const body of bad) {
-    const res = await call('POST', '/api/scores', body, token);
-    assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(body)}`);
-  }
-});
-
-test('GET /api/scores/me is {score:null} for a user with no runs', async () => {
-  const reg = await call('POST', '/api/auth/register', {
-    username: 'freshuser',
-    password: 'freshpassword1'
-  });
-  const res = await call('GET', '/api/scores/me', undefined, reg.body.token);
-  assert.equal(res.status, 200);
-  assert.equal(res.body.score, null);
-});
-
-/* ----------------------------- leaderboard ----------------------------- */
-
-test('leaderboard is one row per user, sorted score DESC, limit-clamped', async () => {
-  const players = [
-    ['bravo', 5000],
-    ['charlie', 9000],
-    ['delta', 2000]
-  ];
-  for (const [name, score] of players) {
-    const reg = await call('POST', '/api/auth/register', {
-      username: name,
-      password: `${name}-password-1`
-    });
-    assert.equal(reg.status, 201);
-    // Two runs each -- only the best may appear.
-    await call('POST', '/api/scores', { score: 10, wave: 1 }, reg.body.token);
-    await call('POST', '/api/scores', { score, wave: 2 }, reg.body.token);
-  }
-
-  const lb = await call('GET', '/api/leaderboard?limit=100');
-  assert.equal(lb.status, 200);
-  const entries = lb.body.entries;
-
-  // Sorted descending.
-  for (let i = 1; i < entries.length; i++) {
-    assert.ok(entries[i - 1].score >= entries[i].score, 'sorted desc');
-  }
-  // Ranks are 1..n.
-  entries.forEach((e, i) => assert.equal(e.rank, i + 1));
-  // One row per user.
-  const names = entries.map((e) => e.username);
-  assert.equal(new Set(names).size, names.length, 'no duplicate usernames');
-  // Top entry is charlie/9000.
-  assert.equal(entries[0].username, 'charlie');
-  assert.equal(entries[0].score, 9000);
-
-  // Matches a direct DB aggregate.
-  const dbTop = store.db
-    .prepare(
-      'SELECT u.username AS username, MAX(s.score) AS score FROM scores s ' +
-        'JOIN users u ON u.id = s.user_id GROUP BY s.user_id ' +
-        'ORDER BY score DESC LIMIT 1'
-    )
-    .get();
-  assert.equal(dbTop.username, entries[0].username);
-  assert.equal(dbTop.score, entries[0].score);
-
-  const capped = await call('GET', '/api/leaderboard?limit=2');
-  assert.equal(capped.body.entries.length, 2);
-  assert.equal(capped.body.entries[0].username, 'charlie');
-});
-
-test('leaderboard limit clamps to 1..100 and defaults to 10', async () => {
-  assert.equal((await call('GET', '/api/leaderboard')).body.limit, 10);
-  assert.equal((await call('GET', '/api/leaderboard?limit=0')).body.limit, 1);
-  assert.equal((await call('GET', '/api/leaderboard?limit=-5')).body.limit, 1);
-  assert.equal((await call('GET', '/api/leaderboard?limit=9999')).body.limit, 100);
-});
-
-test('leaderboard rejects a non-numeric limit with 400', async () => {
-  const res = await call('GET', '/api/leaderboard?limit=abc');
-  assert.equal(res.status, 400);
-  const partial = await call('GET', '/api/leaderboard?limit=12abc');
-  assert.equal(partial.status, 400);
-});
-
-test('leaderboard is public (no token needed)', async () => {
-  const res = await fetch(`${base}/api/leaderboard`);
-  assert.equal(res.status, 200);
-});
-
-/* --------------------------------- CORS -------------------------------- */
-
-test('CORS allows the capacitor / localhost / null origins', async () => {
-  for (const origin of ['capacitor://localhost', 'https://localhost', 'null']) {
-    const res = await fetch(`${base}/api/health`, { headers: { Origin: origin } });
-    assert.equal(res.headers.get('access-control-allow-origin'), origin, origin);
-  }
-});
-
-test('CORS does not echo an unlisted origin', async () => {
-  const res = await fetch(`${base}/api/health`, {
-    headers: { Origin: 'https://evil.example.com' }
-  });
-  assert.equal(res.headers.get('access-control-allow-origin'), null);
-});
-
-test('OPTIONS preflight returns 204', async () => {
-  const res = await fetch(`${base}/api/scores`, {
-    method: 'OPTIONS',
-    headers: {
-      Origin: 'capacitor://localhost',
-      'Access-Control-Request-Method': 'POST'
-    }
-  });
-  assert.equal(res.status, 204);
-});
-
-/* ------------------------------ robustness ----------------------------- */
-
-test('malformed JSON body is 400, not 500', async () => {
-  const res = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{not json'
-  });
-  assert.equal(res.status, 400);
-});
-
-test('an oversized body is 413, not 500 (SRV-01)', async () => {
-  // express.json({ limit: '16kb' }) -- 32KB of padding is comfortably over.
-  const body = JSON.stringify({
-    username: 'alice',
-    password: 'correct-horse-1',
-    padding: 'x'.repeat(32 * 1024)
-  });
-  const res = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body
-  });
-  assert.equal(res.status, 413);
-  const json = await res.json();
-  assert.equal(json.error, 'payload_too_large');
-});
-
-test('an unsupported charset is 415, not 500 (SRV-01)', async () => {
-  const res = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json; charset=utf-32' },
-    body: '{"username":"alice","password":"correct-horse-1"}'
-  });
-  assert.equal(res.status, 415);
-  const json = await res.json();
-  assert.equal(json.error, 'unsupported_charset');
-});
-
-test('unknown route is 404 JSON', async () => {
-  const res = await call('GET', '/api/does-not-exist');
+test('POST /api/auth/register is a plain 404 (endpoint deleted)', async () => {
+  const res = await call('POST', '/api/auth/register', { username: 'x', password: 'yyyyyyyy' });
   assert.equal(res.status, 404);
   assert.equal(res.body.error, 'not_found');
 });
 
-/* ----------------------------- rate limiting --------------------------- */
-
-test('register rate limit returns 429 past the cap', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neon-invaders-rl-'));
-  const rlStore = createStore(path.join(dir, 'rl.db'));
-  const app = createApp({
-    store: rlStore,
-    auth: createAuth({ jwtSecret: TEST_SECRET, rounds: 4 }),
-    rateLimit: { registerMax: 2, registerWindowMs: 60000 }
-  });
-  const srv = app.listen(0);
-  await new Promise((r) => srv.once('listening', r));
-  const url = `http://127.0.0.1:${srv.address().port}/api/auth/register`;
-
-  const statuses = [];
-  for (let i = 0; i < 4; i++) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: `rl${i}`, password: 'password-123' })
-    });
-    statuses.push(res.status);
-  }
-
-  await new Promise((r) => srv.close(r));
-  rlStore.close();
-  fs.rmSync(dir, { recursive: true, force: true });
-
-  assert.deepEqual(statuses.slice(0, 2), [201, 201]);
-  assert.equal(statuses[2], 429);
-  assert.equal(statuses[3], 429);
+test('POST /api/auth/login is a plain 404 (endpoint deleted)', async () => {
+  const res = await call('POST', '/api/auth/login', { username: 'x', password: 'yyyyyyyy' });
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error, 'not_found');
 });
 
-/* ------------------------------ trust proxy ---------------------------- */
+test('GET /api/auth/anything is a plain 404', async () => {
+  const res = await call('GET', '/api/auth/whatever');
+  assert.equal(res.status, 404);
+});
 
-test('coerceTrustProxy turns env strings into what Express expects (SRV-02)', () => {
+/* --------------------------- firebase identity -------------------------- */
+
+test('a valid Firebase ID token populates req.user and creates a users row', async () => {
+  const res = await call('GET', '/api/me', undefined, tokenFor('uid-alice', {
+    email: 'alice@example.com',
+    name: 'Alice'
+  }));
+  assert.equal(res.status, 200);
+  assert.equal(res.body.user.username, 'Alice');
+  assert.equal(res.body.user.firebase_uid, 'uid-alice');
+  assert.equal(res.body.user.email, 'alice@example.com');
+  assert.ok(Number.isInteger(res.body.user.id));
+
+  const row = store.db
+    .prepare('SELECT id, firebase_uid, username, email FROM users WHERE firebase_uid = ?')
+    .get('uid-alice');
+  assert.ok(row, 'users row exists keyed on firebase_uid');
+  assert.equal(row.username, 'Alice');
+  assert.equal(row.id, res.body.user.id);
+});
+
+test('the same uid maps to the same row on a second request', async () => {
+  const a = await call('GET', '/api/me', undefined, tokenFor('uid-stable', { name: 'Stable' }));
+  const b = await call('GET', '/api/me', undefined, tokenFor('uid-stable', { name: 'Stable' }));
+  assert.equal(a.body.user.id, b.body.user.id);
+  assert.equal(
+    store.db.prepare('SELECT COUNT(*) AS n FROM users WHERE firebase_uid = ?').get('uid-stable').n,
+    1
+  );
+});
+
+for (const [label, token] of [
+  ['no header', undefined],
+  ['garbage', 'not-a-token'],
+  ['empty-ish', '..'],
+  ['three empty segments', 'e30.e30.e30']
+]) {
+  test(`GET /api/me with ${label} -> 401`, async () => {
+    const res = await call('GET', '/api/me', undefined, token);
+    assert.equal(res.status, 401);
+    assert.equal(res.body.error, 'unauthorized');
+  });
+}
+
+test('an expired token -> 401', async () => {
+  const res = await call('GET', '/api/me', undefined,
+    tokenFor('uid-exp', { exp: Math.floor(Date.now() / 1000) - 60 }));
+  assert.equal(res.status, 401);
+});
+
+test('a wrong-audience token -> 401', async () => {
+  const res = await call('GET', '/api/me', undefined,
+    tokenFor('uid-aud', { aud: 'someone-elses-project' }));
+  assert.equal(res.status, 401);
+});
+
+test('a token signed by a different key -> 401', async () => {
+  const other = makeKeypair();
+  const forged = signRs256(
+    { privateKey: other.privateKey, kid: KEYS.kid },
+    claimsFor(PROJECT, { sub: 'uid-forged' })
+  );
+  const res = await call('GET', '/api/me', undefined, forged);
+  assert.equal(res.status, 401);
+  assert.equal(
+    store.db.prepare('SELECT COUNT(*) AS n FROM users WHERE firebase_uid = ?').get('uid-forged').n,
+    0,
+    'a rejected token must not create a user'
+  );
+});
+
+/* ------------------------- POST /api/runs/start ------------------------- */
+
+test('POST /api/runs/start without auth -> 401', async () => {
+  const res = await call('POST', '/api/runs/start');
+  assert.equal(res.status, 401);
+  assert.equal(res.body.error, 'unauthorized');
+});
+
+test('POST /api/runs/start with auth -> 201 with a token and server timestamps', async () => {
+  const before = Date.now();
+  const res = await call('POST', '/api/runs/start', undefined, tokenFor('uid-runner', { name: 'Runner' }));
+  const after = Date.now();
+  assert.equal(res.status, 201);
+  assert.equal(typeof res.body.runToken, 'string');
+  assert.ok(res.body.runToken.length >= 32, `token is ${res.body.runToken.length} chars`);
+  assert.match(res.body.runToken, /^[A-Za-z0-9_-]+$/, 'base64url');
+  assert.ok(res.body.startedMs >= before && res.body.startedMs <= after, 'server-timestamped');
+  assert.ok(res.body.expiresMs > res.body.startedMs);
+  assert.equal(typeof res.body.startedAt, 'string');
+
+  const row = store.db.prepare('SELECT * FROM runs WHERE run_token = ?').get(res.body.runToken);
+  assert.ok(row, 'runs row was written');
+  assert.equal(row.consumed_at, null);
+  assert.equal(row.started_ms, res.body.startedMs);
+});
+
+test('run-start is deduped: an open run is returned again, not reminted', async () => {
+  const token = tokenFor('uid-dedupe', { name: 'Dedupe' });
+  const first = await startRun(base, token);
+  const second = await startRun(base, token);
+  assert.equal(second.runToken, first.runToken);
+  assert.equal(second.reused, true);
+  assert.equal(second.startedMs, first.startedMs, 'the clock is NOT restarted');
+  const n = store.db
+    .prepare("SELECT COUNT(*) AS n FROM runs WHERE run_token = ?")
+    .get(first.runToken).n;
+  assert.equal(n, 1);
+});
+
+test('after consuming a run, run-start mints a fresh one', async () => {
+  const token = tokenFor('uid-fresh', { name: 'Fresh' });
+  const first = await startRun(base, token);
+  await call('POST', '/api/scores', { score: 10, wave: 1, runToken: first.runToken }, token);
+  const second = await startRun(base, token);
+  assert.notEqual(second.runToken, first.runToken);
+  assert.equal(second.reused, false);
+});
+
+/* --------------------------- score submission --------------------------- */
+
+test('a score referencing a valid run is accepted and stored with its run_id', async () => {
+  const token = tokenFor('uid-scorer', { name: 'Scorer' });
+  const run = await startRun(base, token);
+  const res = await call('POST', '/api/scores', { score: 1234, wave: 3, runToken: run.runToken }, token);
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.equal(res.body.accepted, true);
+  assert.equal(res.body.personalBest.score, 1234);
+
+  const row = store.db
+    .prepare(
+      'SELECT s.score, s.wave, s.run_id, r.run_token FROM scores s ' +
+        'JOIN runs r ON r.id = s.run_id WHERE r.run_token = ?'
+    )
+    .get(run.runToken);
+  assert.ok(row, 'the score row links back to the run row');
+  assert.equal(row.score, 1234);
+  assert.equal(row.wave, 3);
+});
+
+test('submitting without auth -> 401 and no row', async () => {
+  const res = await call('POST', '/api/scores', { score: 1, wave: 1, runToken: 'whatever' });
+  assert.equal(res.status, 401);
+});
+
+test('submitting with NO runToken -> 400 run_required, no row written', async () => {
+  const token = tokenFor('uid-noRun', { name: 'NoRun' });
+  const before = store.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n;
+  const res = await call('POST', '/api/scores', { score: 9999, wave: 2 }, token);
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'run_required');
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n, before);
+});
+
+test('submitting with a BOGUS runToken -> 400 invalid_run, no row written', async () => {
+  const token = tokenFor('uid-bogus', { name: 'Bogus' });
+  const before = store.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n;
+  const res = await call('POST', '/api/scores',
+    { score: 9999, wave: 2, runToken: 'ZmFrZS10b2tlbi1ub3QtcmVhbA' }, token);
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_run');
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n, before);
+});
+
+test("another user's run token -> 400 invalid_run (same code, no existence oracle)", async () => {
+  const owner = tokenFor('uid-owner', { name: 'Owner' });
+  const thief = tokenFor('uid-thief', { name: 'Thief' });
+  const run = await startRun(base, owner);
+  const res = await call('POST', '/api/scores', { score: 50, wave: 1, runToken: run.runToken }, thief);
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_run', 'must NOT reveal that the token exists');
+  assert.equal(
+    store.db.prepare('SELECT consumed_at FROM runs WHERE run_token = ?').get(run.runToken).consumed_at,
+    null,
+    "the owner's run is untouched"
+  );
+});
+
+test('the SAME run token submitted twice -> 2nd is 400 run_already_used, exactly one row', async () => {
+  const token = tokenFor('uid-replay', { name: 'Replay' });
+  const run = await startRun(base, token);
+  const first = await call('POST', '/api/scores', { score: 777, wave: 2, runToken: run.runToken }, token);
+  const second = await call('POST', '/api/scores', { score: 777, wave: 2, runToken: run.runToken }, token);
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 400);
+  assert.equal(second.body.error, 'run_already_used');
+
+  const n = store.db
+    .prepare('SELECT COUNT(*) AS n FROM scores WHERE run_id = (SELECT id FROM runs WHERE run_token = ?)')
+    .get(run.runToken).n;
+  assert.equal(n, 1, 'exactly one score row for that run');
+});
+
+test('CONCURRENT submits of one token: exactly one wins, one row written', async () => {
+  const token = tokenFor('uid-race', { name: 'Racer' });
+  const run = await startRun(base, token);
+  const body = { score: 321, wave: 2, runToken: run.runToken };
+  const results = await Promise.all([
+    call('POST', '/api/scores', body, token),
+    call('POST', '/api/scores', body, token),
+    call('POST', '/api/scores', body, token),
+    call('POST', '/api/scores', body, token)
+  ]);
+  const created = results.filter((r) => r.status === 201);
+  const rejected = results.filter((r) => r.status === 400);
+  assert.equal(created.length, 1, `expected 1 x 201, got ${results.map((r) => r.status).join(',')}`);
+  assert.equal(rejected.length, 3);
+  for (const r of rejected) {
+    assert.equal(r.body.error, 'run_already_used');
+  }
+  const n = store.db
+    .prepare('SELECT COUNT(*) AS n FROM scores WHERE run_id = (SELECT id FROM runs WHERE run_token = ?)')
+    .get(run.runToken).n;
+  assert.equal(n, 1);
+});
+
+test('score/wave validation still applies before any run lookup', async () => {
+  const token = tokenFor('uid-validate', { name: 'Validate' });
+  const run = await startRun(base, token);
+  for (const body of [
+    { score: 'lots', wave: 1, runToken: run.runToken },
+    { score: -1, wave: 1, runToken: run.runToken },
+    { score: 1.5, wave: 1, runToken: run.runToken },
+    { score: 10, wave: 0, runToken: run.runToken },
+    { score: 10, wave: 100000, runToken: run.runToken }
+  ]) {
+    const res = await call('POST', '/api/scores', body, token);
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.equal(res.body.error, 'validation_error', JSON.stringify(res.body));
+  }
+  // ...and none of that consumed the run.
+  const ok = await call('POST', '/api/scores', { score: 10, wave: 1, runToken: run.runToken }, token);
+  assert.equal(ok.status, 201);
+});
+
+/* --------------- BOUND 1: minimum elapsed time for the wave ------------- */
+
+test('BOUND 1: an impossibly fast wave claim -> 400 implausible_run, then 201 after waiting', async () => {
+  // scale 0.02 => 17.8 * 0.02 = 0.356s per wave. Wave 4 => ~1.07s required.
+  const iso = await isolatedApp({ minSecondsPerWaveScale: 0.02, maxScorePerSecond: 100000 });
+  try {
+    const token = tokenFor('uid-b1', { name: 'BoundOne' });
+    const run = await startRun(iso.url, token);
+    const claim = { score: 300, wave: 4, runToken: run.runToken };
+
+    const tooSoon = await callAt(iso.url, 'POST', '/api/scores', claim, token);
+    assert.equal(tooSoon.status, 400, JSON.stringify(tooSoon.body));
+    assert.equal(tooSoon.body.error, 'implausible_run');
+    assert.equal(
+      iso.store.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n, 0,
+      'a rejected claim writes no score'
+    );
+    assert.equal(
+      iso.store.db.prepare('SELECT consumed_at FROM runs WHERE run_token = ?').get(run.runToken)
+        .consumed_at,
+      null,
+      'a rejected claim does NOT burn the run token'
+    );
+
+    // Same claim, same token, after enough wall-clock time has passed.
+    await sleep(1300);
+    const later = await callAt(iso.url, 'POST', '/api/scores', claim, token);
+    assert.equal(later.status, 201, JSON.stringify(later.body));
+    assert.equal(later.body.wave, 4);
+  } finally {
+    await iso.close();
+  }
+});
+
+test('BOUND 1: wave 1 has no time bound at all', async () => {
+  const iso = await isolatedApp({ minSecondsPerWaveScale: 5 }); // absurdly strict
+  try {
+    const token = tokenFor('uid-b1w1', { name: 'WaveOne' });
+    const run = await startRun(iso.url, token);
+    const res = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 100, wave: 1, runToken: run.runToken }, token);
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+  } finally {
+    await iso.close();
+  }
+});
+
+test('the time bound is the documented (wave-1) * 17.8 * scale formula', () => {
+  const ac = createAntiCheat({ minSecondsPerWaveScale: 0.5 }, {});
+  assert.equal(Math.round(SECONDS_PER_WAVE_FLOOR * 10) / 10, 17.8);
+  assert.equal(ac.minElapsedSecondsForWave(1), 0);
+  assert.ok(Math.abs(ac.minElapsedSecondsForWave(2) - 8.9) < 1e-9);
+  assert.ok(Math.abs(ac.minElapsedSecondsForWave(11) - 89) < 1e-9);
+});
+
+/* -------------------- BOUND 2: maximum score per second ----------------- */
+
+test('BOUND 2: exceeding the rate ceiling -> 400 implausible_score, at/under -> 201', async () => {
+  /* Deliberately arranged so this trips ONLY bound 2: the time bound is off
+   * (scale 0) and the claimed wave is 1, so nothing about elapsed-time-for-
+   * wave is in play. Ceiling 100/s with a 5s grace and a ~0s-old run means
+   * anything over ~500 points is impossible. */
+  const iso = await isolatedApp({
+    minSecondsPerWaveScale: 0,
+    maxScorePerSecond: 100,
+    scoreGraceSeconds: 5
+  });
+  try {
+    const token = tokenFor('uid-b2', { name: 'BoundTwo' });
+
+    const run1 = await startRun(iso.url, token);
+    const tooFast = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 50000, wave: 1, runToken: run1.runToken }, token);
+    assert.equal(tooFast.status, 400, JSON.stringify(tooFast.body));
+    assert.equal(tooFast.body.error, 'implausible_score');
+    assert.equal(iso.store.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n, 0);
+
+    // Same run token, a claim inside the ceiling: accepted.
+    const ok = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 400, wave: 1, runToken: run1.runToken }, token);
+    assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  } finally {
+    await iso.close();
+  }
+});
+
+test('the two bounds are INDEPENDENT: each can fail while the other passes', async () => {
+  /* One app, one settings set, two claims:
+   *   - claim A: high wave, low score   -> only the TIME bound can trip
+   *   - claim B: wave 1, huge score     -> only the RATE bound can trip
+   * Different error codes prove they are separate gates. */
+  const iso = await isolatedApp({
+    minSecondsPerWaveScale: 1,      // 17.8s per wave -- wave 9 needs ~142s
+    maxScorePerSecond: 1000,
+    scoreGraceSeconds: 5
+  });
+  try {
+    const token = tokenFor('uid-indep', { name: 'Independent' });
+
+    const runA = await startRun(iso.url, token);
+    // 500 points is far under the ceiling (1000 * (0 + 5) = 5000), so only
+    // the time bound can reject this.
+    const a = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 500, wave: 9, runToken: runA.runToken }, token);
+    assert.equal(a.status, 400);
+    assert.equal(a.body.error, 'implausible_run', JSON.stringify(a.body));
+
+    // Wave 1 has a zero time bound, so only the rate ceiling can reject this.
+    const b = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 900000, wave: 1, runToken: runA.runToken }, token);
+    assert.equal(b.status, 400);
+    assert.equal(b.body.error, 'implausible_score', JSON.stringify(b.body));
+
+    // And a claim that satisfies both is accepted on the very same token.
+    const c = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 500, wave: 1, runToken: runA.runToken }, token);
+    assert.equal(c.status, 201, JSON.stringify(c.body));
+  } finally {
+    await iso.close();
+  }
+});
+
+test('the rate ceiling grows with measured elapsed time', () => {
+  const ac = createAntiCheat({ maxScorePerSecond: 200, scoreGraceSeconds: 5 }, {});
+  assert.equal(ac.maxScoreFor(0), 1000);
+  assert.equal(ac.maxScoreFor(10), 3000);
+  assert.equal(ac.maxScoreFor(60), 13000);
+});
+
+test('elapsed time clamps at 0 if the clock moves backwards', () => {
+  const ac = createAntiCheat({}, {});
+  assert.equal(ac.elapsedSeconds(2000, 1000), 0);
+  assert.equal(ac.elapsedSeconds(1000, 3500), 2.5);
+});
+
+test('anti-cheat settings come from env vars when no option is given', () => {
+  const ac = createAntiCheat(undefined, {
+    RUN_TTL_MS: '1234',
+    RUN_MIN_SECONDS_PER_WAVE_SCALE: '0.25',
+    RUN_MAX_SCORE_PER_SECOND: '77',
+    RUN_SCORE_GRACE_SECONDS: '2',
+    RATE_LIMIT_RUNSTART_MAX: '9'
+  });
+  assert.equal(ac.ttlMs, 1234);
+  assert.equal(ac.minSecondsPerWaveScale, 0.25);
+  assert.equal(ac.maxScorePerSecond, 77);
+  assert.equal(ac.scoreGraceSeconds, 2);
+  assert.equal(ac.runStartMax, 9);
+});
+
+/* ---------------------------- TTL and purging --------------------------- */
+
+test('an unsubmitted run expires (400 invalid_run) and is PURGED, not accumulated', async () => {
+  const iso = await isolatedApp({ ttlMs: 1200, minSecondsPerWaveScale: 0 });
+  try {
+    const token = tokenFor('uid-ttl', { name: 'Ttl' });
+    const run = await startRun(iso.url, token);
+    assert.equal(iso.store.countRuns(), 1, 'one run row before expiry');
+
+    await sleep(1500);
+
+    const res = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 100, wave: 1, runToken: run.runToken }, token);
+    assert.equal(res.status, 400);
+    assert.equal(
+      res.body.error, 'invalid_run',
+      'expired reads the SAME as unknown -- no oracle for which it was'
+    );
+    assert.equal(iso.store.countRuns(), 0, 'the expired row was purged, not left to accumulate');
+    assert.equal(iso.store.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n, 0);
+  } finally {
+    await iso.close();
+  }
+});
+
+test('run-start also purges expired rows rather than growing the table', async () => {
+  const iso = await isolatedApp({ ttlMs: 900 });
+  try {
+    const a = tokenFor('uid-purgeA', { name: 'PurgeA' });
+    const b = tokenFor('uid-purgeB', { name: 'PurgeB' });
+    await startRun(iso.url, a);
+    await startRun(iso.url, b);
+    assert.equal(iso.store.countRuns(), 2);
+
+    await sleep(1200);
+    await startRun(iso.url, tokenFor('uid-purgeC', { name: 'PurgeC' }));
+    assert.equal(iso.store.countRuns(), 1, 'both stale rows purged, only the new one remains');
+  } finally {
+    await iso.close();
+  }
+});
+
+test('a CONSUMED run is never purged (it is the audit trail for a score)', async () => {
+  const iso = await isolatedApp({ ttlMs: 800, minSecondsPerWaveScale: 0 });
+  try {
+    const token = tokenFor('uid-keep', { name: 'Keep' });
+    const run = await startRun(iso.url, token);
+    const ok = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 42, wave: 1, runToken: run.runToken }, token);
+    assert.equal(ok.status, 201);
+    await sleep(1000);
+    await startRun(iso.url, token); // triggers a purge
+    assert.equal(iso.store.countRuns(), 2, 'the consumed run survived the purge');
+    assert.equal(iso.store.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n, 1);
+  } finally {
+    await iso.close();
+  }
+});
+
+/* ------------------------- rate limiting (runs) ------------------------- */
+
+test('run-start has its OWN limiter: Nth+1 -> 429 while an issued token still works', async () => {
+  const iso = await isolatedApp({ minSecondsPerWaveScale: 0 }, { runStartMax: 3 });
+  try {
+    // Distinct users so this is about the per-IP bucket, not per-account state.
+    const first = await callAt(iso.url, 'POST', '/api/runs/start', undefined,
+      tokenFor('uid-rl1', { name: 'Rl1' }));
+    assert.equal(first.status, 201);
+    const issued = first.body.runToken;
+
+    const second = await callAt(iso.url, 'POST', '/api/runs/start', undefined,
+      tokenFor('uid-rl2', { name: 'Rl2' }));
+    const third = await callAt(iso.url, 'POST', '/api/runs/start', undefined,
+      tokenFor('uid-rl3', { name: 'Rl3' }));
+    assert.equal(second.status, 201);
+    assert.equal(third.status, 201);
+
+    const fourth = await callAt(iso.url, 'POST', '/api/runs/start', undefined,
+      tokenFor('uid-rl4', { name: 'Rl4' }));
+    assert.equal(fourth.status, 429, JSON.stringify(fourth.body));
+    assert.equal(fourth.body.error, 'rate_limited');
+    assert.ok(fourth.headers.get('retry-after'));
+
+    // The token issued BEFORE the limit was hit is still perfectly submittable.
+    const submit = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 120, wave: 1, runToken: issued }, tokenFor('uid-rl1', { name: 'Rl1' }));
+    assert.equal(submit.status, 201, JSON.stringify(submit.body));
+  } finally {
+    await iso.close();
+  }
+});
+
+test('a deduped run-start still COUNTS against the limiter', async () => {
+  const iso = await isolatedApp({}, { runStartMax: 2 });
+  try {
+    const token = tokenFor('uid-rldedupe', { name: 'RlDedupe' });
+    const a = await callAt(iso.url, 'POST', '/api/runs/start', undefined, token);
+    const b = await callAt(iso.url, 'POST', '/api/runs/start', undefined, token);
+    const c = await callAt(iso.url, 'POST', '/api/runs/start', undefined, token);
+    assert.equal(a.status, 201);
+    assert.equal(b.status, 201);
+    assert.equal(b.body.reused, true, 'same token returned');
+    assert.equal(c.status, 429, 'repeated calls past the limit still 429');
+  } finally {
+    await iso.close();
+  }
+});
+
+test('run-start limiting does not limit score submission', async () => {
+  const iso = await isolatedApp({ minSecondsPerWaveScale: 0 }, { runStartMax: 1 });
+  try {
+    const token = tokenFor('uid-sep', { name: 'Separate' });
+    const run = await startRun(iso.url, token);
+    const blocked = await callAt(iso.url, 'POST', '/api/runs/start', undefined,
+      tokenFor('uid-sep2', { name: 'Separate2' }));
+    assert.equal(blocked.status, 429);
+    // The score endpoint is on a different (unshared) path entirely.
+    const submit = await callAt(iso.url, 'POST', '/api/scores',
+      { score: 100, wave: 1, runToken: run.runToken }, token);
+    assert.equal(submit.status, 201, JSON.stringify(submit.body));
+  } finally {
+    await iso.close();
+  }
+});
+
+/* ---------------------------- scores/me + board ------------------------- */
+
+test('GET /api/scores/me needs auth and reports the personal best', async () => {
+  const anon = await call('GET', '/api/scores/me');
+  assert.equal(anon.status, 401);
+
+  const token = tokenFor('uid-best', { name: 'Bester' });
+  const empty = await call('GET', '/api/scores/me', undefined, token);
+  assert.equal(empty.status, 200);
+  assert.equal(empty.body.score, null);
+
+  for (const score of [100, 900, 400]) {
+    const run = await startRun(base, token);
+    const r = await call('POST', '/api/scores', { score, wave: 1, runToken: run.runToken }, token);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+  }
+  const best = await call('GET', '/api/scores/me', undefined, token);
+  assert.equal(best.body.score, 900);
+  assert.equal(best.body.username, 'Bester');
+});
+
+test('GET /api/leaderboard is public, ordered, one row per player', async () => {
+  for (const [uid, score] of [['uid-lb1', 5000], ['uid-lb2', 8000], ['uid-lb3', 6000]]) {
+    const token = tokenFor(uid, { name: uid.replace(/-/g, '') });
+    for (const s of [score, Math.floor(score / 2)]) {
+      const run = await startRun(base, token);
+      await call('POST', '/api/scores', { score: s, wave: 1, runToken: run.runToken }, token);
+    }
+  }
+  const res = await call('GET', '/api/leaderboard?limit=100');
+  assert.equal(res.status, 200);
+  const entries = res.body.entries;
+  assert.ok(entries.length >= 3);
+  for (let i = 1; i < entries.length; i += 1) {
+    assert.ok(entries[i - 1].score >= entries[i].score, 'descending');
+  }
+  assert.equal(new Set(entries.map((e) => e.username)).size, entries.length, 'unique players');
+  entries.forEach((e, i) => assert.equal(e.rank, i + 1));
+});
+
+test('GET /api/leaderboard rejects a non-integer limit and clamps range', async () => {
+  assert.equal((await call('GET', '/api/leaderboard?limit=abc')).status, 400);
+  assert.equal((await call('GET', '/api/leaderboard?limit=12abc')).status, 400);
+  assert.equal((await call('GET', '/api/leaderboard?limit=99999')).body.limit, 100);
+  assert.equal((await call('GET', '/api/leaderboard?limit=-4')).body.limit, 1);
+});
+
+/* ------------------------- transport-level behaviour -------------------- */
+
+test('malformed JSON gets a 400 bad_json, not a 500', async () => {
+  const res = await fetch(base + '/api/scores', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenFor('uid-json')}` },
+    body: '{ not json'
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error, 'bad_json');
+});
+
+test('an oversized body gets 413, not a 500', async () => {
+  const res = await fetch(base + '/api/scores', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenFor('uid-big')}` },
+    body: JSON.stringify({ score: 1, wave: 1, runToken: 'x'.repeat(40000) })
+  });
+  assert.equal(res.status, 413);
+});
+
+test('an unknown path returns the JSON 404 shape', async () => {
+  const res = await call('GET', '/api/nope');
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error, 'not_found');
+});
+
+test('CORS: an allowed origin is echoed, an unknown one is not', async () => {
+  const good = await fetch(base + '/api/health', { headers: { Origin: 'capacitor://localhost' } });
+  assert.equal(good.headers.get('access-control-allow-origin'), 'capacitor://localhost');
+  const bad = await fetch(base + '/api/health', { headers: { Origin: 'https://evil.example.com' } });
+  assert.equal(bad.headers.get('access-control-allow-origin'), null);
+});
+
+test('coerceTrustProxy turns env strings into what Express wants', () => {
   assert.equal(coerceTrustProxy('1'), 1);
-  assert.equal(coerceTrustProxy(' 2 '), 2);
-  assert.equal(coerceTrustProxy('0'), 0);
   assert.equal(coerceTrustProxy('true'), true);
-  assert.equal(coerceTrustProxy('TRUE'), true);
   assert.equal(coerceTrustProxy('false'), false);
   assert.equal(coerceTrustProxy('loopback'), 'loopback');
-  assert.equal(coerceTrustProxy('10.0.0.0/8'), '10.0.0.0/8');
 });
 
-test('createApp accepts TRUST_PROXY=1 / true / an IP list (SRV-02)', () => {
-  for (const value of ['1', 'true', 'false', 'loopback', '10.0.0.0/8, loopback']) {
-    const app = createApp({
-      store,
-      auth: createAuth({ jwtSecret: TEST_SECRET, rounds: 4 }),
-      trustProxy: value
-    });
-    assert.ok(app, `TRUST_PROXY=${value} must not throw`);
-  }
-  // A hop count really is applied as a number, not as an IP list.
-  const numeric = createApp({
-    store,
-    auth: createAuth({ jwtSecret: TEST_SECRET, rounds: 4 }),
-    trustProxy: '2'
-  });
-  assert.equal(numeric.get('trust proxy'), 2);
+/* ------------------------ no password/JWT residue ----------------------- */
+
+test('the users table has no password_hash column at runtime', () => {
+  const cols = store.db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  assert.ok(!cols.includes('password_hash'));
+  assert.ok(cols.includes('firebase_uid'));
 });
 
-test('an invalid TRUST_PROXY fails with a clear message (SRV-02)', () => {
-  assert.throws(
-    () =>
-      createApp({
-        store,
-        auth: createAuth({ jwtSecret: TEST_SECRET, rounds: 4 }),
-        trustProxy: 'not-an-ip-at-all'
-      }),
-    /TRUST_PROXY="not-an-ip-at-all" is not a valid Express trust-proxy setting/
+test('bcryptjs and jsonwebtoken are not declared dependencies', () => {
+  const pkg = require('../package.json');
+  const all = Object.assign({}, pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies);
+  assert.ok(!('bcryptjs' in all), 'bcryptjs still declared');
+  assert.ok(!('jsonwebtoken' in all), 'jsonwebtoken still declared');
+});
+
+/* Strips comments so the check is about CODE, not about the header comment
+ * that explains these things were removed. */
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+test('src/auth.js contains no password or JWT-issuing code', () => {
+  const src = stripComments(
+    fs.readFileSync(path.resolve(__dirname, '..', 'src', 'auth.js'), 'utf8')
   );
-});
-
-/* --------------------------- secret handling --------------------------- */
-
-test('createAuth throws when NODE_ENV=production and JWT_SECRET is unset', () => {
-  assert.throws(
-    () => createAuth({ env: { NODE_ENV: 'production' } }),
-    /JWT_SECRET/
-  );
-});
-
-test('createAuth warns and falls back outside production', () => {
-  const original = console.warn;
-  let warned = '';
-  console.warn = (msg) => {
-    warned += String(msg);
-  };
-  try {
-    const a = createAuth({ env: { NODE_ENV: 'development' } });
-    assert.equal(a.usesInsecureFallbackSecret, true);
-  } finally {
-    console.warn = original;
+  for (const banned of [
+    'bcrypt', 'jsonwebtoken', 'hashPassword', 'verifyPassword',
+    'issueToken', 'verifyToken(', 'dummyPasswordHash', 'JWT_SECRET',
+    'password_hash', 'validateCredentials', 'resolveJwtSecret',
+    'INSECURE_DEV_ONLY_JWT_SECRET', 'PASSWORD_MIN', 'PASSWORD_MAX'
+  ]) {
+    assert.ok(src.indexOf(banned) === -1, `auth.js code still contains ${banned}`);
   }
-  assert.match(warned, /JWT_SECRET is not set/);
+});
+
+test('the deleted routes/auth.js is really gone from disk', () => {
+  assert.equal(fs.existsSync(path.resolve(__dirname, '..', 'src', 'routes', 'auth.js')), false);
+});
+
+test('no source file under src/ requires bcryptjs or jsonwebtoken', () => {
+  const dir = path.resolve(__dirname, '..', 'src');
+  const files = [];
+  (function walk(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (p.endsWith('.js')) files.push(p);
+    }
+  })(dir);
+  assert.ok(files.length >= 6, `expected several src files, found ${files.length}`);
+  for (const f of files) {
+    const src = stripComments(fs.readFileSync(f, 'utf8'));
+    assert.ok(!/require\(['"]bcryptjs['"]\)/.test(src), `${f} requires bcryptjs`);
+    assert.ok(!/require\(['"]jsonwebtoken['"]\)/.test(src), `${f} requires jsonwebtoken`);
+  }
 });
