@@ -1,0 +1,24 @@
+{
+  "name": "neon-invaders",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NEON INVADERS -- zero-dependency canvas Space Invaders, plus its Capacitor Android/iOS shells.",
+  "license": "MIT",
+  "scripts": {
+    "copy:web": "node scripts/copy-web.js",
+    "icons": "node scripts/make-icons.js",
+    "serve": "python3 -m http.server 8000",
+    "check:net": "node scripts/check-net.js",
+    "verify": "bash scripts/verify.sh",
+    "cap:sync": "npm run copy:web && npx cap sync",
+    "cap:copy": "npm run copy:web && npx cap copy",
+    "android:open": "npx cap open android",
+    "ios:open": "npx cap open ios"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^7.4.4",
+    "@capacitor/cli": "^7.4.4",
+    "@capacitor/core": "^7.4.4",
+    "@capacitor/ios": "^7.4.4"
+  }
+}

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">NEON INVADERS</string>
+    <string name="title_activity_main">NEON INVADERS</string>
+    <string name="package_name">com.neoninvaders.app</string>
+    <string name="custom_url_scheme">com.neoninvaders.app</string>
+</resources>
