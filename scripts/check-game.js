@@ -2899,6 +2899,787 @@ scenario('27. multi-wave integration across waves 4-6, invariants held every tic
     `${a.redirects}/${a.dives} vs ${b.redirects}/${b.dives}`);
 });
 
+/* --------------------------------------------------------------------- */
+/* WEAPON COMBINATION SYSTEM (scenarios 28-30).
+ *
+ * A LIST-AWARE confirm helper. Deliberately NOT a change to confirmUpgrade()
+ * above: that one resolves its index against CONFIG.UPGRADE.IDS and scenario
+ * 12 depends on exactly that behaviour, so it stays byte-for-byte untouched.
+ * This one resolves against the LIVE list the screen is actually offering. */
+function confirmChoice(env, game, id) {
+  const ids = game.upgradeChoices();
+  const idx = ids.indexOf(id);
+  if (idx < 0) return false;
+  game.upgradeIndex = idx;
+  const dwell = Math.ceil(env.SI.CONFIG.UPGRADE.MIN_DWELL / DT) + 1;
+  for (let t = 0; t < dwell; t++) tick(env, game);
+  env.input.confirm = true;
+  tick(env, game);
+  return game.state === env.SI.STATE.PLAYING;
+}
+
+const rgbOf = (hex) => [
+  parseInt(hex.slice(1, 3), 16),
+  parseInt(hex.slice(3, 5), 16),
+  parseInt(hex.slice(5, 7), 16)
+];
+const chanGapOf = (x, y) => {
+  const a = rgbOf(x);
+  const b = rgbOf(y);
+  return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+};
+
+scenario('28. the PIERCE+BOUNCE combination is offered only from its two halves', () => {
+  withSeed(2801, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const S = env.SI.STATE;
+    const U = C.UPGRADE;
+    const IDS = U.IDS;
+
+    /* (a) the substitution is a pure function of game.upgrade ------------- */
+    const probe = startedGame(env);
+    const listFor = (up) => { probe.upgrade = up; return probe.upgradeChoices(); };
+
+    let plainOk = true;
+    let plainDetail = '';
+    for (const up of ['none', 'spread', 'shield', U.COMBINED_ID]) {
+      const got = listFor(up);
+      if (got.length !== IDS.length || got.some((id, i) => id !== IDS[i])) {
+        plainOk = false;
+        plainDetail += ` ${up}->[${got.join(',')}]`;
+      }
+    }
+    check('(a) upgrade none/spread/shield/pierce_bounce all offer the unchanged 4 IDS',
+      plainOk, plainDetail.trim());
+    check('(a) the combined upgrade itself cannot be combined again -- no third tier',
+      listFor(U.COMBINED_ID).indexOf(U.COMBINED_ID) < 0);
+
+    for (const half of ['pierce', 'bounce']) {
+      const mate = U.COMBINES[half];
+      const got = listFor(half);
+      check(`(a) from '${half}' the list is still exactly ${IDS.length} cards`,
+        got.length === IDS.length, `len=${got.length}`);
+      check(`(a) from '${half}' the combine card sits in '${mate}'s slot ` +
+        `(index ${IDS.indexOf(mate)})`,
+        got[IDS.indexOf(mate)] === U.COMBINED_ID, `[${got.join(',')}]`);
+      let othersOk = true;
+      for (let i = 0; i < IDS.length; i++) {
+        if (i === IDS.indexOf(mate)) continue;
+        if (got[i] !== IDS[i]) othersOk = false;
+      }
+      check(`(a) from '${half}' every other card keeps its normal index`,
+        othersOk, `[${got.join(',')}]`);
+      check(`(a) from '${half}' the complement '${mate}' is no longer offered on its own`,
+        got.indexOf(mate) < 0, `[${got.join(',')}]`);
+    }
+
+    /* (b) the LIVE path: pierce, then the combine card ---------------------- */
+    const game = startedGame(env);
+    check('(b) reached the first upgrade screen', driveToUpgradeScreen(env, game),
+      game.state);
+    check('(b) that first screen offers the plain four (upgrade is still none)',
+      game.upgradeChoices().every((id, i) => id === IDS[i]),
+      `[${game.upgradeChoices().join(',')}]`);
+    check('(b) pierce confirmed', confirmChoice(env, game, 'pierce'), `state=${game.state}`);
+    check("(b) upgrade is 'pierce'", game.upgrade === 'pierce', game.upgrade);
+
+    const waveBefore = game.wave;
+    check('(b) reached the second upgrade screen', driveToUpgradeScreen(env, game),
+      game.state);
+    const liveList = game.upgradeChoices();
+    const combineIdx = liveList.indexOf(U.COMBINED_ID);
+    check('(b) the second screen really offers the combine card',
+      combineIdx >= 0, `[${liveList.join(',')}]`);
+    check('(b) combine card confirmed', confirmChoice(env, game, U.COMBINED_ID),
+      `state=${game.state}`);
+    check(`(b) game.upgrade is exactly '${U.COMBINED_ID}' -- not silently ids[0]`,
+      game.upgrade === U.COMBINED_ID, game.upgrade);
+    check('(b) the wave advanced normally', game.wave === waveBefore + 1,
+      `wave=${game.wave} was=${waveBefore}`);
+    check('(b) and applyUpgrade did not fall back to a plain id',
+      IDS.indexOf(game.upgrade) < 0, game.upgrade);
+
+    /* (b2) from the combined cannon, the four plain cards come back --------- */
+    check('(b2) reached a third upgrade screen', driveToUpgradeScreen(env, game),
+      game.state);
+    check('(b2) it offers the plain four again',
+      game.upgradeChoices().every((id, i) => id === IDS[i]),
+      `[${game.upgradeChoices().join(',')}]`);
+    check("(b2) 'one only, replaces' still governs the combined cannon",
+      confirmChoice(env, game, 'shield') && game.upgrade === 'shield', game.upgrade);
+
+    /* (c) NEGATIVE: from 'spread', card 2 is still plain 'bounce' ----------- */
+    const neg = startedGame(env);
+    neg.upgrade = 'spread';
+    check('(c) reached the upgrade screen', driveToUpgradeScreen(env, neg), neg.state);
+    check('(c) no substitution applies from spread',
+      neg.upgradeChoices()[2] === 'bounce', `[${neg.upgradeChoices().join(',')}]`);
+    neg.upgradeIndex = 2;
+    const dwell = Math.ceil(U.MIN_DWELL / DT) + 1;
+    for (let t = 0; t < dwell; t++) tick(env, neg);
+    env.input.confirm = true;
+    tick(env, neg);
+    check("(c) confirming card 2 from 'spread' yields plain 'bounce'",
+      neg.upgrade === 'bounce', neg.upgrade);
+
+    /* (d) mash protection applies identically to the combine card ----------- */
+    /* (d1) a HELD fire key must not lock the combine card in. */
+    const held = startedGame(env);
+    held.upgrade = 'pierce';
+    held.clearWave();
+    const holdTicks = Math.floor((U.PICK_TIMEOUT - 1) / DT);
+    for (let t = 0; t < holdTicks; t++) {
+      if (held.state === S.UPGRADE) {
+        held.upgradeIndex = held.upgradeChoices().indexOf(U.COMBINED_ID);
+      }
+      env.input.keys.Space = true;
+      env.input.confirm = true;
+      tick(env, held);
+      if (held.state === S.PLAYING) break;
+    }
+    check('(d1) the combine card is the highlighted one',
+      held.state === S.UPGRADE &&
+      held.upgradeChoices()[held.upgradeIndex] === U.COMBINED_ID,
+      `state=${held.state} index=${held.upgradeIndex}`);
+    check('(d1) a held fire key never confirms the combine card',
+      held.state === S.UPGRADE, `state=${held.state}`);
+    check('(d1) the held key did not arm the screen', held.upgradeArmed === false);
+    check('(d1) the dwell gate was long since satisfied -- the release gate held',
+      held.stateTimer > U.MIN_DWELL + 1, `t=${held.stateTimer}`);
+
+    /* (d2) mashing cannot beat MIN_DWELL on the combine card either. */
+    const mash = startedGame(env);
+    mash.upgrade = 'bounce';                 // the other half -- symmetric case
+    check('(d2) reached the upgrade screen', driveToUpgradeScreen(env, mash), mash.state);
+    let pickedAt = -1;
+    for (let t = 0; t < 900; t++) {
+      const clockBefore = mash.stateTimer;
+      if (mash.state === S.UPGRADE) {
+        mash.upgradeIndex = mash.upgradeChoices().indexOf(U.COMBINED_ID);
+      }
+      const downFrame = t % 4 < 2;
+      env.input.keys.Space = downFrame;
+      env.input.confirm = downFrame && (t % 4 === 0);
+      tick(env, mash);
+      if (mash.state !== S.UPGRADE) { pickedAt = clockBefore; break; }
+    }
+    check(`(d2) mashing could not confirm the combine card before MIN_DWELL ` +
+      `(${U.MIN_DWELL}s)`, pickedAt >= U.MIN_DWELL, `picked at ${pickedAt}s`);
+    check('(d2) a masher does eventually get the combined cannon (not a soft lock)',
+      mash.state === S.PLAYING && mash.upgrade === U.COMBINED_ID,
+      `state=${mash.state} upgrade=${mash.upgrade}`);
+
+    /* (d3) tapping the combine card's rect selects and confirms THAT card,
+     *      proving the hit-test reads the substituted list too. */
+    const tap = startedGame(env);
+    tap.upgrade = 'pierce';
+    check('(d3) reached the upgrade screen', driveToUpgradeScreen(env, tap), tap.state);
+    for (let t = 0; t < dwell; t++) tick(env, tap);
+    const tapList = tap.upgradeChoices();
+    const tapIdx = tapList.indexOf(U.COMBINED_ID);
+    const rect = env.SI.HUD.upgradeCardRect(tapIdx, tapList.length);
+    const p = env.SI.Input.pointer();
+    p.active = true;
+    p.firing = true;
+    p.x = rect.x + rect.w / 2;
+    p.y = rect.y + rect.h / 2;
+    env.input.keys.Pointer = true;
+    env.input.confirm = true;
+    tick(env, tap);
+    check('(d3) a tap on the combine card confirms exactly that card',
+      tap.state === S.PLAYING && tap.upgrade === U.COMBINED_ID,
+      `state=${tap.state} upgrade=${tap.upgrade}`);
+    p.active = false;
+    p.firing = false;
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('29. a combined shot pierces AND bounces, and still kills at most ' +
+         'PIERCE_COUNT + 1', () => {
+  withSeed(2901, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const U = C.UPGRADE;
+
+    /* (a) the REAL fire path produces ONE bullet carrying BOTH fields ------ */
+    const game = startedGame(env);
+    quietSwarm(game);
+    game.upgrade = U.COMBINED_ID;
+    env.input.fire = true;
+    env.input.firePress = true;
+    tick(env, game);
+    const shots = alivePlayerBullets(game);
+    check('(a) exactly one player bullet (not three -- this is not spread)',
+      shots.length === 1, `got ${shots.length}`);
+    if (shots.length === 1) {
+      const s = shots[0];
+      check(`(a) pierce === PIERCE_COUNT (${U.PIERCE_COUNT})`,
+        s.pierce === U.PIERCE_COUNT, `pierce=${s.pierce}`);
+      check(`(a) bounce === BOUNCE_MAX (${U.BOUNCE_MAX})`,
+        s.bounce === U.BOUNCE_MAX, `bounce=${s.bounce}`);
+      check('(a) it has horizontal velocity, magnitude BOUNCE_VX',
+        s.vx !== 0 && Math.abs(s.vx) === U.BOUNCE_VX, `vx=${s.vx}`);
+      check('(a) it climbs at BOUNCE_VY, not PLAYER_SPEED',
+        s.vy === -U.BOUNCE_VY, `vy=${s.vy}`);
+      check('(a) it wears the combined colour, neither half\'s',
+        s.color === C.COLORS.pierceBounce &&
+        s.color !== C.COLORS.playerGlow && s.color !== C.COLORS.warn, s.color);
+      check('(a) all three -- pierce, bounce and vx -- hold SIMULTANEOUSLY',
+        s.pierce === U.PIERCE_COUNT && s.bounce === U.BOUNCE_MAX && s.vx !== 0);
+    }
+    /* And the other cannons are untouched by the restructured fire(). */
+    const plain = (up) => {
+      const g = startedGame(env);
+      quietSwarm(g);
+      g.upgrade = up;
+      env.input.fire = true;
+      env.input.firePress = true;
+      tick(env, g);
+      env.input.fire = false;
+      return alivePlayerBullets(g);
+    };
+    const noneShots = plain('none');
+    check('(a) a no-upgrade shot is still inert (pierce 0, bounce 0, vx 0)',
+      noneShots.length === 1 && noneShots[0].pierce === 0 &&
+      noneShots[0].bounce === 0 && noneShots[0].vx === 0);
+    const pShots = plain('pierce');
+    check('(a) a plain pierce shot still carries NO bounce and NO vx',
+      pShots.length === 1 && pShots[0].pierce === U.PIERCE_COUNT &&
+      pShots[0].bounce === 0 && pShots[0].vx === 0,
+      pShots.length === 1 ? `p=${pShots[0].pierce} b=${pShots[0].bounce} vx=${pShots[0].vx}` : '');
+    const bShots = plain('bounce');
+    check('(a) a plain bounce shot still carries NO pierce',
+      bShots.length === 1 && bShots[0].bounce === U.BOUNCE_MAX &&
+      bShots[0].pierce === 0 && bShots[0].vx !== 0,
+      bShots.length === 1 ? `p=${bShots[0].pierce} b=${bShots[0].bounce} vx=${bShots[0].vx}` : '');
+    const sShots = plain('shield');
+    check('(a) a shield-cannon shot is still the classic bullet',
+      sShots.length === 1 && sShots[0].pierce === 0 &&
+      sShots[0].bounce === 0 && sShots[0].vx === 0);
+    /* COLOURS on the PLAIN cannons, not just the combined one. Player.fire()
+     * now resolves the colour in a single expression covering four cases; a
+     * typo in any one arm (matching 'pierce' where COMBINED_ID was meant, or
+     * dropping the plain fall-through) would silently repaint a whole cannon
+     * and nothing above would notice, because none of those checks reads
+     * .color. */
+    check(`(a) a plain pierce shot is still pierce-cyan (COLORS.playerGlow, ` +
+      `${C.COLORS.playerGlow}) -- NOT the combined colour`,
+      pShots.length === 1 && pShots[0].color === C.COLORS.playerGlow,
+      pShots.length === 1 ? pShots[0].color : '');
+    check(`(a) a plain bounce shot is still bounce-amber (COLORS.warn, ` +
+      `${C.COLORS.warn}) -- NOT the combined colour`,
+      bShots.length === 1 && bShots[0].color === C.COLORS.warn,
+      bShots.length === 1 ? bShots[0].color : '');
+    check(`(a) a no-upgrade and a shield-cannon shot are both still plain ` +
+      `bullet white (COLORS.bullet, ${C.COLORS.bullet})`,
+      noneShots.length === 1 && sShots.length === 1 &&
+      noneShots[0].color === C.COLORS.bullet &&
+      sShots[0].color === C.COLORS.bullet,
+      `${noneShots.length === 1 ? noneShots[0].color : '?'} / ` +
+      `${sShots.length === 1 ? sShots[0].color : '?'}`);
+    check('(a) all four cannon colours are pairwise distinct',
+      new Set([C.COLORS.bullet, C.COLORS.playerGlow, C.COLORS.warn,
+        C.COLORS.pierceBounce]).size === 4);
+    check('(a) one muzzle shoot() per volley, unchanged',
+      env.SI.Audio.calls.shoot > 0);
+
+    /* (b) accounting: one killAlien + one scoreKill per alien, and the two
+     *     counters never interfere with one another ----------------------- */
+    const g2 = startedGame(env);
+    g2.player.invuln = 0;
+    const sw = g2.swarm;
+    const aliveAtStart = sw.aliveCount();
+
+    /* Instrument the two choke points on the INSTANCES, so the real
+     * prototypes (and every other scenario) are untouched. */
+    const killCalls = [];
+    const scoreCalls = [];
+    const realKill = sw.killAlien;
+    const realScore = g2.scoreKill;
+    let bullet = null;
+    sw.killAlien = function (a, world) {
+      killCalls.push({ alien: a, bounceAtKill: bullet ? bullet.bounce : -1 });
+      return realKill.call(this, a, world);
+    };
+    g2.scoreKill = function (points) {
+      scoreCalls.push(points);
+      return realScore.call(this, points);
+    };
+
+    /* Start low and hard against the RIGHT wall so the reflection happens
+     * BEFORE the shot reaches the swarm -- that is what makes "it pierced
+     * AND bounced in one flight" non-vacuous rather than lucky. y 500 is
+     * below the swarm and above BUNKER.Y (546). */
+    bullet = new env.SI.Bullet(900, 500, -U.BOUNCE_VY, 'player', C.COLORS.pierceBounce);
+    bullet.vx = U.BOUNCE_VX;
+    bullet.pierce = U.PIERCE_COUNT;
+    bullet.bounce = U.BOUNCE_MAX;
+    g2.bullets.push(bullet);
+
+    let reflections = 0;
+    let reflectedWhilePiercing = 0;
+    let bounceChangedOnKillTick = 0;
+    let pierceChangedOnPureReflectTick = 0;
+    let pierceAccountingBad = 0;
+    for (let t = 0; t < 600 && !bullet.dead; t++) {
+      quietSwarm(g2);
+      const before = { p: bullet.pierce, b: bullet.bounce, sx: Math.sign(bullet.vx) };
+      const killsBefore = killCalls.length;
+      tick(env, g2);
+      const kills = killCalls.length - killsBefore;
+      const reflected = Math.sign(bullet.vx) !== before.sx ? 1 : 0;
+      if (reflected) {
+        reflections += 1;
+        if (before.p > 0) reflectedWhilePiercing += 1;
+        if (kills === 0 && bullet.pierce !== before.p) pierceChangedOnPureReflectTick += 1;
+      }
+      if (kills > 0 && bullet.bounce !== before.b - reflected) bounceChangedOnKillTick += 1;
+      /* pierce falls by exactly one per kill, until it runs out (then the
+       * shot dies instead of decrementing below zero). */
+      if (kills > 0 && !bullet.dead && bullet.pierce !== before.p - kills) {
+        pierceAccountingBad += 1;
+      }
+      for (const k of killCalls.slice(killsBefore)) {
+        if (k.bounceAtKill !== bullet.bounce) bounceChangedOnKillTick += 1;
+      }
+    }
+    const died = aliveAtStart - sw.aliveCount();
+    console.log(`    combined flight: kills=${killCalls.length} scoreKills=` +
+      `${scoreCalls.length} aliensDead=${died} reflections=${reflections} ` +
+      `pierceLeft=${bullet.pierce} bounceLeft=${bullet.bounce} dead=${bullet.dead}`);
+
+    check('(b) it genuinely killed at least one alien (not a vacuous pass)',
+      killCalls.length >= 1, `kills=${killCalls.length}`);
+    check('(b) it genuinely reflected off a wall at least once',
+      reflections >= 1, `reflections=${reflections}`);
+    check('(b) at least one reflection happened while pierce was still > 0 -- ' +
+      'it PIERCED AND BOUNCED in one flight', reflectedWhilePiercing >= 1,
+      `reflectedWhilePiercing=${reflectedWhilePiercing}`);
+    check('(b) exactly one killAlien() per alien that actually died',
+      killCalls.length === died, `kills=${killCalls.length} died=${died}`);
+    check('(b) exactly one scoreKill() per killAlien() -- no double, no missed scoring',
+      scoreCalls.length === killCalls.length,
+      `score=${scoreCalls.length} kill=${killCalls.length}`);
+    check('(b) no kill event ever changed the bullet\'s bounce field',
+      bounceChangedOnKillTick === 0, `violations=${bounceChangedOnKillTick}`);
+    check('(b) no wall reflection ever changed the bullet\'s pierce field',
+      pierceChangedOnPureReflectTick === 0,
+      `violations=${pierceChangedOnPureReflectTick}`);
+    check('(b) pierce decremented exactly once per kill',
+      pierceAccountingBad === 0, `violations=${pierceAccountingBad}`);
+    check('(b) the shot eventually died (pierce or bounce exhausted, or cover hit)',
+      bullet.dead === true);
+    check(`(b) it never killed more than PIERCE_COUNT + 1 (${U.PIERCE_COUNT + 1}) aliens`,
+      killCalls.length <= U.PIERCE_COUNT + 1, `kills=${killCalls.length}`);
+
+    /* (c) AC-6: the server's bound is still the right one ------------------ */
+    const AC = require(path.join(ROOT, 'server', 'src', 'anticheat.js'));
+    check('(c) server/src/anticheat.js exports BEST_ALIENS_PER_SHOT',
+      typeof AC.BEST_ALIENS_PER_SHOT === 'number', String(AC.BEST_ALIENS_PER_SHOT));
+    check(`(c) 1 + PIERCE_COUNT === BEST_ALIENS_PER_SHOT ` +
+      `(${1 + U.PIERCE_COUNT} === ${AC.BEST_ALIENS_PER_SHOT}) -- no re-derivation needed`,
+      1 + U.PIERCE_COUNT === AC.BEST_ALIENS_PER_SHOT);
+
+    /* Brute force: sweep launch positions and both launch sides through a
+     * FULL wave-1 swarm; no flight may exceed the server's bound. */
+    let worst = 0;
+    let worstAt = '';
+    let trials = 0;
+    for (let x = 60; x <= 900; x += 60) {
+      for (const side of [1, -1]) {
+        for (const y of [500, 380]) {
+          const g = startedGame(env);
+          g.player.invuln = 0;
+          const before = g.swarm.aliveCount();
+          const b = new env.SI.Bullet(
+            x, y, -U.BOUNCE_VY, 'player', C.COLORS.pierceBounce);
+          b.vx = U.BOUNCE_VX * side;
+          b.pierce = U.PIERCE_COUNT;
+          b.bounce = U.BOUNCE_MAX;
+          g.bullets.push(b);
+          for (let t = 0; t < 600 && !b.dead; t++) {
+            quietSwarm(g);
+            tick(env, g);
+          }
+          const n = before - g.swarm.aliveCount();
+          trials += 1;
+          if (n > worst) { worst = n; worstAt = `x=${x} y=${y} side=${side}`; }
+        }
+      }
+    }
+    console.log(`    brute force: ${trials} combined flights, worst kill count ${worst}` +
+      `${worstAt ? ' at ' + worstAt : ''}`);
+    check(`(c) across ${trials} simulated combined flights the worst kill count is ` +
+      `${worst} <= BEST_ALIENS_PER_SHOT (${AC.BEST_ALIENS_PER_SHOT})`,
+      worst <= AC.BEST_ALIENS_PER_SHOT, `worst=${worst} at ${worstAt}`);
+    check('(c) the sweep was not vacuous -- some flight did kill aliens', worst > 0);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('30. HUD presentation of the combined cannon', () => {
+  withSeed(3001, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const S = env.SI.STATE;
+    const U = C.UPGRADE;
+
+    const calls = [];
+    env.SI.FX.glowText = function (ctx, text, x, y, opts) {
+      calls.push({ text: String(text), x, y, opts: opts || {} });
+    };
+    const NAMES = ['SPREAD SHOT', 'PIERCING LASER', 'BOUNCING SHOT', 'TEMP SHIELD',
+                   'PIERCE + BOUNCE'];
+    const cardNames = () => calls.filter((c) => NAMES.indexOf(c.text) >= 0);
+
+    /* (a) the plain screen is exactly as it was ---------------------------- */
+    const g0 = startedGame(env);
+    g0.upgrade = 'none';
+    g0.setState(S.UPGRADE);
+    env.SI.HUD.draw(env.ctx, g0);
+    check('(a) the HUD stub is wired up (something was drawn)', calls.length > 0,
+      `calls=${calls.length}`);
+    const plainCards = cardNames().map((c) => c.text);
+    check('(a) with no upgrade the four original card names are drawn',
+      plainCards.length === 4 &&
+      ['SPREAD SHOT', 'PIERCING LASER', 'BOUNCING SHOT', 'TEMP SHIELD']
+        .every((n) => plainCards.indexOf(n) >= 0), plainCards.join(','));
+    check("(a) 'PIERCE + BOUNCE' is absent from that screen",
+      plainCards.indexOf('PIERCE + BOUNCE') < 0, plainCards.join(','));
+    /* Card colours, read back from what the HUD actually drew rather than
+     * duplicated as literals here. */
+    const colorOf = {};
+    for (const c of cardNames()) colorOf[c.text] = c.opts.glow;
+
+    /* (b) from 'pierce' the combine card SUBSTITUTES the bounce card ------- */
+    calls.length = 0;
+    const g1 = startedGame(env);
+    g1.upgrade = 'pierce';
+    g1.setState(S.UPGRADE);
+    env.SI.HUD.draw(env.ctx, g1);
+    const subCards = cardNames();
+    check('(b) still exactly four card names are drawn -- no fifth card',
+      subCards.length === 4, subCards.map((c) => c.text).join(','));
+    const combine = subCards.filter((c) => c.text === 'PIERCE + BOUNCE');
+    check("(b) 'PIERCE + BOUNCE' is drawn exactly once", combine.length === 1,
+      `count=${combine.length}`);
+    check("(b) 'BOUNCING SHOT' is no longer drawn -- it was substituted, not added",
+      subCards.every((c) => c.text !== 'BOUNCING SHOT'),
+      subCards.map((c) => c.text).join(','));
+    if (combine.length === 1) {
+      const list = g1.upgradeChoices();
+      const idx = list.indexOf(U.COMBINED_ID);
+      const r = env.SI.HUD.upgradeCardRect(idx, list.length);
+      check(`(b) it is drawn at card ${idx}'s own rect (geometry unchanged, ` +
+        'not hardcoded)',
+        combine[0].x === r.x + r.w / 2 && combine[0].y === r.y + 126,
+        `drawn at (${combine[0].x},${combine[0].y}) rect centre ` +
+        `(${r.x + r.w / 2},${r.y + 126})`);
+      const bounceRect = env.SI.HUD.upgradeCardRect(U.IDS.indexOf('bounce'),
+        U.IDS.length);
+      check("(b) that rect IS the slot 'bounce' would have occupied",
+        r.x === bounceRect.x && r.y === bounceRect.y, `${r.x} vs ${bounceRect.x}`);
+      colorOf['PIERCE + BOUNCE'] = combine[0].opts.glow;
+    }
+    /* The hint texts stay literally true and unchanged. */
+    check('(b) the "ONE ONLY - IT REPLACES YOUR CURRENT CANNON" hint is unchanged',
+      calls.some((c) => c.text === 'ONE  ONLY  -  IT  REPLACES  YOUR  CURRENT  CANNON'));
+    check('(b) the "1-4 TO CHOOSE" hint is unchanged (still four cards)',
+      calls.some((c) => c.text.indexOf('1-4  TO  CHOOSE') >= 0));
+
+    /* (c) the bottom-right CANNON indicator ------------------------------- */
+    calls.length = 0;
+    const g2 = startedGame(env);
+    g2.upgrade = U.COMBINED_ID;
+    g2.setState(S.PLAYING);
+    env.SI.HUD.draw(env.ctx, g2);
+    const ind = calls.filter((c) => c.text === 'CANNON  PIERCE + BOUNCE');
+    check('(c) the CANNON indicator reads "CANNON  PIERCE + BOUNCE", exactly once',
+      ind.length === 1, `count=${ind.length}`);
+    if (ind.length === 1) {
+      check('(c) drawn bottom-right, right-aligned, at the established position',
+        ind[0].x === C.WORLD_W - 26 && ind[0].y === C.WORLD_H - 20 &&
+        ind[0].opts.align === 'right',
+        `x=${ind[0].x} y=${ind[0].y} align=${ind[0].opts.align}`);
+      check('(c) in COLORS.pierceBounce -- the HUD table and core.js agree',
+        ind[0].opts.color === C.COLORS.pierceBounce,
+        `${ind[0].opts.color} vs ${C.COLORS.pierceBounce}`);
+    }
+
+    /* (d) palette: the new colour reads as neither half -------------------- */
+    const MIN_CHANNEL_GAP = 48;
+    check('(d) all five card colours were captured from the real HUD draw',
+      NAMES.every((n) => typeof colorOf[n] === 'string'),
+      NAMES.map((n) => `${n}=${colorOf[n]}`).join(' '));
+    const mine = colorOf['PIERCE + BOUNCE'];
+    check('(d) the combine card is painted CONFIG.COLORS.pierceBounce',
+      mine === C.COLORS.pierceBounce, `${mine} vs ${C.COLORS.pierceBounce}`);
+    const REFS = [
+      ['bullet', C.COLORS.bullet],
+      ['playerGlow(pierce shot)', C.COLORS.playerGlow],
+      ['warn(bounce shot)', C.COLORS.warn]
+    ];
+    for (const n of NAMES) {
+      if (n !== 'PIERCE + BOUNCE') REFS.push([`card:${n}`, colorOf[n]]);
+    }
+    let paletteOk = true;
+    let paletteDetail = '';
+    for (const ref of REFS) {
+      const d = chanGapOf(mine, ref[1]);
+      if (d < MIN_CHANNEL_GAP) {
+        paletteOk = false;
+        paletteDetail += ` pierceBounce(${mine})~${ref[0]}(${ref[1]}):${d}`;
+      }
+    }
+    check(`(d) it clears ${MIN_CHANNEL_GAP}/255 in some channel from the other four ` +
+      `card colours, the plain bullet, pierce-cyan and bounce-amber ` +
+      `(${REFS.length} references)`, paletteOk, paletteDetail.trim());
+
+    /* (e) the new icon draws without throwing, at every card, in both lists. */
+    const drawErrors = [];
+    for (const up of ['none', 'pierce', 'bounce', U.COMBINED_ID]) {
+      const g = startedGame(env);
+      g.upgrade = up;
+      g.setState(S.UPGRADE);
+      for (let i = 0; i < U.IDS.length; i++) {
+        g.upgradeIndex = i;
+        try { env.SI.HUD.draw(env.ctx, g); } catch (e) {
+          drawErrors.push(`${up}#${i}: ${(e && e.message) || e}`);
+        }
+      }
+    }
+    check('(e) every upgrade screen draws with no exception, selected card included',
+      drawErrors.length === 0, drawErrors.join(' | '));
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* The CROSS-FEATURE case: this round's combined bullet meeting the SHIELD
+ * alien class that shipped two rounds ago. Scenario 25 (f) already pins a
+ * PLAIN piercing shot through a redirect; scenario 29 pins the combined
+ * bullet against an ordinary swarm. Neither covers the two together, and
+ * that intersection is precisely what this round's "server/ needs no
+ * anti-cheat re-derivation" claim rests on -- a redirect must not be a way
+ * to buy an extra kill out of the 1 + PIERCE_COUNT budget. */
+scenario('31. a combined shot through a SHIELD redirect spends exactly one pierce, ' +
+         'flies on, and still cannot beat the kill ceiling', () => {
+  withSeed(3101, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const U = C.UPGRADE;
+    const R = C.ALIEN_CLASS.SHIELD.RADIUS;
+    const SHIELD_WAVE = C.ALIEN_CLASS.SHIELD.FROM_WAVE;
+
+    /* Wave 4 exactly as scenario 25 sets it up: the shield's own gate, one
+     * wave BELOW the kamikaze's, so nothing is diving while this is
+     * measured, and nothing but the scenario's own shot can kill. */
+    const fresh = () => {
+      const g = startedGame(env, SHIELD_WAVE);
+      stillSwarm(g);
+      g.player.invuln = 0;
+      return g;
+    };
+
+    /* A combined PIERCE+BOUNCE bullet with exactly the fields
+     * Player.fire() gives one -- scenario 29 (a) is what proves those are
+     * the right fields, so this does not restate them as a second source of
+     * truth, it reuses the same constants. */
+    const launchCombined = (game, x, y, side) => {
+      const b = new env.SI.Bullet(x, y, -U.BOUNCE_VY, 'player', C.COLORS.pierceBounce);
+      b.vx = U.BOUNCE_VX * side;
+      b.pierce = U.PIERCE_COUNT;
+      b.bounce = U.BOUNCE_MAX;
+      game.bullets.push(b);
+      return b;
+    };
+
+    /* Spy on the ONE kill choke point, on the instance, so the real
+     * prototype (and every other scenario) is untouched -- same idiom as
+     * scenario 29 (b). collide() calls killAlien() BEFORE it decrements
+     * pierce, so `pierceBefore` is genuinely the pre-kill budget. */
+    const spyKills = (game, getBullet) => {
+      const sw = game.swarm;
+      const log = [];
+      const real = sw.killAlien;
+      sw.killAlien = function (a, world) {
+        const b = getBullet();
+        log.push({
+          alien: a,
+          pierceBefore: b ? b.pierce : -1,
+          bounceBefore: b ? b.bounce : -1
+        });
+        return real.call(this, a, world);
+      };
+      return log;
+    };
+
+    /* (a) the redirect itself, one tick, from a standstill ---------------- */
+    const g1 = fresh();
+    const sw1 = g1.swarm;
+    const shield = sw1.shield;
+    const ally = coveredNeighbour(C, sw1);
+    check('(a) wave 4 really has a shield with a live covered ally',
+      !!shield && !!ally, `shield=${!!shield} ally=${!!ally}`);
+    let b1 = null;
+    const kills1 = spyKills(g1, () => b1);
+    const alive1 = sw1.aliveCount();
+    b1 = launchCombined(g1, ally.x, ally.y, 1);
+    tick(env, g1);
+
+    check('(a) the covered ally SURVIVED the combined shot', ally.alive === true);
+    check('(a) the SHIELD is the one that died, not the targeted ally',
+      shield.alive === false && kills1.length === 1 && kills1[0].alien === shield,
+      `kills=${kills1.length} shieldAlive=${shield.alive} allyAlive=${ally.alive}`);
+    check('(a) exactly one alien died -- the redirect did not resolve twice',
+      alive1 - sw1.aliveCount() === 1, `died=${alive1 - sw1.aliveCount()}`);
+    check('(a) the covered ally flashes so the player can see WHY it survived',
+      ally.hitFlash > 0, `hitFlash=${ally.hitFlash}`);
+    check(`(a) pierce decremented by EXACTLY 1 -- not 0, not 2 ` +
+      `(${U.PIERCE_COUNT} -> ${U.PIERCE_COUNT - 1})`,
+      kills1.length === 1 && kills1[0].pierceBefore === U.PIERCE_COUNT &&
+      b1.pierce === U.PIERCE_COUNT - 1,
+      `before=${kills1.length ? kills1[0].pierceBefore : '?'} after=${b1.pierce}`);
+    check('(a) the redirect left the BOUNCE budget completely intact',
+      b1.bounce === U.BOUNCE_MAX, `bounce=${b1.bounce} want=${U.BOUNCE_MAX}`);
+    check('(a) the shot survived the redirect and flew on',
+      b1.dead === false, `dead=${b1.dead}`);
+    check('(a) still carrying its full horizontal velocity',
+      Math.abs(b1.vx) === U.BOUNCE_VX, `vx=${b1.vx}`);
+
+    /* (a2) ... and that is IDENTICAL to an unshielded combined hit -------- */
+    const g2 = fresh();
+    const sw2 = g2.swarm;
+    const far = sw2.aliens.filter((a) => a.alive && !a.commander &&
+      Math.abs(a.col - sw2.shield.col) > R)[0];
+    check('(a2) an out-of-radius target exists to compare against', !!far,
+      far ? `col=${far.col} shieldCol=${sw2.shield.col}` : 'none');
+    let b2 = null;
+    const kills2 = spyKills(g2, () => b2);
+    b2 = launchCombined(g2, far.x, far.y, 1);
+    tick(env, g2);
+    check('(a2) an UNSHIELDED combined hit kills its actual target',
+      kills2.length === 1 && kills2[0].alien === far && far.alive === false,
+      `kills=${kills2.length} alive=${far.alive}`);
+    check('(a2) and leaves pierce/bounce/dead in exactly the same state as the ' +
+      'redirect did -- a redirect costs the shot nothing extra and nothing less',
+      b2.pierce === b1.pierce && b2.bounce === b1.bounce && b2.dead === b1.dead,
+      `unshielded p=${b2.pierce} b=${b2.bounce} dead=${b2.dead} vs ` +
+      `redirect p=${b1.pierce} b=${b1.bounce} dead=${b1.dead}`);
+
+    /* (b) the WHOLE flight: redirect, then a wall reflection, then a
+     *     further kill -- all on one bullet, and never past the ceiling.
+     *     Swept rather than hand-placed, because which alien the shield
+     *     covers is wave-derived arithmetic and the swarm is marching: a
+     *     single hardcoded launch would be pinning today's geometry, not
+     *     the invariant. Every cell the shield covers x both launch sides
+     *     x three lead times (how far below the target the shot starts). */
+    const probe = fresh();
+    const ps = probe.swarm.shield;
+    const coveredCells = probe.swarm.aliens
+      .filter((a) => a.alive && a !== ps &&
+        Math.abs(a.col - ps.col) <= R && Math.abs(a.row - ps.row) <= R)
+      .map((a) => ({ row: a.row, col: a.col }));
+    check('(b) the shield covers at least one live ally to sweep',
+      coveredCells.length > 0, `cells=${coveredCells.length}`);
+
+    const flights = [];
+    for (const cell of coveredCells) {
+      for (const side of [-1, 1]) {
+        for (const lead of [0, 0.12, 0.24]) {
+          const g = fresh();
+          const sw = g.swarm;
+          const s = sw.shield;
+          const target = sw.aliens.filter((a) =>
+            a.alive && a.row === cell.row && a.col === cell.col)[0];
+          if (!target) continue;
+          let b = null;
+          const log = spyKills(g, () => b);
+          const aliveBefore = sw.aliveCount();
+          b = launchCombined(g,
+            target.x - side * U.BOUNCE_VX * lead,
+            target.y + U.BOUNCE_VY * lead, side);
+          let reflected = false;
+          let reflections = 0;
+          let killsAfterReflect = 0;
+          for (let t = 0; t < 600 && !b.dead; t++) {
+            const wasReflected = reflected;
+            const bounceBefore = b.bounce;
+            const killsBefore = log.length;
+            tick(env, g);
+            if (b.bounce < bounceBefore) {
+              reflected = true;
+              reflections += 1;
+            }
+            /* Conservative: a kill landing in the SAME tick as the
+             * reflection is not counted as "after" it. */
+            if (wasReflected) killsAfterReflect += log.length - killsBefore;
+          }
+          flights.push({
+            cell, side, lead, log, bullet: b, target,
+            /* A REDIRECT is: the first thing this bullet killed was the
+             * shield, and the shield is not what it was aimed at. */
+            redirected: log.length > 0 && log[0].alien === s && s !== target,
+            reflections,
+            killsAfterReflect,
+            died: aliveBefore - sw.aliveCount()
+          });
+        }
+      }
+    }
+
+    const redirects = flights.filter((f) => f.redirected);
+    const full = redirects.filter((f) => f.reflections > 0 && f.killsAfterReflect > 0);
+    const worst = flights.reduce((m, f) => Math.max(m, f.log.length), 0);
+    console.log(`    shield+combined sweep: ${flights.length} flights, ` +
+      `${redirects.length} opened with a redirect, ${full.length} went ` +
+      `redirect -> wall -> further kill, worst kill count ${worst}`);
+
+    check(`(b) the sweep ran (${flights.length} flights over ` +
+      `${coveredCells.length} covered cells)`, flights.length > 0);
+    check('(b) some flight really did open with a shield redirect -- not vacuous',
+      redirects.length > 0, `redirects=${redirects.length}`);
+
+    const badPierce = redirects.filter((f) =>
+      f.log[0].pierceBefore !== U.PIERCE_COUNT ||
+      f.bullet.pierce > U.PIERCE_COUNT - 1);
+    check('(b) every redirect in the sweep opened on a full pierce budget and ' +
+      'spent at least that one pierce -- none was free',
+      badPierce.length === 0,
+      badPierce.map((f) => `r${f.cell.row}c${f.cell.col}/${f.side}/${f.lead}:` +
+        `${f.log[0].pierceBefore}`).join(' '));
+
+    check('(b) at least one flight did all three on ONE bullet: redirected kill, ' +
+      'then a wall reflection, then a further kill',
+      full.length > 0,
+      `redirects=${redirects.length} withReflect=` +
+      `${redirects.filter((f) => f.reflections > 0).length} full=${full.length}`);
+    if (full.length > 0) {
+      const f = full[0];
+      check('(b) that flight\'s first kill was the shield, and its later kills ' +
+        'came after the ricochet',
+        f.log[0].alien.role === 'shield' && f.killsAfterReflect >= 1,
+        `role=${f.log[0].alien.role} after=${f.killsAfterReflect}`);
+      check(`(b) and it STILL killed at most PIERCE_COUNT + 1 ` +
+        `(${U.PIERCE_COUNT + 1}) -- kills=${f.log.length}`,
+        f.log.length <= U.PIERCE_COUNT + 1);
+    }
+
+    const over = flights.filter((f) => f.log.length > U.PIERCE_COUNT + 1);
+    check(`(b) across all ${flights.length} shield-redirect flights the worst ` +
+      `kill count is ${worst} <= PIERCE_COUNT + 1 (${U.PIERCE_COUNT + 1}) -- a ` +
+      'redirect buys no extra kill, so BEST_ALIENS_PER_SHOT still holds',
+      over.length === 0,
+      over.map((f) => `r${f.cell.row}c${f.cell.col}/${f.side}/${f.lead}:` +
+        `${f.log.length}`).join(' '));
+    check('(b) killAlien() count and aliens actually removed agree on every flight',
+      flights.every((f) => f.log.length === f.died),
+      flights.filter((f) => f.log.length !== f.died)
+        .map((f) => `${f.log.length}!=${f.died}`).join(' '));
+  });
+});
+
 /* ------------------------------ summary -------------------------------- */
 
 if (baselineDir) {
