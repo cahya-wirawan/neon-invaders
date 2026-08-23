@@ -476,33 +476,31 @@ else
 fi
 
 # ---------------------------------------------------------------- AC13
-hdr "AC13: nothing outside this round's authorized scope changed; the engine regression suite passes"
-# THIS ROUND'S SCOPE IS DIFFERENT FROM THE LAST ONE. The previous round --
-# commander personalities -- authorized js/core.js, js/entities.js and
-# js/hud.js, and froze js/game.js. This round is the KILL-STREAK SCORE
-# MULTIPLIER, so the two swap places: js/game.js is open (the streak state,
-# scoreKill() and the reset rules all live in the state machine), and
-# js/entities.js goes BACK INTO the frozen list -- the multiplier is pure
-# arithmetic on the existing addScore() path, so the swarm, the aliens and
-# the bullets need no edit at all, and freezing entities.js is what machine-
-# checks that claim instead of leaving it as prose.
+hdr "AC13: nothing outside this round's authorized scope (DISTINCT ALIEN CLASSES) changed; the engine regression suite passes"
+# THIS ROUND'S SCOPE IS DIFFERENT FROM THE LAST ONE. The previous round -- the
+# KILL-STREAK SCORE MULTIPLIER -- authorized js/core.js, js/game.js and
+# js/hud.js and froze js/entities.js. This round is DISTINCT ALIEN CLASSES
+# (Shield Aliens + Kamikaze Units), so js/entities.js and js/hud.js SWAP
+# places: js/entities.js is open (both classes are Alien/Swarm behaviour --
+# assignRole, shieldFor, updateDive and the class draw tells all live there),
+# and js/hud.js goes BACK INTO the frozen list. That freeze is the machine
+# check on this round's "no new persistent HUD text" claim: every class tell
+# is in-world (an additive halo plus flat fillRects on the sprite), so the HUD
+# needs no edit at all and is proven not to have had one.
 #
-# server/ is frozen with ONE narrowly-scoped, named exception, carved out for
-# the same reason the pierce upgrade got one last round (commit a1d8682, "Fix
-# anti-cheat's per-shot assumption for the pierce upgrade"): a client-side
-# scoring change INVALIDATES a server-side plausibility bound, and leaving the
-# stale bound in place would falsely reject a legitimate player's run.
-# server/src/anticheat.js's bound 2 derived its score-per-second ceiling
-# assuming no score multiplier (~136/s peak -> 200/s enforced). CONFIG.COMBO
-# now multiplies every alien and saucer kill by up to COMBO.MAX (4) from wave 2
-# on, putting the real peak at ~522/s -- 2.6x ABOVE the enforced ceiling -- and
-# js/net.js submits against exactly that ceiling on game over, so it is a live,
-# reachable false-rejection path, not a hypothetical. The exception is
-# therefore server/src/anticheat.js plus server/README.md, which documents the
-# same derivation verbatim and would otherwise contradict the code. Every other
-# path under server/ (routes, store, auth, tests, .env.example, package*.json)
-# stays frozen and IS still checked below -- this is a carve-out, not a
-# reopening of the backend.
+# server/ is FULLY FROZEN again this round -- the anticheat.js + server/README.md
+# carve-out the kill-streak round needed is CLOSED. The reason that carve-out
+# existed was that CONFIG.COMBO multiplied every kill and so invalidated bound
+# 2's score-per-second ceiling. NEITHER class this round carries a score bonus
+# (a shield pays its own SCORE.ROW value when it eats a hit; a kamikaze pays
+# nothing at all), so BEST_ALIEN_SCORE and COMBO_MAX are unchanged,
+# PEAK_SCORE_PER_SECOND stays ~522/s and the 800/s ceiling needs no
+# re-derivation. Bound 1 is the only one the kamikaze touches at all -- it
+# removes one alien without a trigger pull, so the true one-wave floor moves
+# from ceil(55/3)*0.28+2.4 = 7.72s to ceil(54/3)*0.28+2.4 = 7.44s, still 1.93x
+# above the 3.86s the server actually enforces (see FEATURES.md for the full
+# arithmetic). Nothing under server/ may change, and the whole tree is checked
+# below with no exclusions.
 #
 # The check is still the same two halves:
 #   (a) everything the round was NOT authorized to touch is still untouched,
@@ -513,26 +511,33 @@ hdr "AC13: nothing outside this round's authorized scope changed; the engine reg
 #       bit-identical is still proven -- just by behaviour, not by bytes).
 #
 # Authorized to change this round, hence excluded from (a):
-#   js/core.js js/game.js js/hud.js       (CONFIG.COMBO, the streak state and
-#                                          scoreKill()/reset rules, the HUD
-#                                          readout)
-#   scripts/check-game.js                 (scenarios 20-23, appended only)
+#   js/core.js                            (CONFIG.ALIEN_CLASS, the two class
+#                                          colours, KAMIKAZE.FLOOR_Y, VERSION)
+#   js/entities.js                        (Alien.role/dive fields + draw tells;
+#                                          Swarm.assignRole/shieldFor/updateDive
+#                                          and the diver skips)
+#   js/game.js                            (the shield redirect at the existing
+#                                          kill/score choke point, the one
+#                                          alien-vs-player contact branch, the
+#                                          bunker-crush exclusion)
+#   scripts/check-game.js                 (scenarios 24-27 appended, plus ONE
+#                                          authorized edit to scenario 5 -- the
+#                                          kamikaze is a documented exemption
+#                                          from the FORMATION.MAX_Y bound)
 #   scripts/verify.sh                     (this retarget)
 #   README.md FEATURES.md                 (the docs for the above)
 #   package.json                          (the "version" field ONLY, bumped to
-#                                          1.1.0 with CONFIG.VERSION -- AC15
+#                                          1.2.0 with CONFIG.VERSION -- AC15
 #                                          below is what checks they agree)
-#   server/src/anticheat.js               (bound 2's ceiling, re-derived for
-#   server/README.md                       COMBO.MAX -- see the carve-out note
-#                                          above; nothing else under server/)
+# NOT authorized: js/hud.js (frozen -- see the no-new-HUD-text note above) and
+# every path under server/ (frozen -- no score bonus, no bound to re-derive).
 
 # --- (a) untouched-outside-scope, tracked AND untracked -----------------
-FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js js/entities.js css/style.css index.html js/net.js"
+FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js js/hud.js css/style.css index.html js/net.js"
 FROZEN_MOBILE="android ios capacitor.config.json package-lock.json"
 DIRTY_ENGINE="$(git status --porcelain --untracked-files=all -- $FROZEN_ENGINE)"
 DIRTY_MOBILE="$(git status --porcelain --untracked-files=all -- $FROZEN_MOBILE)"
-DIRTY_SERVER="$(git status --porcelain --untracked-files=all -- server \
-  ':(exclude)server/src/anticheat.js' ':(exclude)server/README.md')"
+DIRTY_SERVER="$(git status --porcelain --untracked-files=all -- server)"
 DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
   ':(exclude)scripts/check-game.js' ':(exclude)scripts/verify.sh')"
 # package.json is authorized for its "version" field ONLY, so do not simply
@@ -542,9 +547,9 @@ DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
 DIRTY_PKGJSON="$(git diff HEAD -- package.json | grep -E '^[+-]' \
   | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true)"
 DIRTY="$DIRTY_ENGINE$DIRTY_MOBILE$DIRTY_SERVER$DIRTY_SCRIPTS$DIRTY_PKGJSON"
-note "8 frozen engine files (js/entities.js back among them) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
+note "8 frozen engine files (js/hud.js back among them) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
 note "android/ ios/ capacitor.config.json package-lock.json      -> '${DIRTY_MOBILE:-<clean>}'"
-note "server/ minus the named anticheat carve-out                -> '${DIRTY_SERVER:-<clean>}'"
+note "ALL of server/ (the anticheat carve-out is closed)         -> '${DIRTY_SERVER:-<clean>}'"
 note "pre-existing scripts/* (minus check-game.js + verify.sh)    -> '${DIRTY_SCRIPTS:-<clean>}'"
 note "package.json lines changed that are NOT the version field  -> '${DIRTY_PKGJSON:-<clean>}'"
 
@@ -567,10 +572,14 @@ else
 fi
 
 # --- (c) the anti-cheat mirror actually mirrors --------------------------
-# COMBO_MAX in server/src/anticheat.js is a hand-copied mirror of js/core.js's
-# CONFIG.COMBO.MAX and bound 2's ceiling is derived from it, so drift between
-# the two is exactly the stale-bound bug this carve-out exists to fix. Check
-# it by value rather than trusting the comment.
+# STANDING REGRESSION CHECK, not specific to any one round. COMBO_MAX in
+# server/src/anticheat.js is a hand-copied mirror of js/core.js's
+# CONFIG.COMBO.MAX, and bound 2's ceiling is derived from it, so drift between
+# the two is a stale-bound bug that would falsely reject a legitimate run.
+# This round changes neither side (server/ is frozen and COMBO.MAX is
+# untouched), so it is expected to pass unchanged -- which is the point of
+# keeping it: it is what would catch a future round quietly breaking the
+# mirror. Checked by value rather than by trusting the comment.
 # Anchored at line start so BOUNCE_MAX and friends cannot match instead.
 CORE_COMBO_MAX="$(grep -oE '^[[:space:]]+MAX: [0-9]+' js/core.js | head -1 | grep -oE '[0-9]+')"
 AC_COMBO_MAX="$(node -e "process.stdout.write(String(require('./server/src/anticheat.js').COMBO_MAX))" 2>/dev/null || true)"
@@ -585,11 +594,32 @@ if [ -n "$AC_CEILING" ] && [ -n "$AC_PEAK" ] && [ "$AC_CEILING" -ge "$AC_PEAK" ]
   CEILING_OK=1
 fi
 
+# --- (d) no NEW shadowBlur call site --------------------------------------
+# Glow is faked with prerendered additive sprite blits on purpose; the
+# expensive shadowBlur is reserved for exactly two existing places -- the
+# player ship's own draw (js/entities.js) and HUD text (js/hud.js). This
+# round adds per-alien class tells, which is precisely the kind of change
+# that is tempting to write with a third shadowBlur, so pin it: every ADDED
+# line across the three authorized engine files must be free of it. Removals
+# and unchanged lines are not counted, so the ship's existing call site is
+# untouched by this check.
+# NOTE ON THE PATTERNS: the '+++' filter is a BASIC regex ('^+++'), NOT
+# '^\+\+\+'. In BRE a backslash-plus is a repetition OPERATOR, so the escaped
+# form is a syntax error on some greps (ugrep among them) -- and a grep that
+# errors out emits nothing, which would make this check pass vacuously no
+# matter what the diff contained.
+SHADOW_ADDED="$(git diff HEAD -- js/core.js js/entities.js js/game.js \
+  | grep '^+' | grep -v '^+++' | grep -c 'shadowBlur' || true)"
+note "shadowBlur occurrences on ADDED lines in js/core.js+js/entities.js+js/game.js: $SHADOW_ADDED (must be 0 -- the ship's draw and the HUD text stay the only two call sites)"
+SHADOW_OK=0
+[ "$SHADOW_ADDED" = "0" ] && SHADOW_OK=1
+
 if [ -z "$DIRTY" ] && [ "$ORDER" = "$EXPECTED" ] && [ "$GSTATIC_IN_HTML" = "0" ] \
-   && [ "$CHECKGAME_OK" = "1" ] && [ "$COMBO_SYNC" = "1" ] && [ "$CEILING_OK" = "1" ]; then
-  pass 13 "every path in this round's frozen-file list is byte-identical to HEAD -- 8 engine files INCLUDING js/entities.js, css, index.html, net.js, android/ios/capacitor, package-lock.json, pre-existing scripts/*, and all of server/ except the named anticheat carve-out -- and package.json's only changed line is its version field (note: this is an allowlist of enumerated paths, not a whole-tree scan, so paths in neither the frozen nor the authorized list are outside what AC13 inspects); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; server/src/anticheat.js's COMBO_MAX still mirrors js/core.js and its ceiling still clears the derived peak; and scripts/check-game.js passes every scenario, which is what gates js/core.js, js/game.js and js/hud.js"
+   && [ "$CHECKGAME_OK" = "1" ] && [ "$COMBO_SYNC" = "1" ] && [ "$CEILING_OK" = "1" ] \
+   && [ "$SHADOW_OK" = "1" ]; then
+  pass 13 "every path in this round's frozen-file list is byte-identical to HEAD -- 8 engine files INCLUDING js/hud.js (this round's no-new-HUD-text proof), css, index.html, net.js, android/ios/capacitor, package-lock.json, pre-existing scripts/*, and ALL of server/ with no carve-out at all -- and package.json's only changed line is its version field (note: this is an allowlist of enumerated paths, not a whole-tree scan, so paths in neither the frozen nor the authorized list are outside what AC13 inspects); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; server/src/anticheat.js's COMBO_MAX still mirrors js/core.js and its ceiling still clears the derived peak; this round introduced no new shadowBlur call site; and scripts/check-game.js passes every scenario, which is what gates js/core.js, js/entities.js and js/game.js"
 else
-  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML check_game_ok=$CHECKGAME_OK combo_mirror_ok=$COMBO_SYNC ceiling_ok=$CEILING_OK"
+  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML check_game_ok=$CHECKGAME_OK combo_mirror_ok=$COMBO_SYNC ceiling_ok=$CEILING_OK shadowblur_ok=$SHADOW_OK (added=$SHADOW_ADDED)"
 fi
 
 # ---------------------------------------------------------------- AC14
