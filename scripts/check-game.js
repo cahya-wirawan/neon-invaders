@@ -549,7 +549,16 @@ scenario('5. formation bounds safety (never reaches bunkers or the floor)', () =
       }
       tick(env, game);
       for (const a of sw.aliens) {
-        if (!a.alive) continue;
+        /* A COMMITTED KAMIKAZE is the one documented, deliberate exemption
+         * to this invariant: it leaves the grid entirely, owns its own
+         * absolute x/y (a.dive) and is meant to reach the ship, which is
+         * below both of these lines. Skipping it here narrows this scenario
+         * to what it has always been about -- CHOREOGRAPHY (fx/fy offsets
+         * applied on top of the grid anchor) never reaching the bunkers or
+         * the floor -- and does not leave the dive unchecked: scenario 26
+         * verifies the diver's own bounds, its crash floor, and that its
+         * grid anchor stays untouched throughout. */
+        if (!a.alive || a.dive) continue;
         worstY = Math.max(worstY, a.y);
         crushLine = Math.max(crushLine, a.y + a.h / 2);
       }
@@ -2060,6 +2069,834 @@ scenario('23. the streak cannot survive into GAME_OVER, even mid-collision-pass'
     check('(e) it stays cleared across 30 further GAME_OVER frames', stayed,
       `combo=${game.combo} mult=${game.comboMult()}`);
   });
+});
+
+/* --------------------------------------------------------------------- */
+/* Distinct alien classes (SHIELD + KAMIKAZE) -- scenarios 24-27.
+ *
+ * Shared helpers. `countedRun` is the same save/restore discipline withSeed
+ * uses, plus a draw counter: several checks below are ABOUT how many
+ * Math.random() calls a piece of code spends, which withSeed alone cannot
+ * answer. */
+function countedRun(seed, fn) {
+  const real = Math.random;
+  const rng = mulberry32(seed);
+  const counter = { draws: 0 };
+  Math.random = function () { counter.draws += 1; return rng(); };
+  try {
+    return fn(counter);
+  } finally {
+    Math.random = real;
+  }
+}
+
+/* Class-tagged aliens of a swarm, by role. */
+function roleAliens(swarm) {
+  return swarm.aliens.filter((a) => a.role);
+}
+
+/* A live alien inside SHIELD.RADIUS grid cells of the shield (but not the
+ * shield itself), i.e. one the shield is actually covering. */
+function coveredNeighbour(C, swarm) {
+  const s = swarm.shield;
+  if (!s) return null;
+  const R = C.ALIEN_CLASS.SHIELD.RADIUS;
+  for (const a of swarm.aliens) {
+    if (!a.alive || a === s) continue;
+    if (Math.abs(a.col - s.col) <= R && Math.abs(a.row - s.row) <= R) return a;
+  }
+  return null;
+}
+
+/* Fires one real player Bullet through the game's own collide(), exactly the
+ * way scenarios 9/13/20 deliver a kill, and reports what the frame did. */
+function shotAt(env, game, target, pierce) {
+  const C = env.SI.CONFIG;
+  const scoreBefore = game.score;
+  const comboBefore = game.combo;
+  const aliveBefore = game.swarm.aliveCount();
+  const b = new env.SI.Bullet(
+    target.x, target.y, -C.BULLET.PLAYER_SPEED, 'player', '#fff');
+  if (pierce) b.pierce = pierce;
+  game.bullets.push(b);
+  tick(env, game);
+  return {
+    bullet: b,
+    score: game.score - scoreBefore,
+    combo: game.combo - comboBefore,
+    killed: aliveBefore - game.swarm.aliveCount()
+  };
+}
+
+/* --------------------------------------------------------------------- */
+scenario('24. alien classes are wave-derived, mutually exclusive with the commander, ' +
+         'and cost zero RNG', () => {
+  withSeed(2401, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const K = C.ALIEN_CLASS;
+
+    /* (a) the gates, and exactly one of each above them ------------------ */
+    let gateOk = true;
+    let gateDetail = '';
+    let commanderWaves = 0;
+    let exclusionOk = true;
+    for (let w = 1; w <= 14; w++) {
+      const sw = new env.SI.Swarm(w);
+      const shields = sw.aliens.filter((a) => a.role === 'shield');
+      const kams = sw.aliens.filter((a) => a.role === 'kamikaze');
+      const wantShield = w >= K.SHIELD.FROM_WAVE ? 1 : 0;
+      const wantKam = w >= K.KAMIKAZE.FROM_WAVE ? 1 : 0;
+      if (shields.length !== wantShield || kams.length !== wantKam ||
+          roleAliens(sw).length !== wantShield + wantKam ||
+          (!!sw.shield) !== !!wantShield || (!!sw.kamikaze) !== !!wantKam) {
+        gateOk = false;
+        gateDetail += ` w${w}:shield=${shields.length}/${wantShield},kam=${kams.length}/${wantKam}`;
+      }
+      /* (b) AC-4: a commander NEVER also carries a class, and no class-tagged
+       * alien is ever the commander. Checked on every wave that has one. */
+      if (sw.commander) {
+        commanderWaves++;
+        if (sw.commander.role !== null) {
+          exclusionOk = false;
+          gateDetail += ` w${w}:commander.role=${sw.commander.role}`;
+        }
+        for (const a of roleAliens(sw)) {
+          if (a.commander !== false) {
+            exclusionOk = false;
+            gateDetail += ` w${w}:${a.role} is also commander`;
+          }
+        }
+      }
+    }
+    check('a shield exists iff wave >= SHIELD.FROM_WAVE and a kamikaze iff ' +
+      'wave >= KAMIKAZE.FROM_WAVE, exactly one of each (waves 1-14)',
+      gateOk, gateDetail.trim());
+    check('every wave from COMMANDER.FROM_WAVE up actually had a commander to test',
+      commanderWaves === 12, `waves=${commanderWaves}`);
+    check('AC-4: the commander never carries a class, and no class alien is ever ' +
+      'the commander (structural: assignRole refuses a commander cell)',
+      exclusionOk, gateDetail.trim());
+
+    /* (c) the pick is WAVE-DERIVED, so it is identical across seeds -------- */
+    const SEEDS = [11, 222222, 987654321];
+    let seedOk = true;
+    let seedDetail = '';
+    for (let w = K.KAMIKAZE.FROM_WAVE; w <= K.KAMIKAZE.FROM_WAVE + 5; w++) {
+      const cells = SEEDS.map((s) => withSeed(s, () => {
+        const sw = new env.SI.Swarm(w);
+        return [
+          sw.shield ? `${sw.shield.row},${sw.shield.col}` : 'none',
+          sw.kamikaze ? `${sw.kamikaze.row},${sw.kamikaze.col}` : 'none'
+        ].join('/');
+      }));
+      if (cells[0] !== cells[1] || cells[1] !== cells[2]) {
+        seedOk = false;
+        seedDetail += ` w${w}:${cells.join(' vs ')}`;
+      }
+    }
+    check('the same wave tags the SAME (row, col) alien for each class under three ' +
+      'different seeds (wave-derived, not drawn)', seedOk, seedDetail.trim());
+
+    /* (d) the classes never touch the grid anchor layout ------------------ */
+    const sw5 = new env.SI.Swarm(5);
+    check('SHIELD sits on ALIEN_CLASS.SHIELD.ROW and KAMIKAZE on the bottom row',
+      sw5.shield.row === K.SHIELD.ROW && sw5.kamikaze.row === C.SWARM.ROWS - 1,
+      `shield.row=${sw5.shield.row} kamikaze.row=${sw5.kamikaze.row}`);
+    check('SHIELD.ROW is deep enough that its RADIUS can never reach row 0, ' +
+      'where every commander lives',
+      K.SHIELD.ROW - K.SHIELD.RADIUS > 0, `row=${K.SHIELD.ROW} radius=${K.SHIELD.RADIUS}`);
+    check('a fresh kamikaze is armed but not yet committed (dive === null)',
+      sw5.kamikaze.dive === null && sw5.kamikaze.diveTimer === K.KAMIKAZE.FIRST_DELAY,
+      `dive=${sw5.kamikaze.dive} timer=${sw5.kamikaze.diveTimer}`);
+    check('neither class carries a score bonus (AC-7: server/ needs no re-derivation)',
+      sw5.shield.score === C.SCORE.ROW[sw5.shield.row] &&
+      sw5.kamikaze.score === C.SCORE.ROW[sw5.kamikaze.row],
+      `shield=${sw5.shield.score} kamikaze=${sw5.kamikaze.score}`);
+  });
+
+  /* (e) AC-3: ZERO added Math.random() draws, at every wave --------------- */
+  const drawsFor = (jsDir, wave) => countedRun(31337, (counter) => {
+    const env = loadGame(jsDir);
+    counter.draws = 0;                       // loadGame itself draws nothing, but be exact
+    /* eslint-disable-next-line no-new */
+    new env.SI.Swarm(wave);
+    return counter.draws;
+  });
+
+  const WAVES = [1, 2, 3, 4, 5, 6, 10];
+  const nowDraws = WAVES.map((w) => drawsFor(JS_DIR, w));
+  console.log(`    Swarm() Math.random draws by wave: ` +
+    WAVES.map((w, i) => `w${w}=${nowDraws[i]}`).join(' '));
+
+  /* The plan's own formulation: from wave 3 up, a wave draws exactly what an
+   * UNCLASSED commanded wave draws. Waves 4/5/6/10 all carry classes, wave 3
+   * carries none, and the counts have to agree. */
+  const w3 = nowDraws[WAVES.indexOf(3)];
+  let sameAs3 = true;
+  let sameDetail = '';
+  for (const w of [4, 5, 6, 10]) {
+    const d = nowDraws[WAVES.indexOf(w)];
+    if (d !== w3) { sameAs3 = false; sameDetail += ` w${w}=${d} vs w3=${w3}`; }
+  }
+  check('AC-3: waves 4/5/6/10 (classed) spend exactly as many draws as wave 3 ' +
+    '(commanded, unclassed) -- the classes add none', sameAs3, sameDetail.trim());
+
+  /* Stronger still: compare EVERY wave against the pre-class game at git HEAD.
+   * That pins the whole stream shape, not just a same-as-wave-3 relation.
+   * (Skipped, with a visible note, if HEAD:js/ could not be extracted.) */
+  if (baselineDir) {
+    const headDraws = WAVES.map((w) => drawsFor(baselineDir, w));
+    check('AC-3: the per-wave draw count is byte-identical to the pre-class game ' +
+      'at git HEAD, for waves 1/2/3/4/5/6/10',
+      headDraws.join(',') === nowDraws.join(','),
+      `HEAD=${headDraws.join(',')} now=${nowDraws.join(',')}`);
+  } else {
+    console.log('    (HEAD:js/ unavailable -- skipping the HEAD draw-count cross-check)');
+  }
+
+  /* DURABLE PIN. The HEAD cross-check above is genuinely useful right now,
+   * but it decays into a tautology the moment this round is committed: `git
+   * show HEAD:js/*` will then BE the worktree and the comparison passes no
+   * matter what. Scenario 1 solves exactly this problem with a literal
+   * GOLDEN_DIGEST constant, and scenario 20 does it for the combo table with
+   * a hand-written [1,1,1,2,2,2,2,3,3,3,3,4...] sequence. Same discipline
+   * here, for the per-wave draw count.
+   *
+   * The numbers are NOT copied from the current output -- they are derived
+   * by hand from the three draw sites in the Swarm constructor, in the order
+   * they execute:
+   *   1. `SI.rand(0.4, cfg.fire)` for fireTimer          -- EVERY wave
+   *   2. `SI.rand(0, MAX_GAP - MIN_GAP)` first jitter    -- wave >= 2
+   *   3. `SI.randInt(0, COLS - 1)` for the commander     -- wave >= 3
+   * so wave 1 spends 1, wave 2 spends 2, and every wave from 3 up spends 3.
+   * Neither ALIEN_CLASS gate adds a fourth: waves 4 and 5, where the shield
+   * and the kamikaze switch on, must still read exactly 3.
+   *
+   * Guarded on the four gates the derivation depends on, the way scenario 20
+   * guards its literal on COMBO.STEP/MAX: retune any of them and this fails
+   * loudly saying the literal must be rewritten, instead of silently
+   * comparing against a stale constant. */
+  withSeed(2403, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const K = C.ALIEN_CLASS;
+    if (C.FORMATION.FROM_WAVE === 2 && C.COMMANDER.FROM_WAVE === 3 &&
+        K.SHIELD.FROM_WAVE === 4 && K.KAMIKAZE.FROM_WAVE === 5) {
+      const PIN_WAVES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+      const WANT_DRAWS = [1, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3];
+      const got = PIN_WAVES.map((w) => drawsFor(JS_DIR, w));
+      check('AC-3 (durable pin): `new SI.Swarm(wave)` spends a hand-derived ' +
+        '[1,2,3,3x9] Math.random draws for waves 1-12 -- 1 for fireTimer, ' +
+        '+1 from FORMATION.FROM_WAVE, +1 from COMMANDER.FROM_WAVE, and NOTHING ' +
+        'from either class gate (survives this round being committed, unlike ' +
+        'the HEAD comparison above)',
+        got.join(',') === WANT_DRAWS.join(','),
+        `got=[${got.join(',')}] want=[${WANT_DRAWS.join(',')}]`);
+      check('AC-3 (durable pin): the class gates at waves 4 and 5 are inside the ' +
+        'pinned range, so the pin actually covers them',
+        PIN_WAVES.indexOf(K.SHIELD.FROM_WAVE) >= 0 &&
+        PIN_WAVES.indexOf(K.KAMIKAZE.FROM_WAVE) >= 0,
+        `shield=${K.SHIELD.FROM_WAVE} kamikaze=${K.KAMIKAZE.FROM_WAVE}`);
+    } else {
+      check('AC-3 (durable pin): a FROM_WAVE gate was retuned -- the hand-derived ' +
+        'draw-count literal must be rewritten', false,
+        `formation=${C.FORMATION.FROM_WAVE} commander=${C.COMMANDER.FROM_WAVE} ` +
+        `shield=${K.SHIELD.FROM_WAVE} kamikaze=${K.KAMIKAZE.FROM_WAVE}; ` +
+        `the literal is written for 2/3/4/5`);
+    }
+  });
+
+  /* (f) the palette: each class tell must be unmistakable ----------------- */
+  withSeed(2402, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const MIN_CHANNEL_GAP = 48;
+    const rgb = (hex) => [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16)
+    ];
+    const chanGap = (x, y) => {
+      const a = rgb(x);
+      const b = rgb(y);
+      return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+    };
+    const REFS = [
+      ['commander', C.COLORS.commander],
+      ['player', C.COLORS.player],
+      ['playerGlow', C.COLORS.playerGlow]
+    ];
+    C.COLORS.alienRows.forEach((c, i) => REFS.push([`alienRows[${i}]`, c]));
+    C.COMMANDER.PERSONALITIES.forEach((p) => REFS.push([`personality:${p.id}`, p.color]));
+    const TELLS = [
+      ['shieldAlien', C.COLORS.shieldAlien],
+      ['kamikaze', C.COLORS.kamikaze]
+    ];
+    let paletteOk = true;
+    let paletteDetail = '';
+    for (const tell of TELLS) {
+      for (const ref of REFS) {
+        const d = chanGap(tell[1], ref[1]);
+        if (d < MIN_CHANNEL_GAP) {
+          paletteOk = false;
+          paletteDetail += ` ${tell[0]}(${tell[1]})~${ref[0]}(${ref[1]}):${d}`;
+        }
+      }
+    }
+    const pairGap = chanGap(TELLS[0][1], TELLS[1][1]);
+    if (pairGap < MIN_CHANNEL_GAP) {
+      paletteOk = false;
+      paletteDetail += ` shieldAlien~kamikaze:${pairGap}`;
+    }
+    check(`both class colours clear ${MIN_CHANNEL_GAP}/255 in some channel from ` +
+      `COLORS.commander, every alienRows entry, every personality colour, the ship ` +
+      `and each other (${REFS.length} references)`, paletteOk, paletteDetail.trim());
+
+    /* (g) drawing smoke test: no class tell may throw ---------------------- */
+    const game = startedGame(env, 5);
+    stillSwarm(game);
+    const sw = game.swarm;
+    const drawErrors = [];
+    const trydraw = (label, alien) => {
+      try {
+        alien.draw(env.ctx, 0, 0);
+        alien.draw(env.ctx, 1, 1.2);
+      } catch (e) { drawErrors.push(`${label}: ${(e && e.message) || e}`); }
+    };
+    trydraw('shield', sw.shield);
+    sw.shield.hitFlash = C.ALIEN_CLASS.SHIELD.FLASH;
+    trydraw('shield mid-flash', sw.shield);
+    trydraw('kamikaze (armed)', sw.kamikaze);
+    sw.kamikaze.dive = { x: sw.kamikaze.x, y: sw.kamikaze.y };
+    trydraw('kamikaze (diving)', sw.kamikaze);
+    if (sw.commander) trydraw('commander', sw.commander);
+    trydraw('plain alien', sw.aliens[sw.aliens.length - 1]);
+    check('drawing a shield, a flashing shield, an armed kamikaze, a DIVING ' +
+      'kamikaze, a commander and a plain alien all throw nothing',
+      drawErrors.length === 0, drawErrors.join(' | '));
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('25. SHIELD redirects a lethal hit to itself -- exactly once, credited ' +
+         'to the shield', () => {
+  withSeed(2501, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const SHIELD_WAVE = C.ALIEN_CLASS.SHIELD.FROM_WAVE;
+
+    /* Wave 4 is deliberate: the shield's own gate, one wave BELOW the
+     * kamikaze's, so nothing is diving while the redirect is measured. */
+    const fresh = () => {
+      const g = startedGame(env, SHIELD_WAVE);
+      stillSwarm(g);
+      g.player.invuln = 0;
+      return g;
+    };
+
+    /* (a) a covered neighbour's lethal hit lands on the shield instead ---- */
+    const g1 = fresh();
+    const sw1 = g1.swarm;
+    const shield = sw1.shield;
+    const neighbour = coveredNeighbour(C, sw1);
+    check('wave 4 really has a shield with a live covered neighbour',
+      !!shield && !!neighbour, `shield=${!!shield} neighbour=${!!neighbour}`);
+
+    const multBefore = g1.comboMult();
+    const shieldScore = shield.score;
+    const r1 = shotAt(env, g1, neighbour);
+    check('(a) the covered neighbour SURVIVED the lethal hit', neighbour.alive === true);
+    check('(a) the shield died in its place', shield.alive === false);
+    check('(a) exactly one alien died -- one killAlien() per resolved shot',
+      r1.killed === 1, `killed=${r1.killed}`);
+    check('(a) the score credited is the SHIELD\'s, at the multiplier in force',
+      r1.score === shieldScore * multBefore,
+      `delta=${r1.score} expected=${shieldScore * multBefore}`);
+    check('(a) combo advanced by exactly 1 -- one scoreKill(), not two',
+      r1.combo === 1, `delta=${r1.combo}`);
+    check('(a) the covered alien flashes so the player can see WHY it survived',
+      neighbour.hitFlash > 0, `hitFlash=${neighbour.hitFlash}`);
+    check('(a) the non-piercing shot is spent', r1.bullet.dead === true);
+
+    /* (b) with the shield gone the same alien dies normally --------------- */
+    const mult2 = g1.comboMult();
+    const ownScore = neighbour.score;
+    const r2 = shotAt(env, g1, neighbour);
+    check('(b) the now-unprotected neighbour dies on the next shot',
+      neighbour.alive === false && r2.killed === 1, `killed=${r2.killed}`);
+    check('(b) and is credited its OWN score', r2.score === ownScore * mult2,
+      `delta=${r2.score} expected=${ownScore * mult2}`);
+    check('(b) shieldFor() returns null once the shield is dead',
+      sw1.shieldFor(sw1.aliens[C.SWARM.COLS + 1]) === null);
+
+    /* (c) an alien OUTSIDE the radius is not covered ---------------------- */
+    const g2 = fresh();
+    const sw2 = g2.swarm;
+    const far = sw2.aliens.filter((a) =>
+      a.alive && !a.commander && Math.abs(a.col - sw2.shield.col) > C.ALIEN_CLASS.SHIELD.RADIUS)[0];
+    check('(c) an out-of-radius target exists to shoot', !!far,
+      far ? `col=${far.col} shieldCol=${sw2.shield.col}` : 'none');
+    const r3 = shotAt(env, g2, far);
+    check('(c) an alien outside SHIELD.RADIUS dies normally',
+      far.alive === false && r3.killed === 1, `killed=${r3.killed}`);
+    check('(c) and the shield is untouched', sw2.shield.alive === true);
+
+    /* (d) a shield does not protect ITSELF (no self-redirect loop) -------- */
+    const g3 = fresh();
+    const sw3 = g3.swarm;
+    const s3 = sw3.shield;
+    check('(d) shieldFor(shield) is null -- a shield never covers itself',
+      sw3.shieldFor(s3) === null);
+    const r4 = shotAt(env, g3, s3);
+    check('(d) a direct hit kills the shield, and only it',
+      s3.alive === false && r4.killed === 1, `killed=${r4.killed}`);
+    check('(d) credited its own score', r4.score === s3.score * 1,
+      `delta=${r4.score} score=${s3.score}`);
+
+    /* (e) AC-4 at the collision level: a commander is never covered ------- */
+    let cmdOk = true;
+    let cmdDetail = '';
+    let cmdWaves = 0;
+    for (let w = SHIELD_WAVE; w <= SHIELD_WAVE + 8; w++) {
+      const sw = new env.SI.Swarm(w);
+      if (!sw.commander) continue;
+      cmdWaves++;
+      if (sw.shieldFor(sw.commander) !== null) {
+        cmdOk = false;
+        cmdDetail += ` w${w}`;
+      }
+    }
+    check('(e) shieldFor(commander) is null on every wave >= SHIELD.FROM_WAVE ' +
+      `that has one (${cmdWaves} waves)`, cmdOk && cmdWaves > 0, cmdDetail.trim());
+
+    /* (f) the PIERCE upgrade still accounts correctly through a redirect --- */
+    const g4 = fresh();
+    const sw4 = g4.swarm;
+    const s4 = sw4.shield;
+    const n4 = coveredNeighbour(C, sw4);
+    const r5 = shotAt(env, g4, n4, C.UPGRADE.PIERCE_COUNT);
+    check('(f) a PIERCING shot into a covered alien kills the SHIELD',
+      s4.alive === false && n4.alive === true,
+      `shield=${s4.alive} neighbour=${n4.alive}`);
+    check('(f) exactly one alien died -- it did NOT redirect twice in one pass',
+      r5.killed === 1, `killed=${r5.killed}`);
+    check('(f) pierce was decremented exactly once',
+      r5.bullet.pierce === C.UPGRADE.PIERCE_COUNT - 1,
+      `pierce=${r5.bullet.pierce} from=${C.UPGRADE.PIERCE_COUNT}`);
+    check('(f) and the laser survived to fly on', r5.bullet.dead === false);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('26. KAMIKAZE reaches the ship, costs a life, scores nothing, and never ' +
+         'trips onInvasion()', () => {
+  withSeed(2601, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const K = C.ALIEN_CLASS.KAMIKAZE;
+
+    /* Formations are pinned OFF for isolation: this scenario is about the
+     * dive, and scenarios 3-5 already own the choreography. */
+    const armed = (parkX) => {
+      const g = startedGame(env, K.FROM_WAVE);
+      stillSwarm(g);
+      g.swarm.formationsEnabled = false;
+      g.swarm.formationTimer = Infinity;
+      g.player.invuln = 0;
+      if (parkX != null) g.player.x = parkX;
+      g.swarm.kamikaze.diveTimer = 0;      // commit on the next tick
+      const invasions = { n: 0 };
+      const realInvasion = g.world.onInvasion;
+      g.world.onInvasion = function () { invasions.n++; realInvasion(); };
+      return { g, invasions };
+    };
+
+    /* ---- (a) ship contact: one life, no score, no invasion ------------- */
+    const a = armed();
+    const g1 = a.g;
+    const sw1 = g1.swarm;
+    const kz = sw1.kamikaze;
+    /* A reference alien on the SAME grid row. If the dive ever wrote gx/gy,
+     * the anchor relationship between these two would drift. */
+    const ref = sw1.aliens.filter((x) => x.row === kz.row && x !== kz && x.alive)[0];
+    const dgx = kz.gx - ref.gx;
+    const dgy = kz.gy - ref.gy;
+
+    const livesBefore = g1.lives;
+    const scoreBefore = g1.score;
+    let anchorOk = true;
+    let anchorDetail = '';
+    let deepestDiver = -Infinity;
+    let deepestOther = -Infinity;
+    let shooterHits = 0;
+    let shooterSamples = 0;
+    let diveTicks = 0;
+    let contactTick = -1;
+
+    for (let t = 0; t < 900 && contactTick < 0; t++) {
+      /* Park the ship under the dive so contact is geometric, not luck. */
+      if (kz.dive) g1.player.x = kz.dive.x;
+      g1.player.invuln = 0;
+      tick(env, g1);
+      if (kz.alive) {
+        if (Math.abs((kz.gx - ref.gx) - dgx) > 1e-9 ||
+            Math.abs((kz.gy - ref.gy) - dgy) > 1e-9) {
+          anchorOk = false;
+          anchorDetail = `tick ${t}: dgx=${kz.gx - ref.gx} (want ${dgx}) ` +
+            `dgy=${kz.gy - ref.gy} (want ${dgy})`;
+        }
+      }
+      if (kz.dive) {
+        diveTicks++;
+        deepestDiver = Math.max(deepestDiver, kz.y);
+        /* pickShooter() must never nominate a committed rammer. */
+        for (let s = 0; s < 4; s++) {
+          const pick = sw1.pickShooter();
+          shooterSamples++;
+          if (pick === kz) shooterHits++;
+        }
+      }
+      for (const other of sw1.aliens) {
+        if (!other.alive || other.dive) continue;
+        deepestOther = Math.max(deepestOther, other.y);
+      }
+      if (g1.lives !== livesBefore) contactTick = t;
+    }
+
+    check('(a) the kamikaze committed to a dive', diveTicks > 0, `ticks=${diveTicks}`);
+    check('(a) ANCHOR INVARIANT: gx/gy stayed exactly in lockstep with a same-row ' +
+      'alien for the whole dive -- the dive never wrote the grid anchor',
+      anchorOk, anchorDetail);
+    check('(a) the diver really did pass FORMATION.MAX_Y (the exemption is real)',
+      deepestDiver > C.FORMATION.MAX_Y, `deepest=${deepestDiver} max=${C.FORMATION.MAX_Y}`);
+    check('(a) no NON-diving alien ever passed FORMATION.MAX_Y',
+      deepestOther <= C.FORMATION.MAX_Y + 1e-9,
+      `deepest=${deepestOther} max=${C.FORMATION.MAX_Y}`);
+    check('(a) contact happened', contactTick >= 0, `tick=${contactTick}`);
+    check('(a) it cost exactly one life', g1.lives === livesBefore - 1,
+      `${livesBefore} -> ${g1.lives}`);
+    check('(a) it awarded NO score', g1.score - scoreBefore === 0,
+      `delta=${g1.score - scoreBefore}`);
+    check('(a) the kamikaze died on contact', kz.alive === false);
+    check('(a) the run continues (lives remained), state is still PLAYING',
+      g1.lives > 0 && g1.state === env.SI.STATE.PLAYING,
+      `lives=${g1.lives} state=${g1.state}`);
+    check('(a) onInvasion() never fired during the whole dive', a.invasions.n === 0,
+      `fired=${a.invasions.n}`);
+    let bunkersAlive = 0;
+    for (const b of g1.bunkers) if (b.alive()) bunkersAlive++;
+    check('(a) all four bunkers survived -- a diver is exempt from the crush loop',
+      bunkersAlive === 4, `alive=${bunkersAlive}`);
+    check('(a) pickShooter() never nominated the committed rammer',
+      shooterHits === 0 && shooterSamples >= 200,
+      `hits=${shooterHits} samples=${shooterSamples}`);
+
+    /* ---- (b) miss: the dive terminates at its own floor, on screen ------ */
+    const bcase = armed(C.WORLD_W - 60);
+    const g2 = bcase.g;
+    const kz2 = g2.swarm.kamikaze;
+    const lives2 = g2.lives;
+    const score2 = g2.score;
+    /* Captured UNCONDITIONALLY, so the tick that actually crashes the diver
+     * (the one on which `alive` flips false) is the one measured. Guarding
+     * this on `kz2.alive` would record the last PRE-crash position instead,
+     * and the assertions below would then be checking a y the diver had
+     * already left -- true by luck of the step size rather than by test. */
+    let finalY = 0;
+    for (let t = 0; t < 900 && kz2.alive; t++) {
+      g2.player.x = C.WORLD_W - 60;         // parked far from the dive path
+      g2.player.invuln = 0;                 // prove it is geometry, not invulnerability
+      tick(env, g2);
+      finalY = kz2.y;
+    }
+    /* Now that finalY IS the crash position, the bound can be exact: the
+     * crash fires on `a.y >= FLOOR_Y`, so the terminal y must be at or past
+     * the floor -- and no more than one integration step past it. */
+    check('(b) a missed dive terminates AT its own floor (terminal y is at or ' +
+      'past FLOOR_Y, and within one step of it)',
+      kz2.alive === false && finalY >= K.FLOOR_Y - 1e-9 &&
+      finalY <= K.FLOOR_Y + K.SPEED_Y * DT + 1e-9,
+      `alive=${kz2.alive} finalY=${finalY} floor=${K.FLOOR_Y} step=${K.SPEED_Y * DT}`);
+    check('(b) the crash happens INSIDE the visible world (y + h/2 < WORLD_H)',
+      finalY + C.SWARM.ALIEN_H / 2 < C.WORLD_H,
+      `bottom=${finalY + C.SWARM.ALIEN_H / 2} world=${C.WORLD_H}`);
+    check('(b) a missed dive costs no life and awards no score',
+      g2.lives === lives2 && g2.score === score2,
+      `lives ${lives2}->${g2.lives} score ${score2}->${g2.score}`);
+    check('(b) onInvasion() never fired', bcase.invasions.n === 0,
+      `fired=${bcase.invasions.n}`);
+
+    /* ---- (c) an invulnerable ship is not hurt by contact ---------------- */
+    const ccase = armed();
+    const g3 = ccase.g;
+    const kz3 = g3.swarm.kamikaze;
+    const lives3 = g3.lives;
+    for (let t = 0; t < 900 && kz3.alive; t++) {
+      if (kz3.dive) g3.player.x = kz3.dive.x;   // dead centre of the dive path
+      g3.player.invuln = 99;                    // ... but shielded
+      tick(env, g3);
+    }
+    check('(c) contact while player.invuln > 0 costs no life -- symmetric with the ' +
+      'existing alien-bullet branch', g3.lives === lives3,
+      `${lives3} -> ${g3.lives}`);
+    check('(c) the diver still crashed out at its floor', kz3.alive === false);
+
+    /* ---- (d) the floor may never steal the last contact frame ----------
+     * ORDERING HAZARD, pinned. updateDive()'s FLOOR_Y crash test runs inside
+     * Swarm.update(), which executes BEFORE collide()'s contact test in the
+     * same tick. If FLOOR_Y sat INSIDE the ship's contact window, a diver
+     * whose final integration step landed in the overlap would self-destruct
+     * on the very tick it should have registered a ram -- the hit silently
+     * voided. The geometry, from the two box() functions rather than from
+     * hand-copied numbers:
+     *   player.box() spans y  PLAYER.Y -+ PLAYER.H / 2
+     *   alien.box()  spans y  centre   -+ ALIEN_H / 2
+     * and SI.aabb overlaps on strict inequality, so the boxes touch for an
+     * alien centre-y in the OPEN interval (contactTop, contactBottom). */
+    const shipTop = C.PLAYER.Y - C.PLAYER.H / 2;
+    const shipBottom = C.PLAYER.Y + C.PLAYER.H / 2;
+    const halfAlien = C.SWARM.ALIEN_H / 2;
+    const contactTop = shipTop - halfAlien;        // 621
+    const contactBottom = shipBottom + halfAlien;  // 675
+    const bandHeight = contactBottom - contactTop;
+    const step = K.SPEED_Y * C.MAX_DT;
+    check('(d) FLOOR_Y sits at or below the BOTTOM of the ship contact window, ' +
+      'so no tick can be both a crash and a voided ram',
+      K.FLOOR_Y >= contactBottom,
+      `FLOOR_Y=${K.FLOOR_Y} contact window=(${contactTop}, ${contactBottom})`);
+    check('(d) one dive step at the worst legal dt (SPEED_Y * MAX_DT) is ' +
+      'comfortably under half the contact window, so a diver can never step ' +
+      'over the window in a single frame',
+      step > 0 && step < bandHeight / 2,
+      `step=${step} window=${bandHeight} half=${bandHeight / 2}`);
+    check('(d) the crash still happens on screen with the corrected floor ' +
+      '(FLOOR_Y + ALIEN_H / 2 < WORLD_H)',
+      K.FLOOR_Y + halfAlien < C.WORLD_H,
+      `bottom=${K.FLOOR_Y + halfAlien} world=${C.WORLD_H}`);
+
+    /* Empirical companion to (d): drive a diver straight down onto a parked
+     * ship and confirm the contact -- not the floor -- is what resolved it,
+     * from a start position deliberately close to the floor. */
+    const dcase = armed();
+    const g4 = dcase.g;
+    const kz4 = g4.swarm.kamikaze;
+    const lives4 = g4.lives;
+    let resolvedByContact = false;
+    for (let t = 0; t < 900 && kz4.alive; t++) {
+      if (kz4.dive) g4.player.x = kz4.dive.x;
+      g4.player.invuln = 0;
+      /* Park the diver one step ABOVE the floor, inside the contact window,
+       * which is the exact frame the old FLOOR_Y would have stolen. */
+      if (kz4.dive && kz4.dive.y > contactBottom - step * 2) {
+        kz4.dive.y = K.FLOOR_Y - step + 0.5;
+        kz4.y = kz4.dive.y;
+      }
+      tick(env, g4);
+      if (g4.lives !== lives4) { resolvedByContact = true; break; }
+    }
+    check('(d) a diver whose last step lands just short of FLOOR_Y and inside ' +
+      'the contact window resolves as a RAM, not as a floor crash',
+      resolvedByContact && kz4.alive === false,
+      `lives ${lives4}->${g4.lives} alive=${kz4.alive}`);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* Scenario 27's run, factored out so it can be executed twice under the
+ * same seed and compared byte for byte (the determinism discipline
+ * scenario 21 established). Returns both a per-tick log and the total
+ * Math.random draw count. */
+function classIntegrationRun(seed) {
+  return countedRun(seed, (counter) => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const R = C.ALIEN_CLASS.SHIELD.RADIUS;
+
+    /* Spy on the single redirect choke point: shieldFor() is called from
+     * exactly one place (the player-shot branch of collide()), so a non-null
+     * return IS a redirect. */
+    const realShieldFor = env.SI.Swarm.prototype.shieldFor;
+    let redirects = 0;
+    env.SI.Swarm.prototype.shieldFor = function (al) {
+      const r = realShieldFor.call(this, al);
+      if (r) redirects += 1;
+      return r;
+    };
+
+    const log = [];
+    const errors = [];
+    const seenWaves = [];
+    let poolOverflow = 0;
+    let maxParticles = 0;
+    let dives = 0;
+    let deepestNonDiver = -Infinity;
+    let bunkersAtWaveStart = [];
+    let pickTurn = 0;
+    let lastWave = 0;
+
+    try {
+      const game = startedGame(env, C.ALIEN_CLASS.SHIELD.FROM_WAVE);
+
+      for (let t = 0; t < 4200; t++) {
+        scriptInput(env.input, t);
+        /* Keep the run alive: this scenario is about invariants across
+         * waves 4-6, not about surviving them. */
+        if (game.lives < 5) game.lives = 5;
+        /* Park the ship on the RIGHT flank and leave it there. A kamikaze is
+         * always on the bottom row at column (wave - FROM_WAVE) % COLS, i.e.
+         * the LEFT flank at these waves, and the scripted fire is a straight
+         * shot from the ship's own x -- so a roaming ship simply shoots the
+         * rammer off the board before its FIRST_DELAY elapses and the dive
+         * assertion below becomes a coin flip on the seed. This is not the
+         * dive being propped up: it is the scenario declining to shoot the
+         * thing it is trying to observe. Scenario 26 drives the dive from a
+         * pinned, isolated wave; this one only asserts that it HAPPENS
+         * during ordinary multi-wave play. */
+        if (game.state === env.SI.STATE.PLAYING) {
+          env.input.axis = 0;
+          game.player.x = C.WORLD_W - 80;
+        }
+
+        if (game.state === env.SI.STATE.UPGRADE) {
+          env.input.axis = 0;
+          env.input.fire = false;
+          env.input.firePress = false;
+          if (game.stateTimer > C.UPGRADE.MIN_DWELL + 0.1) {
+            game.upgradeIndex = pickTurn % C.UPGRADE.IDS.length;
+            pickTurn += 1;
+            env.input.confirm = true;
+          }
+        }
+
+        /* Deliberately provoke a redirect: without aiming at a COVERED alien
+         * the "a redirect actually happened" assertion below would be a coin
+         * flip on the seed rather than a check. */
+        if (t % 29 === 0 && game.state === env.SI.STATE.PLAYING && game.swarm) {
+          const sw = game.swarm;
+          let target = null;
+          if (sw.shield && sw.shield.alive) target = coveredNeighbour(C, sw);
+          if (!target) {
+            /* Mop up whatever the thinning below exempts, so a wave can
+             * actually clear. The kamikaze is never a target here: it dies
+             * by crashing or ramming, which is the behaviour under test. */
+            target = sw.aliens.filter((al) => al.alive && al.role !== 'kamikaze')[0] || null;
+          }
+          if (target) {
+            game.bullets.push(new env.SI.Bullet(
+              target.x, target.y, -C.BULLET.PLAYER_SPEED, 'player', '#fff'));
+          }
+        }
+
+        tick(env, game);
+
+        if (game.wave !== lastWave) {
+          lastWave = game.wave;
+          seenWaves.push(game.wave);
+          let alive = 0;
+          for (const b of game.bunkers) if (b.alive()) alive += 1;
+          bunkersAtWaveStart.push(`${game.wave}:${game.bunkers.length}/${alive}`);
+        }
+
+        if (game.swarm) {
+          if (game.swarm.kamikaze && game.swarm.kamikaze.dive) dives += 1;
+          for (const al of game.swarm.aliens) {
+            if (!al.alive || al.dive) continue;
+            /* The real invariant, and NOT "y <= FORMATION.MAX_Y": the GRID
+             * ANCHOR is allowed past MAX_Y -- that is how the classic march
+             * descends toward the invasion floor at SWARM.FLOOR_Y (610), and
+             * a late wave routinely sits below 516. What MAX_Y bounds is the
+             * FORMATION OFFSET: applyFormation() clamps a downward offset to
+             * Math.max(gy, MAX_Y), so choreography may never push an alien
+             * below MAX_Y, nor below its own anchor. Measure exactly that. */
+            deepestNonDiver = Math.max(
+              deepestNonDiver, al.y - Math.max(al.gy, C.FORMATION.MAX_Y));
+          }
+          /* Thin the swarm so the run reaches wave 6. Both class aliens and
+           * the block the shield covers are EXEMPT -- sniping them would
+           * make the "a redirect / a dive happened" assertions seed-
+           * dependent. Commanders are NOT exempt here (unlike scenario 13,
+           * which exempts them because it asserts formations ran): this
+           * scenario asserts nothing about choreography. */
+          if (t % 11 === 0 && game.state === env.SI.STATE.PLAYING) {
+            const live = game.swarm.aliens.filter((al) =>
+              al.alive && !al.role &&
+              !(game.swarm.shield && game.swarm.shield.alive &&
+                Math.abs(al.col - game.swarm.shield.col) <= R &&
+                Math.abs(al.row - game.swarm.shield.row) <= R));
+            if (live.length > 0) {
+              const victim = live[Math.floor(Math.random() * live.length)];
+              game.swarm.killAlien(victim, game.world);
+              game.addScore(victim.score);
+            }
+          }
+        }
+
+        maxParticles = Math.max(maxParticles, game.particles.count);
+        if (game.particles.count > game.particles.cap) poolOverflow += 1;
+        if (game.state === env.SI.STATE.GAME_OVER && game.stateTimer > 0.5) {
+          env.input.confirm = true;
+        }
+        log.push(`${t}|${game.wave}|${game.score}|${game.lives}|` +
+          `${game.swarm ? game.swarm.aliveCount() : -1}`);
+      }
+    } catch (e) {
+      errors.push((e && e.stack) || String(e));
+    } finally {
+      env.SI.Swarm.prototype.shieldFor = realShieldFor;
+    }
+
+    return {
+      log: log.join('\n'),
+      draws: counter.draws,
+      errors,
+      seenWaves,
+      redirects,
+      dives,
+      poolOverflow,
+      maxParticles,
+      deepestNonDiver,
+      bunkersAtWaveStart,
+      maxY: C.FORMATION.MAX_Y
+    };
+  });
+}
+
+scenario('27. multi-wave integration across waves 4-6, invariants held every tick', () => {
+  const a = classIntegrationRun(2701);
+  console.log(`    waves seen: ${a.seenWaves.join(',')} | redirects=${a.redirects} | ` +
+    `diveTicks=${a.dives} | maxParticles=${a.maxParticles}`);
+  console.log(`    bunkers at each wave start (wave:count/alive): ` +
+    `${a.bunkersAtWaveStart.join(' ')}`);
+
+  check('zero exceptions from update/draw/drawHud across the whole run',
+    a.errors.length === 0, a.errors[0]);
+  check('the run really covered waves 4, 5 and 6',
+    [4, 5, 6].every((w) => a.seenWaves.indexOf(w) >= 0), a.seenWaves.join(','));
+  check('four bunkers rebuilt, undamaged, at the start of every wave',
+    a.bunkersAtWaveStart.every((s) => s.split(':')[1] === '4/4'),
+    a.bunkersAtWaveStart.join(' '));
+  check('particle pool never exceeded its cap', a.poolOverflow === 0,
+    `overflows=${a.poolOverflow} max=${a.maxParticles}`);
+  check('EVERY tick: no non-diving alien was displaced past max(its own anchor, ' +
+    'FORMATION.MAX_Y) -- choreography stays bounded, only the diver is exempt',
+    a.deepestNonDiver <= 1e-9, `worst overshoot=${a.deepestNonDiver}`);
+  /* Not vacuous: assert both mechanics genuinely fired during the run. */
+  check('at least one SHIELD redirect actually happened (not a vacuous pass)',
+    a.redirects > 0, `redirects=${a.redirects}`);
+  check('at least one KAMIKAZE dive actually happened (not a vacuous pass)',
+    a.dives > 0, `diveTicks=${a.dives}`);
+
+  /* Determinism: the same scripted run under the same seed must reproduce
+   * exactly, including how many Math.random draws it spent. */
+  const b = classIntegrationRun(2701);
+  check('the same seeded run reproduces an identical per-tick score/lives/alive log',
+    a.log === b.log, a.log === b.log ? '' : 'per-tick logs diverged');
+  check('and spends an identical number of Math.random draws',
+    a.draws === b.draws, `${a.draws} vs ${b.draws}`);
+  check('and reports identical redirect / dive counts',
+    a.redirects === b.redirects && a.dives === b.dives,
+    `${a.redirects}/${a.dives} vs ${b.redirects}/${b.dives}`);
 });
 
 /* ------------------------------ summary -------------------------------- */
