@@ -139,6 +139,21 @@ from the next delay onward: the shot timer that was already armed when the
 commander died runs out at its scaled value first (under a second), and every
 delay computed after that is unscaled.
 
+From wave 4 the swarm also fields **distinct alien classes** — one of each per
+wave, always the same grid cell for a given wave number, so they are something
+you learn rather than something you roll.
+
+| Class | Tell | What it does |
+| --- | --- | --- |
+| **Shield Alien** (wave 4+) | deep-blue body and halo, a bright brace across its head with two side posts | Any alien within one grid cell of it — the 3×3 block around it, rows 1–3 — is covered: a shot that would kill one of them kills the **shield** instead, and the alien that was saved flashes blue. A redirected kill always pays the **shield's own** row value (20), never the value of whichever alien you were aiming at — you killed the shield, so you are paid for killing the shield, and it can be worth more than the shot you meant to take. It never covers itself, so a direct hit kills it normally, and it can never cover the commander (which is always on the top row). Kill it first and the block it was protecting opens up. |
+| **Kamikaze Unit** (wave 5+) | burnt-orange body and halo, two swept chevrons under it; the halo flares wider and brighter the moment it commits | Sits on the bottom row for the first eight seconds of the wave, then leaves the swarm entirely and dives at your ship, steering toward you as it falls. Contact costs a life. It is the only alien that reaches your ship's own row — and unlike the rest of the swarm, which grinds down through your bunkers as it marches, a committed diver ignores them on the way past. It is **dodgeable by design**: it falls slower than an alien bullet and steers far slower than your ship moves, so strafing out of the lane beats it. Shoot it (before or during its dive) and it pays its row's points like any other alien, multiplied by any active streak; let it ram you or crash into the floor and it pays nothing. |
+
+Neither class carries a score *bonus* — no extra points for being special.
+A shield shot pays the shield's own row value, and a kamikaze pays its row
+value when you shoot it and nothing when it removes itself. What they cost you
+is position — the shield decides which shots are wasted, and the kamikaze
+decides where you are standing.
+
 Clearing a wave offers a choice of cannon upgrade (pick one — it replaces
 whatever you had, it doesn't stack): **spread shot** (three angled bullets
 per volley), **piercing laser** (survives multiple alien hits instead of
