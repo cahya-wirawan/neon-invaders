@@ -477,43 +477,43 @@ fi
 
 # ---------------------------------------------------------------- AC13
 hdr "AC13: nothing outside this round's authorized scope changed; the engine regression suite passes"
-# THIS ROUND'S SCOPE IS DIFFERENT from every prior one. Earlier rounds forbade
-# ALL engine edits, so AC13 asserted the 11 js files + css/style.css were
-# byte-identical to HEAD. This round explicitly authorized editing four of
-# them -- js/core.js, js/entities.js, js/game.js, js/hud.js (evolving alien
-# formations + the cannon upgrade system) -- so a byte-identical assertion on
-# those four would be asserting something that is no longer true of this repo.
+# THIS ROUND'S SCOPE IS NARROWER THAN THE LAST ONE. The previous round
+# authorized four engine files (js/core.js, js/entities.js, js/game.js,
+# js/hud.js) plus the server-side anti-cheat fix. This round -- distinct
+# alien COMMANDER PERSONALITIES -- authorizes only three engine files, and
+# js/game.js is deliberately NOT one of them: the whole design routes the
+# personality through hooks that already exist in entities.js, so the state
+# machine needs no edit at all. Freezing js/game.js here is what machine-
+# checks that claim instead of leaving it as prose. server/ goes back to
+# fully frozen too -- this round touches no backend code.
 #
-# It is replaced with the two checks that DO still hold:
+# The check is still the same two halves:
 #   (a) everything the round was NOT authorized to touch is still untouched,
 #       and
-#   (b) the four authorized files pass scripts/check-game.js, which is the
-#       real regression gate for them from here on (its scenario 1 is a golden
-#       per-tick checksum against the PRE-feature game, so classic play being
+#   (b) the authorized engine files pass scripts/check-game.js, which is the
+#       real regression gate for them (its scenario 1 is a golden per-tick
+#       checksum against the PRE-feature game, so classic play being
 #       bit-identical is still proven -- just by behaviour, not by bytes).
 #
 # Authorized to change this round, hence excluded from (a):
-#   js/core.js js/entities.js js/game.js js/hud.js  (the two features)
-#   scripts/check-game.js                            (new harness)
-#   scripts/verify.sh                                (this retarget)
-#   server/src/anticheat.js server/README.md server/test/api.test.js
-#       (the pierce-upgrade false-positive fix: PIERCING LASER kills 3 aliens
-#        per shot, so the old 55-shots-per-wave time floor rejected real runs)
+#   js/core.js js/entities.js js/hud.js   (the personality table, the swarm
+#                                          hooks that read it, the HUD tell)
+#   scripts/check-game.js                 (scenarios 18 + 19, appended only)
+#   scripts/verify.sh                     (this retarget)
+#   README.md FEATURES.md                 (the docs for the above)
 
 # --- (a) untouched-outside-scope, tracked AND untracked -----------------
-FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js css/style.css index.html js/net.js"
+FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js js/game.js css/style.css index.html js/net.js"
 FROZEN_MOBILE="android ios capacitor.config.json package.json package-lock.json"
 DIRTY_ENGINE="$(git status --porcelain --untracked-files=all -- $FROZEN_ENGINE)"
 DIRTY_MOBILE="$(git status --porcelain --untracked-files=all -- $FROZEN_MOBILE)"
-DIRTY_SERVER="$(git status --porcelain --untracked-files=all -- server \
-  ':(exclude)server/src/anticheat.js' ':(exclude)server/README.md' \
-  ':(exclude)server/test/api.test.js')"
+DIRTY_SERVER="$(git status --porcelain --untracked-files=all -- server)"
 DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
   ':(exclude)scripts/check-game.js' ':(exclude)scripts/verify.sh')"
 DIRTY="$DIRTY_ENGINE$DIRTY_MOBILE$DIRTY_SERVER$DIRTY_SCRIPTS"
-note "7 frozen engine files + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
+note "8 frozen engine files (js/game.js now among them) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
 note "android/ ios/ capacitor.config.json package*.json          -> '${DIRTY_MOBILE:-<clean>}'"
-note "server/ (minus the authorized anticheat fix + its doc/test) -> '${DIRTY_SERVER:-<clean>}'"
+note "server/ (fully frozen again this round)                    -> '${DIRTY_SERVER:-<clean>}'"
 note "pre-existing scripts/* (minus check-game.js + verify.sh)    -> '${DIRTY_SCRIPTS:-<clean>}'"
 
 GSTATIC_IN_HTML="$(grep -c 'gstatic\|firebase' index.html || true)"
@@ -536,7 +536,7 @@ fi
 
 if [ -z "$DIRTY" ] && [ "$ORDER" = "$EXPECTED" ] && [ "$GSTATIC_IN_HTML" = "0" ] \
    && [ "$CHECKGAME_OK" = "1" ]; then
-  pass 13 "everything outside this round's authorized scope is byte-identical to HEAD (7 engine files + css + index.html + net.js + server/ + android/ios/capacitor + pre-existing scripts); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; and scripts/check-game.js passes every scenario, which is what now gates js/core.js, js/entities.js, js/game.js and js/hud.js"
+  pass 13 "everything outside this round's authorized scope is byte-identical to HEAD (8 engine files INCLUDING js/game.js + css + index.html + net.js + all of server/ + android/ios/capacitor + pre-existing scripts); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; and scripts/check-game.js passes every scenario, which is what now gates js/core.js, js/entities.js and js/hud.js"
 else
   fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML check_game_ok=$CHECKGAME_OK"
 fi
