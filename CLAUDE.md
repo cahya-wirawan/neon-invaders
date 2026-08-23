@@ -38,7 +38,7 @@ python3 -m http.server 8000   # then visit http://localhost:8000/
 Run these after touching `js/net.js`, `server/`, or the Capacitor scaffold:
 
 ```
-bash scripts/verify.sh        # every acceptance check, prints AC1..AC12
+bash scripts/verify.sh        # every acceptance check, prints AC1..AC16
 node scripts/check-net.js     # js/net.js offline/error-path harness
 cd server && npm test         # backend API tests (node:test)
 ```

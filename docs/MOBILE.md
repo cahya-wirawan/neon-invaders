@@ -44,12 +44,12 @@ unchanged, since Xcode is macOS-only and cannot exist in this container.
 Gradle 8.11.1 (the project's own wrapper, not a system install), a JDK 21 and
 the Android command-line SDK (`ANDROID_HOME=/home/cahya/android-sdk` --
 `android/local.properties` is gitignored, so this path must be set again in
-any fresh environment). Rebuilt again after the commander-personality engine
-changes landed, via `node scripts/copy-web.js && npx cap sync android`
-followed by the Gradle build, producing:
+any fresh environment). Rebuilt again after the versioning-system change
+landed, via `node scripts/copy-web.js && npx cap sync android` followed by
+the Gradle build, producing:
 
 ```
-android/app/build/outputs/apk/debug/app-debug.apk       (4.04 MB)
+android/app/build/outputs/apk/debug/app-debug.apk       (4.06 MB)
 android/app/build/outputs/apk/release/app-release-unsigned.apk (3.04 MB)
 ```
 
@@ -59,8 +59,8 @@ Capacitor native bridge, correct asset layout, 12 files under
 *inside* the debug APK are **byte-for-byte identical (MD5-verified)** to the
 current `js/{core,entities,game,hud}.js` in this repo -- so this is proof the
 build compiled the real, current code (Firebase auth, the evolving-formations/
-cannon-upgrade engine, *and* the commander-personality engine changes), not
-something stale from an earlier round.
+cannon-upgrade engine, the commander-personality engine changes, *and* the
+`v1.0.0` title-screen version tag), not something stale from an earlier round.
 
 What this does **not** prove: `adb` is not installed here, so nothing has
 installed or launched this APK on an emulator or a real device. The bytes are
