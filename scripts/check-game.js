@@ -899,11 +899,22 @@ scenario('13. multi-wave regression: no exceptions, pool capped, systems intact'
     check('four bunkers rebuilt each wave', game.bunkers.length === 4,
       String(game.bunkers.length));
 
-    /* UFO scoring still works. */
+    /* UFO scoring still works. This sub-check is deliberately SELF-CONTAINED:
+     * the 6000-tick run above is unscripted and thins the swarm every 12th
+     * tick, so whatever it happens to leave behind may be a game-over screen
+     * or a swarm down to its last couple of aliens -- and Game.update only
+     * spawns a UFO while PLAYING with aliveCount() > 2. Depending on that tail
+     * state made the check a coin flip on the seed rather than a test of what
+     * it claims ("a UFO CAN spawn in a normal playing state"), so a fresh wave
+     * is started here first. startWave() re-rolls ufoTimer, hence the zeroing
+     * AFTER it, not before. */
+    game.startWave(3);
     game.setState(env.SI.STATE.PLAYING);
     game.ufoTimer = 0;
     for (let t = 0; t < 60 && !game.ufo; t++) tick(env, game);
-    check('a UFO can still spawn', !!game.ufo, `spawnTicks=${ufoSpawns}`);
+    check('a UFO can still spawn', !!game.ufo,
+      `spawnTicks=${ufoSpawns} alive=${game.swarm ? game.swarm.aliveCount() : 'no-swarm'} ` +
+      `state=${game.state} ufoTimer=${game.ufoTimer}`);
     if (game.ufo) {
       const before = game.score;
       const shot = new env.SI.Bullet(game.ufo.x, game.ufo.y, -C.BULLET.PLAYER_SPEED, 'player', '#fff');
@@ -1211,6 +1222,338 @@ scenario('17. the upgrade pick window can be paused, and its clock freezes', () 
     check('a normal confirm still works after the pause',
       game.state === S.PLAYING && game.upgrade === C.UPGRADE.IDS[1],
       `state=${game.state} upgrade=${game.upgrade}`);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* Commander personalities. Everything below reseeds Math.random around the
+ * single call it is measuring, so two swarms are always compared against the
+ * SAME underlying draw -- the only difference left is the personality's
+ * scaling, which is exactly what is under test. */
+
+/* One fire tick with choreography pinned off, so the only Math.random draws
+ * update() makes are the fire block's own. Returns the re-armed fireTimer,
+ * i.e. the delay the personality produced. */
+function fireDelayUnderSeed(env, game, sw, seed) {
+  sw.formation = null;
+  sw.formationTimer = Infinity;
+  sw.fireTimer = 0;
+  return withSeed(seed, () => {
+    sw.update(DT, game.world);
+    return sw.fireTimer;
+  });
+}
+
+/* Does the swarm still shoot when the alien-bullet count is sitting exactly
+ * on the CLASSIC cap? Only a personality with extraBullets > 0 may. */
+function spawnsAtClassicCap(env, game, sw, seeds) {
+  const realCount = game.world.alienBulletCount;
+  const realSpawn = game.world.spawnBullet;
+  let spawned = 0;
+  game.world.alienBulletCount = () => sw.maxBullets;
+  game.world.spawnBullet = () => { spawned += 1; };
+  try {
+    for (const s of seeds) fireDelayUnderSeed(env, game, sw, s);
+  } finally {
+    game.world.alienBulletCount = realCount;
+    game.world.spawnBullet = realSpawn;
+  }
+  return spawned;
+}
+
+scenario('18. commander personalities are distinct and deterministic', () => {
+  withSeed(1818, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const P = C.COMMANDER.PERSONALITIES;
+
+    check('the personality table has at least 2 entries', P.length >= 2, `n=${P.length}`);
+
+    /* (a) pairwise distinct, in identity AND in behaviour. */
+    let idsOk = true;
+    let behaviourOk = true;
+    let detail = '';
+    for (let i = 0; i < P.length; i++) {
+      for (let j = i + 1; j < P.length; j++) {
+        const a = P[i];
+        const b = P[j];
+        if (a.id === b.id || a.name === b.name || a.color === b.color) {
+          idsOk = false; detail += ` ${a.id}~${b.id}:identity`;
+        }
+        const differs = a.gapScale !== b.gapScale ||
+          a.fireScale !== b.fireScale ||
+          a.extraBullets !== b.extraBullets ||
+          String(a.kinds) !== String(b.kinds);
+        if (!differs) { behaviourOk = false; detail += ` ${a.id}~${b.id}:behaviour`; }
+      }
+    }
+    check('every personality has a distinct id, name and colour', idsOk, detail.trim());
+    check('every personality pair differs in at least one behavioural field',
+      behaviourOk, detail.trim());
+
+    /* (a2) the colour is the VISUAL tell, so !== is far too weak a test: a
+     * personality one green step off C.COLORS.commander is, to a player,
+     * simply "the commander". Every personality colour therefore has to clear
+     * a minimum per-channel distance from the BASE commander colour (which
+     * every commander's body wears regardless of personality) and from
+     * C.COLORS.warn (used for the bounce upgrade in this same HUD), as well
+     * as from each other. */
+    const MIN_CHANNEL_GAP = 48;
+    const rgb = (hex) => [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16)
+    ];
+    const chanGap = (x, y) => {
+      const a = rgb(x);
+      const b = rgb(y);
+      return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+    };
+    const REFS = [['commander', C.COLORS.commander], ['warn', C.COLORS.warn]];
+    let tellOk = true;
+    let tellDetail = '';
+    for (let i = 0; i < P.length; i++) {
+      REFS.forEach((ref) => {
+        const d = chanGap(P[i].color, ref[1]);
+        if (d < MIN_CHANNEL_GAP) {
+          tellOk = false;
+          tellDetail += ` ${P[i].id}(${P[i].color})~COLORS.${ref[0]}(${ref[1]}):${d}`;
+        }
+      });
+      for (let j = i + 1; j < P.length; j++) {
+        const d = chanGap(P[i].color, P[j].color);
+        if (d < MIN_CHANNEL_GAP) {
+          tellOk = false;
+          tellDetail += ` ${P[i].id}~${P[j].id}:${d}`;
+        }
+      }
+    }
+    check(`every personality colour clears ${MIN_CHANNEL_GAP}/255 in some channel from ` +
+      'COLORS.commander, COLORS.warn and each other', tellOk, tellDetail.trim());
+
+    /* (b) below FROM_WAVE there is no commander and therefore no personality. */
+    let earlyOk = true;
+    for (let wave = 1; wave < C.COMMANDER.FROM_WAVE; wave++) {
+      const sw = new env.SI.Swarm(wave);
+      if (sw.personality !== null || sw.activePersonality() !== null) { earlyOk = false; }
+    }
+    check('waves below COMMANDER.FROM_WAVE have no personality at all', earlyOk);
+
+    /* (c) the pick is wave-derived, so it is stable across seeds. */
+    let mapOk = true;
+    let mapDetail = '';
+    for (let wave = C.COMMANDER.FROM_WAVE; wave <= C.COMMANDER.FROM_WAVE + 5; wave++) {
+      const want = P[(wave - C.COMMANDER.FROM_WAVE) % P.length];
+      const sw = new env.SI.Swarm(wave);
+      const other = withSeed(999000 + wave, () => new env.SI.Swarm(wave));
+      if (!sw.personality || sw.personality.id !== want.id) {
+        mapOk = false; mapDetail += ` wave${wave}:${sw.personality && sw.personality.id}!=${want.id}`;
+      }
+      if (!other.personality || other.personality.id !== want.id) {
+        mapOk = false; mapDetail += ` wave${wave}:seed-dependent`;
+      }
+      if (sw.commander && sw.commander.personality !== sw.personality) {
+        mapOk = false; mapDetail += ` wave${wave}:alien-not-tagged`;
+      }
+    }
+    check('waves 3..8 map onto (wave - FROM_WAVE) % n, identically under a fresh seed',
+      mapOk, mapDetail.trim());
+
+    /* (d) formation-KIND repertoire actually narrows per personality. The
+     * default (null) path is the only one a personality touches.
+     *
+     * The ORDERED sequence is what is compared, not just the set of kinds
+     * used: a personality whose `kinds` happens to reproduce the default
+     * wedge/dive parity alternation (['wedge','dive'] does, exactly) is a
+     * dead field that a set comparison cannot see. Wave 2 is the baseline --
+     * formations are enabled from FORMATION.FROM_WAVE (2) but commanders only
+     * from COMMANDER.FROM_WAVE (3), so wave 2 is choreography with no
+     * personality at all. */
+    const kindSeq = (wave, draws) => {
+      const game = startedGame(env, wave);
+      quietSwarm(game);
+      const sw = game.swarm;
+      const seq = [];
+      for (let i = 0; i < draws; i++) {
+        sw.snapToGrid();
+        const f = sw.startFormation(null, game.world);
+        if (f) seq.push(f.kind);
+      }
+      return seq;
+    };
+    const SEQ_N = 6;
+    const baseSeq = kindSeq(2, SEQ_N);
+    const aggSeq = kindSeq(3, SEQ_N);
+    const tacSeq = kindSeq(4, SEQ_N);
+    const barSeq = kindSeq(5, SEQ_N);
+    const aggressive = new Set(aggSeq);
+    const tactical = new Set(tacSeq);
+    const barrage = new Set(barSeq);
+    console.log(`    kind sequence over ${SEQ_N} default-path formations:` +
+      `\n      no personality (wave 2) = ${baseSeq.join(',')}` +
+      `\n      AGGRESSOR      (wave 3) = ${aggSeq.join(',')}` +
+      `\n      TACTICIAN      (wave 4) = ${tacSeq.join(',')}` +
+      `\n      BARRAGE        (wave 5) = ${barSeq.join(',')}`);
+    check('the no-personality baseline still alternates wedge/dive by parity',
+      baseSeq.join(',') === 'wedge,dive,wedge,dive,wedge,dive', baseSeq.join(','));
+    check('the wave-3 (dive-only) commander never choreographs a wedge',
+      aggressive.size === 1 && aggressive.has('dive'), [...aggressive].join(','));
+    check('the wave-5 (wedge-only) commander never choreographs a dive',
+      barrage.size === 1 && barrage.has('wedge'), [...barrage].join(','));
+    check('the wave-4 commander still uses BOTH kinds across enough draws',
+      tactical.size === 2 && tactical.has('wedge') && tactical.has('dive'),
+      [...tactical].join(','));
+    /* The real anti-no-op gate: every personality's ORDERED sequence must
+     * differ from the uncommanded one. TACTICIAN is the case this catches --
+     * it is the only personality that keeps both kinds, so a set comparison
+     * would pass it even when its `kinds` field does literally nothing. */
+    let seqOk = true;
+    let seqDetail = '';
+    [['AGGRESSOR', aggSeq], ['TACTICIAN', tacSeq], ['BARRAGE', barSeq]].forEach((e) => {
+      if (e[1].join(',') === baseSeq.join(',')) {
+        seqOk = false;
+        seqDetail += ` ${e[0]}:identical-to-default(${e[1].join(',')})`;
+      }
+    });
+    check('every personality produces a DIFFERENT ordered kind sequence than no personality',
+      seqOk, seqDetail.trim());
+
+    /* An explicitly-passed kind must still win outright -- scenarios 3, 4
+     * and 5 depend on that and must stay unaffected by any personality. */
+    const forced = startedGame(env, 3);
+    quietSwarm(forced);
+    forced.swarm.snapToGrid();
+    const wedge = forced.swarm.startFormation('wedge', forced.world);
+    check('an explicit startFormation("wedge") still wins on a dive-only commander',
+      !!wedge && wedge.kind === 'wedge', wedge && wedge.kind);
+    forced.swarm.snapToGrid();
+    const dive = forced.swarm.startFormation('dive', forced.world);
+    check('an explicit startFormation("dive") is honoured verbatim too',
+      !!dive && dive.kind === 'dive', dive && dive.kind);
+
+    /* (e) formation CADENCE: same underlying draw, different gap. */
+    const GAP_SEED = 4242;
+    const gapOf = (wave) => {
+      const sw = new env.SI.Swarm(wave);
+      return withSeed(GAP_SEED, () => sw.nextFormationGap());
+    };
+    const base1 = gapOf(1);
+    const base2 = gapOf(2);
+    const gapTac = gapOf(4);
+    const gapBar = gapOf(5);
+    console.log(`    gap under seed ${GAP_SEED}: none=${base1.toFixed(3)}/${base2.toFixed(3)} ` +
+      `tactical=${gapTac.toFixed(3)} barrage=${gapBar.toFixed(3)}`);
+    check('the no-commander baseline gap is the same on waves 1 and 2',
+      base1 === base2, `${base1} vs ${base2}`);
+    check('the tactical commander re-arms formations STRICTLY sooner',
+      gapTac < base1, `${gapTac} vs ${base1}`);
+    check('the barrage commander re-arms formations STRICTLY later',
+      gapBar > base1, `${gapBar} vs ${base1}`);
+
+    /* (f) FIRE RATE: same underlying draw, different delay. Compared against
+     * the very same swarm with its commander forced away, so wave tuning,
+     * alive count and swarm size are all held constant. */
+    const FIRE_SEED = 7373;
+    const barGame = startedGame(env, 5);
+    const barSw = barGame.swarm;
+    const withCmd = fireDelayUnderSeed(env, barGame, barSw, FIRE_SEED);
+    const keptCmd = barSw.commander;
+    barSw.commander = null;
+    const noCmd = fireDelayUnderSeed(env, barGame, barSw, FIRE_SEED);
+    console.log(`    wave-5 fire delay under seed ${FIRE_SEED}: ` +
+      `barrage=${withCmd.toFixed(4)} no-commander=${noCmd.toFixed(4)}`);
+    check('a live barrage commander shortens the alien fire delay',
+      withCmd < noCmd, `${withCmd} vs ${noCmd}`);
+    check('the shortened delay is not just the 0.16 clamp',
+      withCmd > 0.16, String(withCmd));
+
+    /* (g) and it raises the simultaneous-bullet cap by extraBullets. */
+    const CAP_SEEDS = [11, 22, 33, 44, 55, 66, 77, 88, 99, 111, 222, 333];
+    barSw.commander = keptCmd;
+    const capped = spawnsAtClassicCap(env, barGame, barSw, CAP_SEEDS);
+    barSw.commander = null;
+    const uncapped = spawnsAtClassicCap(env, barGame, barSw, CAP_SEEDS);
+    barSw.commander = keptCmd;
+    check('extraBullets is what is under test here',
+      barSw.personality.extraBullets === 1, String(barSw.personality.extraBullets));
+    check('at the CLASSIC cap the barrage swarm still gets shots away',
+      capped > 0, `spawns=${capped}/${CAP_SEEDS.length}`);
+    check('with no commander the classic cap is enforced exactly',
+      uncapped === 0, `spawns=${uncapped}/${CAP_SEEDS.length}`);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('19. every personality still grounds the swarm when its commander dies', () => {
+  withSeed(1919, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const P = C.COMMANDER.PERSONALITIES;
+    const FIRE_SEED = 5150;
+    const GAP_SEED = 4242;
+
+    /* The unscaled formation gap, from a swarm that never had a commander.
+     * Built outside the seeded region so the constructor's own draw cannot
+     * shift which value nextFormationGap() consumes. */
+    const plainSwarm = new env.SI.Swarm(1);
+    const plainGap = withSeed(GAP_SEED, () => plainSwarm.nextFormationGap());
+
+    for (let k = 0; k < P.length; k++) {
+      const wave = C.COMMANDER.FROM_WAVE + k;
+      const game = startedGame(env, wave);
+      quietSwarm(game);
+      const sw = game.swarm;
+      const cmd = sw.commander;
+      const want = P[k];
+      check(`wave ${wave}: commander is the ${want.id} personality`,
+        !!cmd && !!sw.personality && sw.personality.id === want.id,
+        sw.personality && sw.personality.id);
+
+      sw.formationTimer = Infinity;
+      sw.startFormation('wedge', game.world);
+      for (let t = 0; t < 90 && sw.formation && sw.formation.phase !== 1; t++) tick(env, game);
+      check(`wave ${wave}: a formation is in flight, aliens off-grid`,
+        !!sw.formation && maxOffGrid(sw) > 5, `off=${maxOffGrid(sw)}`);
+
+      sw.killAlien(cmd, game.world);
+      check(`wave ${wave}: formation cancelled instantly`, sw.formation === null);
+      check(`wave ${wave}: formations disabled for the rest of the wave`,
+        sw.formationsEnabled === false);
+      check(`wave ${wave}: commander cache cleared`, sw.commander === null);
+      check(`wave ${wave}: every alien is back on its grid anchor`,
+        maxOffGrid(sw) === 0, `off=${maxOffGrid(sw)}`);
+      check(`wave ${wave}: activePersonality() is null after the kill`,
+        sw.activePersonality() === null, String(sw.activePersonality()));
+
+      /* The personality effect must LAPSE, not linger. Both measurements
+       * below are taken on the SAME post-death swarm -- alive count, wave
+       * tuning and swarm size are therefore identical, and the ONLY thing
+       * that can move the number is whether activePersonality() still
+       * resolves. (Measuring the baseline before the kill would compare 55
+       * live aliens against 54 and move the delay's alive/total term.) */
+      const lapsed = fireDelayUnderSeed(env, game, sw, FIRE_SEED);
+      sw.commander = cmd;          // force the DEAD commander back on
+      const relit = fireDelayUnderSeed(env, game, sw, FIRE_SEED);
+      sw.commander = null;         // and back to the real post-death state
+      check(`wave ${wave}: the lapsed delay is exactly the unscaled one`,
+        Math.abs(relit - lapsed * want.fireScale) < 1e-9,
+        `${relit} vs ${lapsed} * ${want.fireScale}`);
+      if (want.fireScale < 1) {
+        check(`wave ${wave}: the dead commander no longer speeds up alien fire`,
+          lapsed > relit, `${lapsed} vs ${relit}`);
+      } else {
+        check(`wave ${wave}: this personality never scaled fire in the first place`,
+          lapsed === relit, `${lapsed} vs ${relit}`);
+      }
+
+      /* And so must the formation gap, even though nothing can use it now.
+       * plainGap is built OUTSIDE its seeded region on purpose: a Swarm
+       * constructor draws for fireTimer, which would otherwise shift which
+       * value nextFormationGap() lands on. */
+      const gapAfter = withSeed(GAP_SEED, () => sw.nextFormationGap());
+      check(`wave ${wave}: the formation gap drops back to the unscaled value`,
+        gapAfter === plainGap, `${gapAfter} vs ${plainGap}`);
+    }
   });
 });
 
