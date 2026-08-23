@@ -96,6 +96,21 @@
       });
     }
 
+    // Which commander personality is choreographing this wave. Centred on
+    // the same baseline as MUTED (bottom-left) and CANNON (bottom-right):
+    // the longest label, 'COMMANDER  TACTICIAN', is ~150px at 14px bold, so
+    // it spans roughly x 405..555 -- clear of both. It disappears the
+    // instant the commander dies -- via Swarm.activePersonality(), which is
+    // the single accessor that owns the "alive commander or nothing"
+    // invariant, rather than re-deriving it here.
+    var pers = game.swarm && game.swarm.activePersonality();
+    if (pers) {
+      G(ctx, 'COMMANDER  ' + pers.name, C.WORLD_W / 2, C.WORLD_H - 20, {
+        font: font(14), color: pers.color, blur: 10,
+        align: 'center', alpha: 0.92
+      });
+    }
+
     if (game.bannerTime > 0 && game.banner) {
       var a = Math.min(1, game.bannerTime);
       G(ctx, game.banner, C.WORLD_W / 2, 130 - (1 - a) * 20, {

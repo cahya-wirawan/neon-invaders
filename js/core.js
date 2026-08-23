@@ -100,9 +100,62 @@
 
     // One commander per wave from FROM_WAVE up. Killing it cancels the
     // formation in flight and grounds the swarm for the rest of the wave.
+    //
+    // Which PERSONALITY that commander has is WAVE-DERIVED --
+    // PERSONALITIES[(wave - FROM_WAVE) % PERSONALITIES.length]. The PICK
+    // itself is therefore not a Math.random() draw, and it is made after the
+    // one existing randInt() that chooses WHICH row-0 alien is the commander,
+    // so it cannot reorder that draw either.
+    //
+    // What that does and does NOT guarantee about the random stream:
+    //   * Waves BELOW FROM_WAVE are completely unaffected -- personality
+    //     stays null there. That is what keeps the wave-1 golden checksum in
+    //     scripts/check-game.js exactly pinned.
+    //   * From FROM_WAVE up the effects below DO intentionally change how
+    //     many draws a wave consumes relative to an uncommanded wave. `kinds`
+    //     is the clearest case: startFormation's 'dive' branch spends one
+    //     SI.pick(cols) draw and its 'wedge' branch spends none, so a
+    //     dive-only commander draws MORE per formation and a wedge-only one
+    //     draws none at all. `extraBullets` likewise un-short-circuits the
+    //     `alienBulletCount() < cap && SI.chance(0.86)` test, letting
+    //     SI.chance() run on ticks where it previously could not. That is
+    //     expected, not a bug -- different behaviour is the whole point.
+    //     Do not read any stream-invariance claim into these waves.
+    //
+    // Every field multiplies or selects on a hook that already existed:
+    //   gapScale      scales the gap between formations (SI.rand(MIN_GAP,
+    //                 MAX_GAP) is still ONE draw, just scaled afterwards).
+    //                 It scales only the VARIABLE part of a wave's first
+    //                 delay -- FORMATION.FIRST_DELAY is a documented grace
+    //                 period and stays intact for every personality.
+    //   kinds         replaces the default wedge/dive parity alternation;
+    //                 an explicitly-passed kind still wins outright
+    //   fireScale     scales the already-computed alien fire delay, before
+    //                 the existing Math.max(0.16, ...) clamp
+    //   extraBullets  raises the simultaneous alien-bullet cap, but never
+    //                 past MAX_ALIEN_BULLETS (the WAVES table's own ceiling)
+    // All of them are read through Swarm.activePersonality(), which returns
+    // null the moment the commander dies -- so the effects lapse instantly
+    // with no death-path code of their own.
     COMMANDER: {
       FROM_WAVE: 3,
-      SCORE_BONUS: 150
+      SCORE_BONUS: 150,
+      // Colours are the personality's visual tell (halo + crown crest), so
+      // each has to read as clearly NOT the plain commander amber
+      // (COLORS.commander) as well as clearly not each other: warm orange,
+      // ice cyan, hot crimson. check-game.js scenario 18 enforces a minimum
+      // channel distance against COLORS.commander and COLORS.warn.
+      PERSONALITIES: [
+        { id: 'aggressive', name: 'AGGRESSOR', color: '#ff7a5c',
+          kinds: ['dive'], gapScale: 0.75, fireScale: 0.92, extraBullets: 0 },
+        // Not ['wedge','dive'] -- that is byte-for-byte the default parity
+        // alternation, i.e. a no-op field. The 3-long cycle biases toward
+        // dives and gives the wave its own rhythm.
+        { id: 'tactical', name: 'TACTICIAN', color: '#7ce8ff',
+          kinds: ['wedge', 'dive', 'dive'], gapScale: 0.55, fireScale: 1, extraBullets: 0 },
+        { id: 'barrage', name: 'BARRAGE', color: '#ff2d55',
+          kinds: ['wedge'], gapScale: 1.25, fireScale: 0.7, extraBullets: 1 }
+      ]
     },
 
     // Between-wave cannon upgrade. Exactly one is active at a time: a new
@@ -157,6 +210,20 @@
   // bunkers nor the invasion line at SWARM.FLOOR_Y (610).
   CONFIG.FORMATION.MAX_Y =
     CONFIG.BUNKER.Y - 4 - CONFIG.SWARM.ALIEN_H / 2 - 12;
+
+  // The WAVES table's own ceiling on simultaneous alien bullets. The table
+  // stops ramping at wave 10 on purpose -- late waves stay hard without
+  // becoming unfair -- so a commander personality's extraBullets may raise
+  // the cap toward this number but must never push past it. On waves that are
+  // already at the ceiling extraBullets is therefore a no-op, which is the
+  // intent: the ceiling is absolute, not per-wave advice.
+  CONFIG.COMMANDER.MAX_ALIEN_BULLETS = (function () {
+    var m = 0;
+    for (var i = 0; i < CONFIG.WAVES.length; i++) {
+      m = Math.max(m, CONFIG.WAVES[i].maxAlienBullets);
+    }
+    return m;
+  })();
 
   // Wave tuning lookup with a sane cap on difficulty.
   function waveConfig(wave) {

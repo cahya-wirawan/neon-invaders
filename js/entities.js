@@ -347,6 +347,7 @@
     this.fx = 0;
     this.fy = 0;
     this.commander = false;
+    this.personality = null;
     this.w = C.SWARM.ALIEN_W;
     this.h = C.SWARM.ALIEN_H;
     this.hitFlash = 0;
@@ -370,9 +371,12 @@
     ctx.globalCompositeOperation = 'lighter';
     SI.FX.drawGlow(ctx, SI.FX.glow(this.color), this.x, this.y + bob, this.w * 1.8, 0.4);
     // The commander reads as a distinct unit through a wider second halo
-    // -- still an additive sprite blit, never per-alien shadowBlur.
+    // -- still an additive sprite blit, never per-alien shadowBlur. Its
+    // crest colour is the personality's tell; the BODY keeps the shared
+    // commander colour so the unit still reads as "the commander" first.
     if (this.commander) {
-      SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.commander), this.x, this.y + bob, this.w * 3.1, 0.5);
+      var haloCrest = (this.personality && this.personality.color) || C.COLORS.commander;
+      SI.FX.drawGlow(ctx, SI.FX.glow(haloCrest), this.x, this.y + bob, this.w * 3.1, 0.5);
     }
     ctx.restore();
 
@@ -400,7 +404,8 @@
       ctx.fillRect(ox + cw * 2, oy - ch * 1.4, cw * 1.2, ch * 1.1);
       ctx.fillRect(ox + cw * 4.9, oy - ch * 2.1, cw * 1.2, ch * 1.8);
       ctx.fillRect(ox + cw * 7.8, oy - ch * 1.4, cw * 1.2, ch * 1.1);
-      ctx.fillStyle = C.COLORS.commander;
+      var crest = (this.personality && this.personality.color) || C.COLORS.commander;
+      ctx.fillStyle = crest;
       ctx.fillRect(ox + cw * 1.6, oy - ch * 0.5, this.w * 0.72, ch * 0.6);
     }
   };
@@ -446,11 +451,14 @@
     this.formationsEnabled = wave >= F.FROM_WAVE;
     this.formationTimer = Infinity;
     this.formationCount = 0;
+    var firstJitter = 0;
     if (this.formationsEnabled) {
-      this.formationTimer = F.FIRST_DELAY + SI.rand(0, F.MAX_GAP - F.MIN_GAP);
+      firstJitter = SI.rand(0, F.MAX_GAP - F.MIN_GAP);
+      this.formationTimer = F.FIRST_DELAY + firstJitter;
     }
 
     this.commander = null;
+    this.personality = null;
     if (wave >= C.COMMANDER.FROM_WAVE) {
       // Row 0 occupies indices 0 .. COLS-1 of `aliens`.
       var cmd = this.aliens[SI.randInt(0, S.COLS - 1)];
@@ -458,6 +466,24 @@
       cmd.score += C.COMMANDER.SCORE_BONUS;
       cmd.color = C.COLORS.commander;
       this.commander = cmd;
+      // Personality is derived from the wave number, NOT drawn -- see the
+      // COMMANDER comment in core.js. It is picked AFTER the alien pick
+      // above so it cannot reorder that one existing draw.
+      var P = C.COMMANDER.PERSONALITIES;
+      this.personality = P[(wave - C.COMMANDER.FROM_WAVE) % P.length];
+      cmd.personality = this.personality;
+    }
+
+    // Applied after the commander block so the timer's own draw (above)
+    // keeps its original position in the random stream; this only rescales
+    // the value that draw already produced.
+    //
+    // Only the JITTER is scaled. FORMATION.FIRST_DELAY is the documented
+    // grace period before the first formation of a wave, and no personality
+    // is allowed to quietly shorten (or stretch) it -- a TACTICIAN wave
+    // re-arms sooner AFTER that grace period, not during it.
+    if (this.personality && this.formationsEnabled) {
+      this.formationTimer = F.FIRST_DELAY + firstJitter * this.personality.gapScale;
     }
   }
 
@@ -559,9 +585,22 @@
     // random occupied column so nobody shoots through a friend.
     this.fireTimer -= dt;
     if (this.fireTimer <= 0) {
+      // A live commander's personality scales the delay and can widen the
+      // simultaneous-bullet cap; neither touches the draws below.
+      var p = this.activePersonality();
       var delay = this.fireDelay * SI.rand(0.55, 1.35) * (0.55 + alive / Math.max(1, this.total) * 0.9);
+      if (p) { delay *= p.fireScale; }
       this.fireTimer = Math.max(0.16, delay);
-      if (world.alienBulletCount() < this.maxBullets && SI.chance(0.86)) {
+      // extraBullets widens the cap, but never past the WAVES table's own
+      // ceiling: the table stops ramping at wave 10 by design, and a
+      // personality is not allowed to raise late-wave difficulty above the
+      // number that design settled on. On a wave already at the ceiling this
+      // makes extraBullets a deliberate no-op.
+      var cap = this.maxBullets;
+      if (p && p.extraBullets) {
+        cap = Math.min(cap + p.extraBullets, C.COMMANDER.MAX_ALIEN_BULLETS);
+      }
+      if (world.alienBulletCount() < cap && SI.chance(0.86)) {
         var shooter = this.pickShooter();
         if (shooter) {
           world.spawnBullet(new Bullet(
@@ -600,7 +639,24 @@
 
   Swarm.prototype.endFormation = function () {
     this.snapToGrid();
-    this.formationTimer = SI.rand(C.FORMATION.MIN_GAP, C.FORMATION.MAX_GAP);
+    this.formationTimer = this.nextFormationGap();
+  };
+
+  // The personality only counts while its commander is ALIVE. killAlien
+  // nulls this.commander, so every personality effect lapses through this
+  // one accessor without any death-path code of its own.
+  Swarm.prototype.activePersonality = function () {
+    return this.commander ? this.personality : null;
+  };
+
+  // Drop-in for the inline SI.rand(MIN_GAP, MAX_GAP) re-arms: still exactly
+  // ONE draw, so the random stream keeps its shape whether or not a
+  // personality is in play.
+  Swarm.prototype.nextFormationGap = function () {
+    var g = SI.rand(C.FORMATION.MIN_GAP, C.FORMATION.MAX_GAP);
+    var p = this.activePersonality();
+    if (p) { g *= p.gapScale; }
+    return g;
   };
 
   // `kind` may be 'wedge', 'dive', or null to alternate.
@@ -609,8 +665,14 @@
     var S = C.SWARM;
     var i, a;
 
+    // An explicitly-passed `kind` always wins outright. Only the default
+    // (null) path consults the commander's personality, which narrows or
+    // reorders the repertoire it cycles through.
+    var p = this.activePersonality();
     if (!kind) {
-      kind = (this.formationCount % 2 === 0) ? 'wedge' : 'dive';
+      kind = (p && p.kinds) ?
+        p.kinds[this.formationCount % p.kinds.length] :
+        ((this.formationCount % 2 === 0) ? 'wedge' : 'dive');
     }
     for (i = 0; i < this.aliens.length; i++) {
       this.aliens[i].fx = 0;
@@ -686,7 +748,7 @@
         if (this.aliveCount() >= F.MIN_ALIVE) {
           this.startFormation(null, world);
         } else {
-          this.formationTimer = SI.rand(F.MIN_GAP, F.MAX_GAP);
+          this.formationTimer = this.nextFormationGap();
         }
       }
     }
