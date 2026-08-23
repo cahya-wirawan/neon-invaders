@@ -172,8 +172,12 @@
       font: font(18), color: '#ffd166', blur: 12, align: 'center', alpha: 0.9
     });
 
-    G(ctx, 'v' + C.VERSION, C.WORLD_W - 16, C.WORLD_H - 14, {
-      font: font(13, 600), color: '#5c7a94', blur: 0, align: 'right', alpha: 0.55
+    // Bottom-LEFT, not bottom-right: js/net.js's opt-in online panel is a
+    // fixed-position DOM element pinned to the bottom-right corner of the
+    // viewport (right:10px; bottom:10px) and would otherwise sit on top of
+    // this text.
+    G(ctx, 'v' + C.VERSION, 16, C.WORLD_H - 14, {
+      font: font(13, 600), color: '#5c7a94', blur: 0, align: 'left', alpha: 0.55
     });
   }
 
