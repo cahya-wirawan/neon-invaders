@@ -16,6 +16,36 @@ promise about a future round.
 - **[shipped]** Certain aliens act as commanders; killing one cancels the
   formation in flight and grounds the swarm for the rest of the wave
   (`CONFIG.COMMANDER`, `Swarm.killAlien`).
+- **[shipped]** Three distinct commander personalities
+  (`CONFIG.COMMANDER.PERSONALITIES`), selected by wave number rather than by
+  a random draw, each with its own halo/crown tint and a `COMMANDER <name>`
+  HUD label: **AGGRESSOR** choreographs dives only and re-arms them roughly a
+  third sooner (a 0.75 gap scale), with slightly faster alien fire;
+  **TACTICIAN** keeps both shapes but runs its own `wedge → dive → dive`
+  cycle instead of the default alternation, at ~1.8× the cadence;
+  **BARRAGE** choreographs wedges only, a fifth less often, and instead fires
+  markedly faster with one extra alien bullet allowed in the air — clamped so
+  it can never exceed the difficulty table's own wave-10 bullet ceiling. The
+  per-wave grace period (`FORMATION.FIRST_DELAY`) is outside the gap scaling,
+  so no personality shortens it. All of it is read through
+  `Swarm.activePersonality()`, which returns null the moment the commander
+  dies, so every effect lapses with the existing death path and needs no code
+  of its own.
+- **[deferred]** A *defensive* commander that pulls the swarm into a
+  protective screen — that needs a new formation SHAPE, and shape variety
+  was explicitly settled and descoped in the previous round (see the
+  shield/spiral entry above). Adding one here would reopen that decision.
+- **[deferred]** A *siege* commander that aims the swarm's fire at the
+  bunkers — that needs bunker-aware alien-shot targeting.
+  `Swarm.pickShooter` stays uniform-random over the occupied columns by
+  design and is unchanged this round; making it target-aware is a
+  gameplay-balance change of its own, not a personality field.
+- **[deferred]** A *swarm* commander that calls in numeric reinforcements —
+  the grid is a fixed 11×5 built once in the `Swarm` constructor, and adding
+  aliens mid-wave would break the `total`-relative difficulty ramp and the
+  grid-anchor invariants that keep the invasion floor honest. The
+  "overwhelm you" idea ships as denser FIRE in the BARRAGE personality
+  instead of as more aliens.
 - **[deferred]** Formations combining into a giant temporary enemy — a new
   entity type with its own hitbox, health and death choreography, which is a
   round of its own rather than a bullet point in this one.

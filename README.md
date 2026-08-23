@@ -92,6 +92,32 @@ wave is a visually distinct **commander** — kill it and any choreography in
 progress is cancelled instantly, grounding the swarm back to plain marching
 for the rest of that wave.
 
+That commander is one of three named personalities, cycling by wave number
+(wave 3, 6, 9… get the first, wave 4, 7, 10… the second, and so on). You can
+tell them apart two ways: the commander's halo and crown bar are tinted in
+its own colour, and the HUD shows `COMMANDER <name>` along the bottom edge
+while it is alive.
+
+| Commander | Tell | While it is alive |
+| --- | --- | --- |
+| **AGGRESSOR** | warm orange halo/crown | choreographs **dives only** — a column peeling at you, never a wedge — and shortens the gap between formations by a quarter, so it re-arms roughly **a third sooner** than an uncommanded swarm; aliens shoot slightly faster |
+| **TACTICIAN** | ice cyan halo/crown | keeps **both** wedges and dives but on its own `wedge → dive → dive` cycle rather than the plain alternation, and nearly **halves** the gap between them (about 1.8× as many formations); leaves the fire rate alone |
+| **BARRAGE** | hot crimson halo/crown | choreographs **wedges only** and calls them a fifth less often, trading choreography for firepower: aliens shoot noticeably faster and one extra alien bullet may be in the air at a time |
+
+The formation gap is the only thing a commander speeds up — the grace period
+at the start of every wave (`FORMATION.FIRST_DELAY`) is never shortened, and
+BARRAGE's extra bullet can never push the swarm above the wave-10 ceiling the
+difficulty table already sets, so late waves stay exactly as hard as they were
+designed to be.
+
+Every one of those effects is tied to the commander being alive. Killing it
+cancels the formation in flight and, as before, stops formations **entirely**
+for the rest of that wave — the cadence does not fall back to the uncommanded
+rhythm, there simply is no further choreography. Alien fire returns to normal
+from the next delay onward: the shot timer that was already armed when the
+commander died runs out at its scaled value first (under a second), and every
+delay computed after that is unscaled.
+
 Clearing a wave offers a choice of cannon upgrade (pick one — it replaces
 whatever you had, it doesn't stack): **spread shot** (three angled bullets
 per volley), **piercing laser** (survives multiple alien hits instead of

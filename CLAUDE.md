@@ -43,11 +43,13 @@ node scripts/check-net.js     # js/net.js offline/error-path harness
 cd server && npm test         # backend API tests (node:test)
 ```
 
-and this one after touching the swarm formations, the cannon upgrades, or
-anything they reach — `js/core.js`, `js/entities.js`, `js/game.js`, `js/hud.js`:
+and this one after touching the swarm formations, the cannon upgrades, the
+commander personalities, or anything they reach — `js/core.js`,
+`js/entities.js`, `js/game.js`, `js/hud.js`:
 
 ```
-node scripts/check-game.js    # formations + upgrades, headless, 14 scenarios
+node scripts/check-game.js    # formations + upgrades + commander
+                              # personalities, headless, 19 scenarios
 ```
 
 or just open `index.html` directly (`file://` works too, since scripts are
@@ -148,6 +150,17 @@ invasion. With no formation running, `k` is 0 and `x`/`y` are exactly `gx`/`gy`,
 so classic play is bit-identical (proven by `check-game.js`'s golden checksum).
 One commander per wave from `COMMANDER.FROM_WAVE` up choreographs the swarm:
 kill it and formations are cancelled and disabled for the rest of the wave.
+That commander wears one of `COMMANDER.PERSONALITIES` — picked from the wave
+number, not drawn — which modulates the existing hooks only: which formation
+kinds it cycles through, the gap between formations, the alien fire delay, and
+the simultaneous-bullet cap (clamped to `COMMANDER.MAX_ALIEN_BULLETS`, the
+`WAVES` table's own ceiling, so a personality can't outrank the wave-10 cap
+above). Everything reads it through `Swarm.activePersonality()`, which returns
+null as soon as the commander dies, so no personality needs death-path code of
+its own. Waves below `COMMANDER.FROM_WAVE` have no personality at all, which is
+why the wave-1 golden checksum stays pinned; from there up a personality does
+intentionally change how many RNG draws a wave consumes, so don't read
+stream-invariance into commanded waves.
 
 **Audio (`audio.js`).** One `AudioContext`, created lazily inside the first
 user-gesture handler (`SI.Input.onFirstGesture`, wired up in `main.js`) —
