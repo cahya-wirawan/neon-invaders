@@ -6,7 +6,7 @@
     // Shown on the title screen (js/hud.js drawTitle) and read by
     // scripts/verify.sh to cross-check package.json's version stays in
     // sync. Bump both together on every user-visible change.
-    VERSION: '1.1.0',
+    VERSION: '1.2.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -210,6 +210,47 @@
       MAX: 4         // ceiling: x4
     },
 
+    // Distinct alien classes. Exactly one SHIELD and one KAMIKAZE per wave,
+    // from their own FROM_WAVE gates up, and WHICH alien carries each one is
+    // WAVE-DERIVED arithmetic -- (wave - FROM_WAVE) % SWARM.COLS -- exactly
+    // like the commander's personality.
+    //
+    // The class ASSIGNMENT itself spends zero Math.random() draws at any
+    // wave -- scripts/check-game.js scenario 24 measures the draws inside
+    // `new SI.Swarm(wave)` and pins them against a hand-written literal.
+    // Below a class's FROM_WAVE gate nothing is assigned and neither class
+    // has any runtime behaviour at all, so those waves are completely
+    // unaffected, which is what keeps the wave-1 golden checksum pinned.
+    //
+    // That is the whole of the claim. It is NOT a claim that the classes
+    // draw nothing at RUNTIME: from FROM_WAVE up, the kamikaze's dive emits
+    // cosmetic particles every tick and a spark burst on commit, and
+    // SI.Particles' emitters consume draws when a pool slot is free --
+    // exactly the same cosmetics-on-the-RNG-stream coupling Bullet.update
+    // and the UFO already have, and the same disclaimer the commander
+    // personalities carry for their own effects. Expected, not a defect.
+    //
+    // Neither class carries a SCORE BONUS (unlike COMMANDER.SCORE_BONUS), and
+    // that is deliberate: server/src/anticheat.js's plausibility ceiling is
+    // derived from the highest points-per-second the client can legitimately
+    // produce, so a bonus here would mean re-deriving a server bound. A shield
+    // pays its own row's score when it eats a hit, and a kamikaze pays nothing
+    // at all -- so the ceiling is unchanged and server/ stays frozen.
+    ALIEN_CLASS: {
+      SHIELD: {
+        FROM_WAVE: 4,
+        ROW: 2,       // middle row -- a full 3x3 cover block exists around it
+        RADIUS: 1,    // Chebyshev distance in GRID cells (col/row), not pixels
+        FLASH: 0.14   // seconds the covered alien flashes when a hit is eaten
+      },
+      KAMIKAZE: {
+        FROM_WAVE: 5,
+        FIRST_DELAY: 8,  // seconds of wave time before it commits
+        SPEED_Y: 260,    // < BULLET.ALIEN_SPEED (300): the dive is dodgeable
+        SPEED_X: 170     // steering cap, < PLAYER.SPEED (420): strafing out-runs it
+      }
+    },
+
     COLORS: {
       player: '#5ffbf1',
       playerGlow: '#1ce8ff',
@@ -221,6 +262,12 @@
       bunker: '#54ffa8',
       ufo: '#ffb0f7',
       commander: '#ffe066',
+      // Class tells. Each has to read as clearly NOT the commander amber,
+      // not any alien row colour, not a personality crest and not the ship
+      // -- check-game.js scenario 24 enforces a minimum channel distance
+      // against all of those and against each other.
+      shieldAlien: '#3d5bff',
+      kamikaze: '#ff4d00',
       alienRows: ['#ff6ad5', '#c774f7', '#8a7bff', '#5ad2ff', '#63ffc9']
     }
   };
@@ -234,6 +281,31 @@
   // bunkers nor the invasion line at SWARM.FLOOR_Y (610).
   CONFIG.FORMATION.MAX_Y =
     CONFIG.BUNKER.Y - 4 - CONFIG.SWARM.ALIEN_H / 2 - 12;
+
+  // How deep a diving kamikaze may go before it crashes. Deliberately NOT
+  // derived the way FORMATION.MAX_Y is: that one comes from the BUNKERS
+  // (choreography must never reach them), this one comes from the SHIP,
+  // because reaching the ship is the whole point of a rammer.
+  //
+  // It must sit STRICTLY BELOW the ship's contact window, because the crash
+  // test runs inside Swarm.update() -- BEFORE game.js's contact test in the
+  // same tick. If the two overlapped, a diver whose final integration step
+  // landed inside the overlap would self-destruct on the very tick it should
+  // have registered a ram, silently voiding the hit.
+  //   ship box (player.box) spans y 635 .. 661 = PLAYER.Y -+ PLAYER.H / 2
+  //   an alien box spans y -+ ALIEN_H / 2 = 14, so the boxes overlap for an
+  //   alien centre-y in the OPEN interval (621, 675)
+  //   this floor = PLAYER.Y + PLAYER.H / 2 + ALIEN_H / 2 + 2 = 677
+  // 677 >= 675, so reaching the floor means the contact window is already
+  // behind the diver -- no tick can be both a crash and a missed ram. And
+  // the window is 54 units deep while one step at MAX_DT is only
+  // SPEED_Y / 30 = 8.67 units, so a diver always spends several whole ticks
+  // inside it; it can never step over the window in one frame. (check-
+  // game.js scenario 26 pins both halves, so retuning SPEED_Y or the ship
+  // fails loudly.) Its bottom edge at crash, 677 + 14 = 691, is still inside
+  // the 720-unit world -- the crash always happens on screen.
+  CONFIG.ALIEN_CLASS.KAMIKAZE.FLOOR_Y =
+    CONFIG.PLAYER.Y + CONFIG.PLAYER.H / 2 + CONFIG.SWARM.ALIEN_H / 2 + 2;
 
   // The WAVES table's own ceiling on simultaneous alien bullets. The table
   // stops ramping at wave 10 on purpose -- late waves stay hard without

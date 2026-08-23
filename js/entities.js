@@ -348,6 +348,25 @@
     this.fy = 0;
     this.commander = false;
     this.personality = null;
+    // Distinct alien class, or null for a plain alien. Named `role`, not
+    // `class`: the latter is a reserved word and check-game.js's ES5 style
+    // guard rejects it outright. All three fields are inert at these
+    // defaults, and Swarm only ever sets them from FROM_WAVE up.
+    //
+    // `dive` is the kamikaze's OWN absolute position ({x, y}) once it has
+    // committed. It is deliberately not an fx/fy formation offset: a diver
+    // owns its effective x/y outright and its grid anchor (gx/gy) keeps
+    // marching untouched underneath. The scope of that guarantee is exactly
+    // the dive's MOTION: no amount of diving can displace the grid or move
+    // the invasion floor, because nothing in the dive path ever writes
+    // gx/gy. It is NOT a claim about invasion TIMING -- the kamikaze's
+    // eventual death (ram, crash or shot) removes an alien, and every alien
+    // death already shifts currentSpeed()'s `gone` ramp and gridBounds()'s
+    // extent. That is the ordinary difficulty curve, identical in kind to
+    // any other kill, not an invariant this class breaks.
+    this.role = null;
+    this.dive = null;
+    this.diveTimer = 0;
     this.w = C.SWARM.ALIEN_W;
     this.h = C.SWARM.ALIEN_H;
     this.hitFlash = 0;
@@ -378,6 +397,20 @@
       var haloCrest = (this.personality && this.personality.color) || C.COLORS.commander;
       SI.FX.drawGlow(ctx, SI.FX.glow(haloCrest), this.x, this.y + bob, this.w * 3.1, 0.5);
     }
+    // Class tells, same technique: a second additive halo in the class
+    // colour, never a per-alien shadow blur. A COMMITTED kamikaze burns wider
+    // and brighter, so a dive reads as a threat before it is on top of you.
+    if (this.role === 'shield') {
+      SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.shieldAlien), this.x, this.y + bob, this.w * 2.6, 0.5);
+    } else if (this.role === 'kamikaze') {
+      SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.kamikaze), this.x, this.y + bob,
+        this.dive ? this.w * 3.2 : this.w * 2.4, this.dive ? 0.7 : 0.45);
+    }
+    // A shield that just ATE a hit flares for SHIELD.FLASH seconds. hitFlash
+    // is an existing per-alien timer already ticked down in Swarm.update.
+    if (this.hitFlash > 0) {
+      SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.shieldAlien), this.x, this.y + bob, this.w * 3.6, 0.8);
+    }
     ctx.restore();
 
     ctx.globalAlpha = 1;
@@ -407,6 +440,22 @@
       var crest = (this.personality && this.personality.color) || C.COLORS.commander;
       ctx.fillStyle = crest;
       ctx.fillRect(ox + cw * 1.6, oy - ch * 0.5, this.w * 0.72, ch * 0.6);
+    }
+
+    // Class shape-marks, drawn the same way the crown is: flat fillRects, no
+    // a shadow blur. Colour alone is not a good enough tell (the swarm is
+    // already five colours deep), so each class also changes silhouette.
+    if (this.role === 'shield') {
+      // A brace across the top of the body plus two short side posts.
+      ctx.fillStyle = '#dfe6ff';
+      ctx.fillRect(ox + cw * 1.4, oy - ch * 1.1, this.w * 0.74, ch * 0.7);
+      ctx.fillRect(ox + cw * 0.7, oy - ch * 0.6, cw * 0.9, ch * 1.9);
+      ctx.fillRect(ox + cw * 9.4, oy - ch * 0.6, cw * 0.9, ch * 1.9);
+    } else if (this.role === 'kamikaze') {
+      // Two swept chevrons under the body -- a ram prow, pointing down.
+      ctx.fillStyle = '#ffd0b0';
+      ctx.fillRect(ox + cw * 2.6, oy + this.h + ch * 0.1, cw * 2.4, ch * 0.7);
+      ctx.fillRect(ox + cw * 4.4, oy + this.h + ch * 0.8, cw * 2.4, ch * 0.7);
     }
   };
 
@@ -474,6 +523,46 @@
       cmd.personality = this.personality;
     }
 
+    /* --------------------------- alien classes ---------------------- */
+    // Both picks are WAVE-DERIVED arithmetic, made AFTER the commander block
+    // so they cannot reorder its one existing randInt() draw, and they spend
+    // no draw of their own at any wave. Below a class's FROM_WAVE the branch
+    // is not entered at all -- which also keeps the modulo away from a
+    // negative operand, where JS's % would hand back a negative index.
+    //
+    // NOTE: exactly ONE shield and ONE kamikaze per wave is an assumption
+    // baked into these two fields -- shieldFor() and updateDive() both read
+    // the singleton, not a list. A future round that wants several of either
+    // would start by turning these into arrays; assignRole() is the only
+    // place a class is ever attached, so it is the single extension point.
+    this.shield = null;
+    this.kamikaze = null;
+    var K = C.ALIEN_CLASS;
+    if (wave >= K.SHIELD.FROM_WAVE) {
+      this.shield = this.assignRole(
+        'shield', K.SHIELD.ROW, (wave - K.SHIELD.FROM_WAVE) % S.COLS);
+    }
+    if (wave >= K.KAMIKAZE.FROM_WAVE) {
+      // Bottom row: a rammer starts from the front of the swarm.
+      this.kamikaze = this.assignRole(
+        'kamikaze', S.ROWS - 1, (wave - K.KAMIKAZE.FROM_WAVE) % S.COLS);
+      if (this.kamikaze) {
+        this.kamikaze.diveTimer = K.KAMIKAZE.FIRST_DELAY;
+      }
+    }
+    // PRE-WARM the class glow sprites, and only on the waves that will
+    // actually draw them. js/fx.js's own init() warm-list is frozen this
+    // round, but SI.FX.glow() builds-and-CACHES lazily, so one throwaway
+    // call here has exactly the same effect as being in that list: the
+    // radial-gradient offscreen canvas is built at wave start rather than
+    // mid-frame the first time a class tell is blitted. glow() draws a
+    // gradient into a canvas and consumes no Math.random, so the RNG stream
+    // is untouched (scenario 24 counts the draws and pins that).
+    if (SI.FX && SI.FX.glow) {
+      if (this.shield) { SI.FX.glow(C.COLORS.shieldAlien); }
+      if (this.kamikaze) { SI.FX.glow(C.COLORS.kamikaze); }
+    }
+
     // Applied after the commander block so the timer's own draw (above)
     // keeps its original position in the random stream; this only rescales
     // the value that draw already produced.
@@ -487,6 +576,83 @@
     }
   }
 
+  /* --------------------------- alien classes ------------------------ */
+
+  // Tags one grid cell with a class. `aliens` is row-major -- the
+  // constructor fills row 0 first, COLS entries per row -- so the cell is
+  // at row * COLS + col, the same convention the commander pick uses when
+  // it treats indices 0..COLS-1 as row 0.
+  //
+  // The commander guard is what makes "a commander never also carries a
+  // class" STRUCTURAL rather than a coincidence of the row numbers: even if
+  // a future round moved SHIELD.ROW to 0, the class would simply not be
+  // assigned rather than stacking two tells on one sprite. One unit, one
+  // tell -- the second guard (`a.role`) keeps two classes off one alien too.
+  Swarm.prototype.assignRole = function (role, row, col) {
+    var a = this.aliens[row * C.SWARM.COLS + col];
+    if (!a || a.commander || a.role) { return null; }
+    a.role = role;
+    a.color = role === 'shield' ? C.COLORS.shieldAlien : C.COLORS.kamikaze;
+    return a;
+  };
+
+  // SHIELD ALIEN. Cover is decided in GRID space (col/row), never in pixels:
+  // col/row are set once in the Alien constructor and nothing ever moves
+  // them, so cover cannot drift with the march, with a formation offset or
+  // with a thinning swarm. A shield never covers ITSELF (a direct hit kills
+  // it normally), and never covers an alien that has left the grid to dive.
+  Swarm.prototype.shieldFor = function (alien) {
+    var s = this.shield;
+    var R = C.ALIEN_CLASS.SHIELD.RADIUS;
+    if (!s || !s.alive || s === alien || alien.dive) { return null; }
+    if (Math.abs(s.col - alien.col) > R || Math.abs(s.row - alien.row) > R) { return null; }
+    return s;
+  };
+
+  // KAMIKAZE. The dive is NOT a formation: `a.dive` holds the alien's own
+  // ABSOLUTE position, applyFormation()/snapToGrid() deliberately leave a
+  // diver alone, and it is the one thing in the game that may go past
+  // FORMATION.MAX_Y -- it earns that by never touching gx/gy. The anchor
+  // keeps marching under the untouched classic rules, so gridBounds()
+  // (edge bounce, descent, the invasion floor) cannot see the dive at all.
+  //
+  // Precisely: no dive MOTION can displace the grid or move the invasion
+  // floor. It is NOT a claim that the kamikaze cannot affect invasion
+  // TIMING -- the killAlien() below removes an alien, and one fewer alien
+  // both speeds up the survivors (currentSpeed()'s `gone` ramp) and can
+  // shrink gridBounds()'s extent, exactly as EVERY other alien death
+  // already does. That is the intended difficulty curve, not an exemption
+  // this class was granted.
+  Swarm.prototype.updateDive = function (dt, world) {
+    var K = C.ALIEN_CLASS.KAMIKAZE;
+    var a = this.kamikaze;
+    if (!a || !a.alive) { return; }
+    if (!a.dive) {
+      a.diveTimer -= dt;
+      // Never commit mid-choreography: the swarm may only be displaced by
+      // one system at a time, and applyFormation() skips divers outright.
+      if (a.diveTimer > 0 || this.formation) { return; }
+      a.dive = { x: a.x, y: a.y };
+      if (world.particles) {
+        world.particles.emitSparks(a.x, a.y, a.color, 10, 0, 1, 0.9);
+      }
+    }
+    var target = (world && typeof world.playerX === 'number') ? world.playerX : C.WORLD_W / 2;
+    a.dive.y += K.SPEED_Y * dt;
+    // Steering is CAPPED per tick and well under PLAYER.SPEED, so strafing
+    // out of the way always beats it -- the dive is dodgeable, not homing.
+    a.dive.x += SI.clamp(target - a.dive.x, -K.SPEED_X * dt, K.SPEED_X * dt);
+    a.dive.x = SI.clamp(a.dive.x, C.FORMATION.EDGE_PAD, C.WORLD_W - C.FORMATION.EDGE_PAD);
+    a.x = a.dive.x;
+    a.y = a.dive.y;
+    if (world.particles) {
+      world.particles.emitTrail(a.x, a.y - a.h / 2, a.color, 10, 0.2);
+    }
+    if (a.y >= K.FLOOR_Y) {
+      this.killAlien(a, world);   // crashed short of the ship: no score, no life
+    }
+  };
+
   Swarm.prototype.aliveCount = function () {
     var n = 0;
     for (var i = 0; i < this.aliens.length; i++) {
@@ -495,11 +661,17 @@
     return n;
   };
 
+  // Bounds of the EFFECTIVE positions, i.e. the grid anchors plus whatever
+  // formation offset is currently applied. A committed kamikaze is skipped
+  // for the same reason applyFormation(), snapToGrid() and pickShooter()
+  // skip it: a diver has left the grid and owns absolute coordinates that
+  // are not an offset of anything, so including it would report a "swarm
+  // extent" that no part of the swarm actually occupies.
   Swarm.prototype.bounds = function () {
     var minX = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
-      if (!a.alive) { continue; }
+      if (!a.alive || a.dive) { continue; }
       if (a.x - a.w / 2 < minX) { minX = a.x - a.w / 2; }
       if (a.x + a.w / 2 > maxX) { maxX = a.x + a.w / 2; }
       if (a.y + a.h / 2 > maxY) { maxY = a.y + a.h / 2; }
@@ -580,6 +752,10 @@
     // Writes the effective x/y for this tick. With no formation running
     // it is a plain `x = gx; y = gy`.
     this.updateFormation(dt, world);
+    // Runs AFTER applyFormation() has written everyone else's effective
+    // position, because a committed diver owns its x/y outright and must
+    // have the last word on them.
+    this.updateDive(dt, world);
 
     // Aliens shoot: timer + probability, from the lowest alien in a
     // random occupied column so nobody shoots through a friend.
@@ -629,6 +805,9 @@
   Swarm.prototype.snapToGrid = function () {
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
+      // A committed kamikaze is not part of the grid any more: it owns its
+      // own absolute x/y and must not be yanked back onto its anchor.
+      if (a.dive) { continue; }
       a.fx = 0;
       a.fy = 0;
       a.x = a.gx;
@@ -674,7 +853,12 @@
         p.kinds[this.formationCount % p.kinds.length] :
         ((this.formationCount % 2 === 0) ? 'wedge' : 'dive');
     }
+    // A committed diver is never a formation participant: applyFormation()
+    // and snapToGrid() both skip it, so writing fx/fy on it would only leave
+    // stale offsets on an object nothing reads -- a landmine for any future
+    // "abort the dive and rejoin the formation" path.
     for (i = 0; i < this.aliens.length; i++) {
+      if (this.aliens[i].dive) { continue; }
       this.aliens[i].fx = 0;
       this.aliens[i].fy = 0;
     }
@@ -684,7 +868,11 @@
       var cols = [];
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (a.alive && cols.indexOf(a.col) < 0) { cols.push(a.col); }
+        // Same guard on the candidate columns: a diver is not eligible, and
+        // counting it could hand the whole formation a column whose only
+        // "member" has left the grid -- a full ease-in/hold/ease-out cycle
+        // spent displacing nothing.
+        if (a.alive && !a.dive && cols.indexOf(a.col) < 0) { cols.push(a.col); }
       }
       if (!cols.length) { return null; }
       col = SI.pick(cols);
@@ -694,7 +882,7 @@
         world.playerX : C.WORLD_W / 2;
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.col !== col) { continue; }
+        if (!a.alive || a.dive || a.col !== col) { continue; }
         a.fy = F.DIVE_DEPTH;
         a.fx = targetX - a.gx;
       }
@@ -703,7 +891,7 @@
       var m = (S.COLS - 1) / 2;
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive) { continue; }
+        if (!a.alive || a.dive) { continue; }
         var d = Math.abs(a.col - m);
         a.fy = m > 0 ? F.WEDGE_DEPTH * (1 - d / m) : F.WEDGE_DEPTH;
         a.fx = -(a.col - m) * F.WEDGE_PINCH;
@@ -764,7 +952,7 @@
     if (!f) {
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive) { continue; }
+        if (!a.alive || a.dive) { continue; }
         a.x = a.gx;
         a.y = a.gy;
       }
@@ -773,7 +961,7 @@
 
     for (i = 0; i < this.aliens.length; i++) {
       a = this.aliens[i];
-      if (!a.alive) { continue; }
+      if (!a.alive || a.dive) { continue; }
       ox = a.fx * f.k;
       oy = a.fy * f.k;
       ex = a.gx + ox;
@@ -795,7 +983,10 @@
     var byCol = {};
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
-      if (!a.alive) { continue; }
+      // A committed rammer is out of the firing line: it is usually the
+      // lowest alien in its column, so leaving it eligible would let it hog
+      // the shooter role all the way down.
+      if (!a.alive || a.dive) { continue; }
       var cur = byCol[a.col];
       if (!cur || a.y > cur.y) {
         byCol[a.col] = a;

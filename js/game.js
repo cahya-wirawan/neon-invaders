@@ -446,6 +446,21 @@
             var a = aliens[j];
             if (!a.alive) { continue; }
             if (SI.aabb(box, a.box())) {
+              // SHIELD REDIRECT. A shield alien eats the lethal hit aimed at
+              // a neighbour inside SHIELD.RADIUS grid cells of it. The whole
+              // mechanic is this ONE reassignment, deliberately placed on the
+              // near side of the existing kill/score pair so there is still
+              // exactly one killAlien() and one scoreKill() per resolved hit
+              // -- the shield is simply who they are about. The covered alien
+              // flashes (hitFlash) to show WHY it survived. Pierce accounting
+              // below is untouched and cannot double-redirect: shieldFor()
+              // returns null once the shield is dead, so a pierced shot's
+              // next victim in a later frame resolves normally.
+              var shield = this.swarm.shieldFor(a);
+              if (shield) {
+                a.hitFlash = C.ALIEN_CLASS.SHIELD.FLASH;
+                a = shield;
+              }
               this.swarm.killAlien(a, world);
               this.scoreKill(a.score);
               // PIERCING LASER: survives the kill and flies on. One alien
@@ -522,16 +537,40 @@
       var swarmAliens = this.swarm.aliens;
       for (i = 0; i < swarmAliens.length; i++) {
         var al = swarmAliens[i];
-        if (!al.alive || al.y + al.h / 2 < C.BUNKER.Y - 4) { continue; }
+        // A diving kamikaze is exempt: it is aimed at the SHIP, and letting
+        // it also scrape every bunker it passes through would turn one
+        // dodgeable rammer into a guaranteed loss of cover.
+        if (!al.alive || al.dive || al.y + al.h / 2 < C.BUNKER.Y - 4) { continue; }
         for (j = 0; j < this.bunkers.length; j++) {
           if (this.bunkers[j].crushBelow(al.box())) {
             this.particles.emitSparks(al.x, al.y + al.h / 2, C.COLORS.bunker, 4, 0, 1, 1.2);
           }
         }
       }
-      // No alien-vs-player contact test: the swarm always trips the
-      // invasion floor (SWARM.FLOOR_Y) well before it can overlap the
-      // ship, and invasion already ends the run.
+      // KAMIKAZE CONTACT -- the only alien-vs-player test in the game. It
+      // exists solely because a diving kamikaze leaves the region
+      // FORMATION.MAX_Y keeps every other alien out of; the marching swarm
+      // still trips the invasion floor (SWARM.FLOOR_Y) long before it could
+      // overlap the ship, so nothing else needs one. The condition is
+      // derived from the SAME three tests the alien-bullet branch above
+      // uses: player alive, invulnerability lapsed, boxes overlap. It reads
+      // the EFFECTIVE box, never gx/gy, and it never WRITES gx/gy, so it
+      // cannot displace the grid onInvasion() is decided from. It DOES kill
+      // an alien, and one fewer alien changes Swarm.currentSpeed()'s pacing
+      // and gridBounds()'s extent just like any other kill -- ordinary
+      // difficulty-curve behaviour, not a special power of this branch.
+      // No scoreKill(): ramming the ship is not a kill the player made.
+      if (this.player.alive && this.player.invuln <= 0) {
+        for (i = 0; i < swarmAliens.length; i++) {
+          var kz = swarmAliens[i];
+          if (!kz.alive || !kz.dive) { continue; }
+          if (SI.aabb(kz.box(), this.player.box())) {
+            this.swarm.killAlien(kz, world);   // BEFORE loseLife(): it dies either way
+            this.loseLife(world, false);
+            break;                             // at most one contact per frame
+          }
+        }
+      }
     }
   };
 
