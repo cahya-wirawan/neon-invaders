@@ -73,6 +73,29 @@
     G(ctx, 'SCORE', 26, 36, { font: font(14), color: '#6fd9ff', blur: 8, alpha: 0.85 });
     G(ctx, SI.formatScore(game.score), 26, 66, { font: font(30, 800), color: '#eafcff', glow: C.COLORS.hud, blur: 18 });
 
+    // Kill-streak readout. Sits on the SCORE baseline, just right of the
+    // digits: a 7-digit score is ~130px at 30px/800, i.e. it ends around
+    // x 156, and the centred HI-SCORE block starts around x 415 -- so x 176 is
+    // clear of both. Seven digits is the practical bound, not an enforced one:
+    // formatScore() does NOT clamp (the 9999999 cap lives in game.js's
+    // loadHi(), and only guards values read back from localStorage), so an
+    // 8-digit live score would run under this label. Nothing near 10,000,000
+    // is reachable -- the anti-cheat ceiling in server/src/anticheat.js puts
+    // the game's peak sustained rate in the hundreds of points per second, so
+    // that is hours of flawless play -- which is why this stays a layout note
+    // rather than a clamp. Drawn only while the
+    // multiplier is actually above x1, which is also why wave 1 (COMBO
+    // .FROM_WAVE) never draws it at all. The alpha fades with the remaining
+    // streak window, which is the whole tell that it is about to lapse.
+    var mult = game.comboMult();
+    if (mult > 1) {
+      var left = SI.clamp(game.comboTimer / C.COMBO.WINDOW, 0, 1);
+      G(ctx, 'COMBO  x' + mult, 176, 66, {
+        font: font(16, 800), color: C.COLORS.bunker, glow: C.COLORS.bunker,
+        blur: 14, alpha: 0.45 + 0.55 * left
+      });
+    }
+
     G(ctx, 'HI-SCORE', C.WORLD_W / 2, 36, { font: font(14), color: '#ff9ae0', blur: 8, align: 'center', alpha: 0.85 });
     G(ctx, SI.formatScore(game.hi), C.WORLD_W / 2, 66, { font: font(30, 800), color: '#ffd9f6', glow: C.COLORS.accent, blur: 18, align: 'center' });
 

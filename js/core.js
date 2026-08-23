@@ -6,7 +6,7 @@
     // Shown on the title screen (js/hud.js drawTitle) and read by
     // scripts/verify.sh to cross-check package.json's version stays in
     // sync. Bump both together on every user-visible change.
-    VERSION: '1.0.0',
+    VERSION: '1.1.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -189,6 +189,25 @@
       BOUNCE_VX: 560,
       BOUNCE_VY: 360,     // slower climb than BULLET.PLAYER_SPEED, on purpose
       SHIELD_TIME: 6
+    },
+
+    // Kill-streak score multiplier. Consecutive kills raise a multiplier that
+    // scales what the NEXT kill pays; it lapses if you stop killing, and drops
+    // outright if you are hit or the wave ends. Pure arithmetic on the existing
+    // addScore() path: no new entity, no timer of its own beyond one float, and
+    // not a single Math.random() draw.
+    //
+    // FROM_WAVE is 2 for the same reason FORMATION.FROM_WAVE is: wave 1 is the
+    // classic wave -- plain swarm, no commander, and now classic scoring too.
+    // It is also what keeps scripts/check-game.js's wave-1 golden checksum
+    // pinned to the pre-feature digest: a wave-1 multiplier would change the
+    // scripted run's score (26 kills in 20s) and that constant may only ever be
+    // re-measured against commit b316fc6, never re-pasted from current output.
+    COMBO: {
+      FROM_WAVE: 2,
+      WINDOW: 2.6,   // seconds since the last kill before the streak lapses
+      STEP: 4,       // kills per multiplier step
+      MAX: 4         // ceiling: x4
     },
 
     COLORS: {

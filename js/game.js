@@ -48,6 +48,10 @@
     this.state = STATE.MENU;
     this.stateTimer = 0;
     this.score = 0;
+    // Kill-streak state: consecutive kills and the seconds left in the window
+    // before the streak lapses. See CONFIG.COMBO / scoreKill().
+    this.combo = 0;
+    this.comboTimer = 0;
     this.hi = loadHi();
     // The hi-score as it stood when this run began: `hi` tracks the live
     // score during play, so beating the record needs a stable reference.
@@ -121,6 +125,7 @@
 
   Game.prototype.startWave = function (wave) {
     this.wave = wave;
+    this.resetCombo();
     this.swarm = new SI.Swarm(wave);
     this.bullets.length = 0;
     this.invaded = false;
@@ -374,6 +379,13 @@
     var world = this.syncWorld(dt, true);
     var i;
 
+    // Decay the kill-streak window BEFORE collide(): a kill later in this same
+    // frame must re-arm the window, not be expired by this frame's decay.
+    if (this.comboTimer > 0) {
+      this.comboTimer -= dt;
+      if (this.comboTimer <= 0) { this.resetCombo(); }
+    }
+
     this.player.update(dt, world);
     if (this.swarm) {
       this.swarm.update(dt, world);
@@ -435,7 +447,7 @@
             if (!a.alive) { continue; }
             if (SI.aabb(box, a.box())) {
               this.swarm.killAlien(a, world);
-              this.addScore(a.score);
+              this.scoreKill(a.score);
               // PIERCING LASER: survives the kill and flies on. One alien
               // per bullet per frame either way -- at MAX_DT a shot covers
               // far less than a grid row, so nothing is skipped.
@@ -454,8 +466,9 @@
         // Player shot vs UFO.
         if (this.ufo && SI.aabb(box, this.ufo.box())) {
           var pts = this.ufo.kill(world);
-          this.addScore(pts);
-          this.banner = '+' + pts;
+          // Banner shows what was ACTUALLY awarded, multiplier included.
+          var gain = this.scoreKill(pts);
+          this.banner = '+' + gain;
           this.bannerTime = 1.2;
           this.ufo = null;
           this.ufoTimer = SI.rand(C.UFO.MIN_DELAY, C.UFO.MAX_DELAY);
@@ -524,6 +537,39 @@
 
   /* ------------------------- score / life flow ---------------------- */
 
+  Game.prototype.resetCombo = function () {
+    this.combo = 0;
+    this.comboTimer = 0;
+  };
+
+  Game.prototype.comboMult = function () {
+    if (this.wave < C.COMBO.FROM_WAVE) { return 1; }
+    return Math.min(C.COMBO.MAX, 1 + Math.floor(this.combo / C.COMBO.STEP));
+  };
+
+  // The ONE scoring path a kill goes through. Returns what was actually
+  // awarded, so the UFO banner can never disagree with the score.
+  Game.prototype.scoreKill = function (points) {
+    // Wave 1 is classic scoring, and so is anything that resolves after the
+    // run has already ended. The second case is not hypothetical: collide()
+    // keeps walking the SAME bullets array after the fatal alien shot is
+    // resolved, so player shots at a higher index still land -- and still
+    // score -- in the very frame that called gameOver(). Those points stand
+    // (flushHi() already exists because of them), but they must not rebuild a
+    // streak: updatePlaying() is the only place comboTimer decays, so a streak
+    // re-armed here would freeze at a non-zero value forever and the HUD would
+    // paint a stale COMBO readout over the death screen for good.
+    if (this.wave < C.COMBO.FROM_WAVE || this.state === STATE.GAME_OVER) {
+      this.addScore(points);
+      return points;
+    }
+    this.combo++;
+    this.comboTimer = C.COMBO.WINDOW;
+    var gain = points * this.comboMult();
+    this.addScore(gain);
+    return gain;
+  };
+
   Game.prototype.addScore = function (points) {
     this.score += points;
     // Track the live hi-score for the HUD, but do not touch localStorage
@@ -541,6 +587,9 @@
   };
 
   Game.prototype.loseLife = function (world, invasion) {
+    // Taking a hit drops the streak outright -- first thing, so it happens
+    // even on the path that ends in gameOver().
+    this.resetCombo();
     // An invasion ends the run outright -- no point decrementing first.
     this.lives = invasion ? 0 : this.lives - 1;
     this.world.livesLeft = this.lives;
@@ -555,6 +604,14 @@
 
   Game.prototype.gameOver = function () {
     this.setState(STATE.GAME_OVER);
+    // The run is over, so the streak is over. loseLife() cleared it a moment
+    // ago, but clearing it HERE is what pins the invariant to the end of the
+    // run rather than to one caller, and it deliberately sits AFTER setState()
+    // -- that is what arms scoreKill()'s GAME_OVER guard for the rest of this
+    // same collision pass, so the shots still in flight cannot rebuild the
+    // streak behind it. Together the two are what keep a stale COMBO readout
+    // off the death screen.
+    this.resetCombo();
     SI.Audio.stopMusic();
     SI.Audio.ufoStop();
     SI.Audio.gameOver();
@@ -575,6 +632,8 @@
   };
 
   Game.prototype.clearWave = function () {
+    // The readout must not linger into WAVE_CLEAR / UPGRADE.
+    this.resetCombo();
     this.setState(STATE.WAVE_CLEAR);
     this.warpBoost = 1;
     this.bullets.length = 0;
