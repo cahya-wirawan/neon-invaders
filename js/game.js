@@ -285,10 +285,43 @@
 
   /* -------------------------- cannon upgrade ------------------------ */
 
+  // The card list for THIS pick screen. Normally exactly CONFIG.UPGRADE.IDS.
+  // When the active cannon is one half of the shipped combination, the
+  // COMPLEMENTARY card is swapped for the combine card -- same count, same
+  // slot, so every card rect, digit binding and arrow wrap are untouched.
+  // `this.upgrade` cannot change while STATE.UPGRADE is open (applyUpgrade is
+  // its only writer and it leaves the state), so this is stable across the
+  // pause/resume path and needs no snapshot.
+  // ALWAYS returns a FRESH array, on both paths. The no-substitution path
+  // used to hand back CONFIG.UPGRADE.IDS itself; every caller only reads it,
+  // but one future caller sorting or splicing "its own" list would have
+  // corrupted the global CONFIG for the rest of the session, and only on the
+  // common path -- an intermittent bug by construction. Four elements; the
+  // copy is not a cost worth an asymmetric contract.
+  Game.prototype.upgradeChoices = function () {
+    var U = C.UPGRADE;
+    var out = U.IDS.slice();
+    // OWN properties only. `this.upgrade` is a plain string used as a key, so
+    // a bare U.COMBINES[this.upgrade] would answer for inherited
+    // Object.prototype members ('constructor', 'toString', ...) with a truthy
+    // non-string. Nothing sets game.upgrade from untrusted input today, so
+    // this is defence in depth -- but it makes the lookup itself safe instead
+    // of relying on the indexOf() guard below to clean up after it. Same
+    // idiom as entities.js's byCol walk.
+    if (!Object.prototype.hasOwnProperty.call(U.COMBINES, this.upgrade)) {
+      return out;
+    }
+    var mate = U.COMBINES[this.upgrade];
+    var i = out.indexOf(mate);
+    if (i < 0) { return out; }
+    out[i] = U.COMBINED_ID;
+    return out;
+  };
+
   // Hit-test for tapping a card. Geometry lives in hud.js so the drawing
   // and the hit box can never drift apart.
   Game.prototype.upgradeCardAt = function (x, y) {
-    var ids = C.UPGRADE.IDS;
+    var ids = this.upgradeChoices();
     if (!SI.HUD || typeof SI.HUD.upgradeCardRect !== 'function') {
       return -1;
     }
@@ -304,7 +337,11 @@
   Game.prototype.updateUpgradePick = function (dt) {
     var Input = SI.Input;
     var U = C.UPGRADE;
-    var n = U.IDS.length;
+    // The live card list -- IDS, or IDS with the complementary card swapped
+    // for the combine card. Its length is always IDS.length, so the arrow
+    // wrap, the 1-4 digit bindings and the card geometry are unchanged.
+    var ids = this.upgradeChoices();
+    var n = ids.length;
     var i;
 
     if (Input.justPressed('ArrowLeft') || Input.justPressed('KeyA')) {
@@ -354,16 +391,21 @@
     // straight through) from picking before the cards can be read.
     var confirmed = this.upgradeArmed && this.stateTimer >= U.MIN_DWELL && edge;
     if (confirmed || this.stateTimer >= U.PICK_TIMEOUT) {
-      this.applyUpgrade(U.IDS[this.upgradeIndex]);
+      this.applyUpgrade(ids[this.upgradeIndex]);
     }
   };
 
   Game.prototype.applyUpgrade = function (id) {
-    var ids = C.UPGRADE.IDS;
-    // Defence in depth: an id that is not in IDS has no Player.fire branch and
-    // no HUD entry, so fall back to the first real one rather than shipping
-    // the player a cannon that does nothing.
-    this.upgrade = ids.indexOf(id) >= 0 ? id : ids[0];
+    // Defence in depth, against the list THIS pick screen actually offered --
+    // not against the static IDS pool. Checking IDS needed a special case for
+    // COMBINED_ID (which is deliberately not in IDS) and still would have
+    // waved through a card that was never on screen; upgradeChoices() is by
+    // definition the set of legal answers, so it needs neither. An id that is
+    // not on it has no Player.fire branch or no business being picked, so
+    // fall back to the first real one rather than shipping the player a
+    // cannon that does nothing.
+    var ids = this.upgradeChoices();
+    this.upgrade = ids.indexOf(id) >= 0 ? id : C.UPGRADE.IDS[0];
     this.startWave(this.wave + 1);
     // MUST come after startWave(): it calls player.reset(true), which
     // unconditionally overwrites invuln with PLAYER.INVULN_TIME.

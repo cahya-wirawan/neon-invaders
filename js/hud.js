@@ -12,7 +12,11 @@
     return (weight || 700) + ' ' + size + 'px ' + FONT;
   }
 
-  // Cannon upgrade presentation. Keyed by the ids in CONFIG.UPGRADE.IDS.
+  // Cannon upgrade presentation. Keyed by the ids in CONFIG.UPGRADE.IDS, plus
+  // CONFIG.UPGRADE.COMBINED_ID -- the one shipped weapon combination, which is
+  // offered by SUBSTITUTING the complementary card (see Game.upgradeChoices)
+  // rather than by adding a fifth one, because five cards do not fit the world
+  // width (see the CARD table below).
   var UPGRADES = {
     spread: {
       name: 'SPREAD SHOT',
@@ -33,9 +37,21 @@
       name: 'TEMP SHIELD',
       blurb: 'Start the wave briefly\ninvulnerable.',
       color: '#ff56d5'
+    },
+    // Literal, like the four above -- kept in sync with CONFIG.COLORS
+    // .pierceBounce, which is what Player.fire() paints the combined shot
+    // with. check-game.js scenario 30 pins the two together.
+    pierce_bounce: {
+      name: 'PIERCE + BOUNCE',
+      blurb: 'Pierces aliens AND\nricochets off walls.',
+      color: '#b6ff4d'
     }
   };
 
+  // FOUR cards is a hard layout constraint, not a preference:
+  //   4 * 196 + 3 * 18 =  838 <= WORLD_W (960)
+  //   5 * 196 + 4 * 18 = 1052 >  WORLD_W (960)
+  // which is exactly why the weapon combination is offered by substitution.
   var CARD = { W: 196, H: 214, GAP: 18, Y: 296 };
 
   // Shared by the drawing below and game.js's tap hit-test, so the card a
@@ -112,7 +128,13 @@
       G(ctx, 'MUTED (M)', 26, C.WORLD_H - 20, { font: font(14), color: '#ff8ba0', blur: 10, alpha: 0.9 });
     }
 
-    var active = UPGRADES[game.upgrade];
+    // OWN properties only -- see the same idiom in game.js's upgradeChoices()
+    // and entities.js's byCol walk. game.upgrade is a plain string key, so a
+    // bare UPGRADES[game.upgrade] would answer for inherited Object.prototype
+    // members with a truthy non-entry and this draw would then read .name and
+    // .color off it. The `if (active)` below would not catch that.
+    var active = Object.prototype.hasOwnProperty.call(UPGRADES, game.upgrade)
+      ? UPGRADES[game.upgrade] : null;
     if (active) {
       G(ctx, 'CANNON  ' + active.name, C.WORLD_W - 26, C.WORLD_H - 20, {
         font: font(14), color: active.color, blur: 10, align: 'right', alpha: 0.92
@@ -254,6 +276,23 @@
       ctx.globalAlpha = 0.5;
       ctx.fillRect(-20, -24, 3, 48);
       ctx.fillRect(17, -24, 3, 48);
+    } else if (id === C.UPGRADE.COMBINED_ID) {
+      // Both halves in one glyph, built only from the primitives the two
+      // source icons already use: the BOUNCE icon's pair of wall posts, and
+      // the PIERCE icon's long shaft plus its two cross-bar markers -- the
+      // shaft tilted so it reads as a ricochet rather than a straight lance.
+      // Flat fillRect/rotate only -- no expensive blurred-shadow glow is
+      // introduced here, which verify.sh's AC13 (d) machine-checks.
+      ctx.save();
+      ctx.rotate(-0.42);
+      ctx.fillRect(-3, -24, 6, 48);
+      ctx.globalAlpha = 0.55;
+      ctx.fillRect(-12, -9, 24, 4);
+      ctx.fillRect(-12, 5, 24, 4);
+      ctx.restore();
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(-20, -24, 3, 48);
+      ctx.fillRect(17, -24, 3, 48);
     } else {
       ctx.beginPath();
       ctx.moveTo(0, -24);
@@ -271,16 +310,22 @@
     ctx.restore();
   }
 
-  function drawUpgradeCard(ctx, game, i, id, selected) {
+  // `count` is the length of the list the CALLER is drawing, so the rect a
+  // card is drawn in can never drift from the rect game.upgradeCardAt()
+  // hit-tests (which passes its own list's length).
+  function drawUpgradeCard(ctx, game, i, id, selected, count) {
     var G = SI.FX.glowText;
-    var meta = UPGRADES[id];
-    // This table is keyed by CONFIG.UPGRADE.IDS. If an id ever gains an entry
-    // there without one here, skip its card rather than throwing through the
-    // whole HUD draw.
+    // This table is keyed by CONFIG.UPGRADE.IDS + COMBINED_ID. If an id ever
+    // gains an entry there without one here, skip its card rather than
+    // throwing through the whole HUD draw. OWN properties only, for the same
+    // reason as the CANNON readout above: an inherited Object.prototype key
+    // would sail past the `if (!meta)` guard as a truthy non-entry.
+    var meta = Object.prototype.hasOwnProperty.call(UPGRADES, id)
+      ? UPGRADES[id] : null;
     if (!meta) {
       return;
     }
-    var r = upgradeCardRect(i, C.UPGRADE.IDS.length);
+    var r = upgradeCardRect(i, count || C.UPGRADE.IDS.length);
     var pulse = selected ? 0.5 + 0.5 * Math.sin(game.time * 6) : 0;
 
     ctx.save();
@@ -321,7 +366,10 @@
 
   function drawUpgrade(ctx, game) {
     var G = SI.FX.glowText;
-    var ids = C.UPGRADE.IDS;
+    // Ask the game which cards THIS screen offers: normally CONFIG.UPGRADE
+    // .IDS, but with the complementary card swapped for the combine card when
+    // the active cannon is one half of it. Always the same length.
+    var ids = game.upgradeChoices ? game.upgradeChoices() : C.UPGRADE.IDS;
     dim(ctx, 0.62);
 
     G(ctx, 'WAVE  ' + game.wave + '  CLEARED', C.WORLD_W / 2, 168, {
@@ -335,7 +383,7 @@
     });
 
     for (var i = 0; i < ids.length; i++) {
-      drawUpgradeCard(ctx, game, i, ids[i], i === game.upgradeIndex);
+      drawUpgradeCard(ctx, game, i, ids[i], i === game.upgradeIndex, ids.length);
     }
 
     G(ctx, '←  →  /  A  D  or  1-4  TO  CHOOSE        SPACE  /  ENTER  /  TAP  A  CARD  TO  LOCK  IN',

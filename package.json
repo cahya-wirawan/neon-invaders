@@ -1,6 +1,6 @@
 {
   "name": "neon-invaders",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "NEON INVADERS -- zero-dependency canvas Space Invaders, plus its Capacitor Android/iOS shells.",
   "license": "MIT",

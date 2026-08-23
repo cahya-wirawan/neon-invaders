@@ -149,10 +149,16 @@
     }
 
     b = new Bullet(bx, by, -speed, 'player', C.COLORS.bullet);
-    if (up === 'pierce') {
+    // TWO INDEPENDENT `if`s, not an if/else chain: the WEAPON COMBINATION
+    // (U.COMBINED_ID) is exactly the union of both blocks, and pierce/bounce
+    // are already independent Bullet fields, so it needs no third code path
+    // and no new field. For 'none' / 'spread' / 'shield' neither block runs;
+    // for plain 'pierce' or plain 'bounce' exactly the one block runs, with
+    // the same side effects (bounceSide flip included) it always had.
+    if (up === 'pierce' || up === U.COMBINED_ID) {
       b.pierce = U.PIERCE_COUNT;
-      b.color = C.COLORS.playerGlow;
-    } else if (up === 'bounce') {
+    }
+    if (up === 'bounce' || up === U.COMBINED_ID) {
       b.bounce = U.BOUNCE_MAX;
       b.vx = U.BOUNCE_VX * this.bounceSide;
       // A bouncing shot climbs SLOWER than a normal one (BOUNCE_VY, not
@@ -162,8 +168,19 @@
       // arithmetic in CONFIG.UPGRADE.
       b.vy = -U.BOUNCE_VY;
       this.bounceSide = -this.bounceSide;
-      b.color = C.COLORS.warn;
     }
+    // ONE colour decision, evaluated once, AFTER the field blocks -- the two
+    // `if`s above set fields only. Writing the colour inside them would have
+    // the combined shot repainted three times over with only the last write
+    // surviving, which is correct by ordering rather than by construction and
+    // breaks the moment the blocks are reordered. The combined shot must not
+    // masquerade as either half, so it wins outright; otherwise each half
+    // keeps the colour it always had, and everything else keeps the plain
+    // bullet white the Bullet was constructed with.
+    b.color = up === U.COMBINED_ID ? C.COLORS.pierceBounce
+      : up === 'pierce' ? C.COLORS.playerGlow
+      : up === 'bounce' ? C.COLORS.warn
+      : C.COLORS.bullet;
     world.spawnBullet(b);
   };
 

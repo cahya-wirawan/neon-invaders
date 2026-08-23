@@ -7,7 +7,7 @@
     // scripts/verify.sh to cross-check package.json's version stays in
     // sync. Bump the MINOR number (1.2.0 -> 1.3.0) in both places together
     // for every new feature; patch/major are unused by this policy.
-    VERSION: '1.2.0',
+    VERSION: '1.3.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -168,6 +168,19 @@
     // pick REPLACES the previous one, it never stacks.
     UPGRADE: {
       IDS: ['spread', 'pierce', 'bounce', 'shield'],
+      // The one shipped WEAPON COMBINATION. Deliberately NOT in IDS: IDS is
+      // the unconditional 4-card pool, and this option must appear only when
+      // the active cannon is one half of it. Game.upgradeChoices() swaps the
+      // COMPLEMENTARY card for this id -- it never adds a 5th card, because
+      // 5 * CARD.W + 4 * CARD.GAP = 5 * 196 + 4 * 18 = 1052 > WORLD_W (960).
+      // See js/hud.js's CARD table and upgradeCardRect().
+      // It needs no tuning of its own: the combined shot is exactly the union
+      // of the pierce and bounce fields already set below, which is what keeps
+      // server/src/anticheat.js's BEST_ALIENS_PER_SHOT (3) valid -- a bouncing
+      // bullet survives WALLS, it does not kill more aliens, so the ceiling is
+      // still 1 + PIERCE_COUNT = 3 aliens per trigger pull.
+      COMBINED_ID: 'pierce_bounce',
+      COMBINES: { pierce: 'bounce', bounce: 'pierce' },
       PICK_TIMEOUT: 12,   // auto-confirm so an idle session never hangs
       // Two independent gates guard the pick (see game.js): the confirm
       // binding must be RELEASED once after the screen opens, and this many
@@ -269,6 +282,13 @@
       // against all of those and against each other.
       shieldAlien: '#3d5bff',
       kamikaze: '#ff4d00',
+      // The combined PIERCE+BOUNCE cannon's tell. It has to read as neither
+      // pierce-cyan (playerGlow) nor bounce-amber (warn), so it is an acid
+      // green that sits between them and near neither -- check-game.js
+      // scenario 30 enforces the same 48/255 minimum channel distance the
+      // commander and alien-class palettes use, against every upgrade colour
+      // and the plain bullet white.
+      pierceBounce: '#b6ff4d',
       alienRows: ['#ff6ad5', '#c774f7', '#8a7bff', '#5ad2ff', '#63ffc9']
     }
   };
