@@ -159,7 +159,13 @@ Clearing a wave offers a choice of cannon upgrade (pick one — it replaces
 whatever you had, it doesn't stack): **spread shot** (three angled bullets
 per volley), **piercing laser** (survives multiple alien hits instead of
 dying on the first), **bouncing projectile** (ricochets off the side walls),
-or **temporary shield** (start the next wave invulnerable). See
+or **temporary shield** (start the next wave invulnerable). If you're already
+carrying the piercing laser or the bouncing shot, one of the four cards
+changes: the *other* half of that pair is replaced by **PIERCE + BOUNCE**, a
+single acid-green shot that cuts through aliens and ricochets off the walls at
+the same time. It's a substitution, not a fifth card — you still choose one of
+four, and it still replaces whatever you had, so the combined cannon can be
+traded away again on the next screen and can't be combined any further. See
 [`FEATURES.md`](FEATURES.md) for exactly what shipped versus what was
 deliberately left out of this round.
 

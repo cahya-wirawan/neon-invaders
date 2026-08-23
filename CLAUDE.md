@@ -43,13 +43,16 @@ node scripts/check-net.js     # js/net.js offline/error-path harness
 cd server && npm test         # backend API tests (node:test)
 ```
 
-and this one after touching the swarm formations, the cannon upgrades, the
-commander personalities, or anything they reach — `js/core.js`,
+and this one after touching the swarm formations, the cannon upgrades (weapon
+combinations included), the commander personalities, the kill-streak
+multiplier, the alien classes, or anything they reach — `js/core.js`,
 `js/entities.js`, `js/game.js`, `js/hud.js`:
 
 ```
 node scripts/check-game.js    # formations + upgrades + commander
-                              # personalities, headless, 19 scenarios
+                              # personalities + kill-streak multiplier +
+                              # alien classes + weapon combinations,
+                              # headless, 31 scenarios
 ```
 
 or just open `index.html` directly (`file://` works too, since scripts are
@@ -130,7 +133,14 @@ late waves stay hard without becoming unfair.
 `STATE.UPGRADE` sits between `WAVE_CLEAR` and the next `PLAYING`: it is the
 cannon-refit screen, and `applyUpgrade()` — not `WAVE_CLEAR` — is what calls
 `startWave()`. Exactly one upgrade is active at a time and a new pick replaces
-the old one. Because fire and confirm share Space/Z/tap, the pick needs *two*
+the old one. The card list comes from `Game.upgradeChoices()`, not from
+`CONFIG.UPGRADE.IDS` directly: when the active cannon is one half of the one
+shipped **weapon combination** (`UPGRADE.COMBINED_ID`, pierce + bounce fused
+onto a single bullet), the *complementary* card is substituted for the combine
+card in that card's own slot. It is a substitution, never a fifth card —
+five cards do not fit `WORLD_W` — so the list is always four long and every
+card rect, digit binding and arrow wrap is unchanged. Because fire and confirm
+share Space/Z/tap, the pick needs *two*
 gates before it will accept a confirm: the binding must be seen released after
 the screen opens (`upgradeArmed`), and `UPGRADE.MIN_DWELL` must have elapsed —
 without both, the key still held down from dismissing `WAVE_CLEAR` instantly

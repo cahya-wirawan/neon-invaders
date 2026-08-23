@@ -316,3 +316,197 @@ rather than how the swarm as a whole moves (`CONFIG.ALIEN_CLASS` in
   sprite, and `assignRole()` deliberately refuses both cases today.
   `assignRole()` is the natural extension point for a future round: it takes
   a role, a row and a column and is the only place a class is ever attached.
+
+## Weapon combination system
+
+Exactly **one** shipped weapon combination: the **piercing laser** and the
+**bouncing shot** fused onto a single bullet (`UPGRADE.COMBINED_ID` /
+`UPGRADE.COMBINES` and `COLORS.pierceBounce` in `js/core.js`,
+`Game.prototype.upgradeChoices` in `js/game.js`, the two-independent-`if`
+restructure of `Player.prototype.fire` in `js/entities.js`, and the
+`pierce_bounce` card entry plus its icon in `js/hud.js`).
+
+- **[shipped]** **PIERCE + BOUNCE** (`'pierce_bounce'`). One shot that carries
+  *both* field sets at once: `pierce = UPGRADE.PIERCE_COUNT` (2),
+  `bounce = UPGRADE.BOUNCE_MAX` (2), and the bouncing shot's launch velocity
+  (`vx = ±BOUNCE_VX`, `vy = -BOUNCE_VY`, with the same deterministic
+  `bounceSide` alternation). It cuts through aliens *and* ricochets off the
+  side walls in the same flight, and it is painted `COLORS.pierceBounce`
+  (`#b6ff4d`) rather than either half's colour, so it never masquerades as a
+  plain pierce or a plain bounce shot. It has **no tuning constants of its
+  own** — it is precisely the union of the two upgrades already shipped.
+- **[shipped]** It is offered by **substitution, never as a fifth card**, and
+  that is a hard layout constraint rather than a preference. `js/hud.js`'s
+  `CARD` table is `W: 196, GAP: 18`, and `upgradeCardRect()` centres the row
+  in the 960-unit world:
+
+  | cards | total width | fits `WORLD_W` (960)? |
+  | --- | --- | --- |
+  | 4 | `4 * 196 + 3 * 18` = **838** | yes, 61 units of margin each side |
+  | 5 | `5 * 196 + 4 * 18` = **1052** | no — it would start at x −46 and end 46 units past the right wall |
+
+  So `upgradeChoices()` returns `UPGRADE.IDS` verbatim unless the active
+  cannon is one half of the combination, in which case the **complementary**
+  card is swapped for the combine card *in that card's own slot*. The list
+  length is therefore always 4: every card rect, the `1`–`4` digit bindings,
+  the arrow-key wrap and the tap hit-test are byte-for-byte the code they were,
+  and `game.upgradeCardAt()` and `js/hud.js`'s draw loop read the **same**
+  list, so the card you tap is always the card you can see. On `'pierce'` the
+  combine card takes index 2 (`'bounce'`'s slot); on `'bounce'` it takes index
+  1 (`'pierce'`'s slot). From `'none'`, `'spread'` or `'shield'` no
+  substitution applies at all and the screen is exactly the one that shipped
+  before.
+- **[shipped]** **The kill ceiling is unchanged, so `server/` stayed
+  completely frozen — no anti-cheat carve-out, and none needed.** The trace:
+  `collide()` resolves one alien per bullet per frame and either decrements
+  `pierce` or kills the bullet, so a shot removes `1 + PIERCE_COUNT` = **3**
+  aliens per trigger pull. `bounce` is decremented in `Bullet.update()` on
+  *wall* contact only — a bounce buys the shot more **travel**, not more
+  **kills** — and the two counters are separate fields that never read or
+  write each other. 3 is exactly the `BEST_ALIENS_PER_SHOT` that
+  `server/src/anticheat.js` already assumes for bound 1, so no bound moves.
+  The combination also carries **no score bonus**: each kill pays its own
+  `SCORE.ROW` value at whatever multiplier is already in force, so
+  `BEST_ALIEN_SCORE` (30) and `COMBO_MAX` (4) are untouched,
+  `PEAK_SCORE_PER_SECOND` stays ~522/s and bound 2's 800/s ceiling is
+  unchanged. This is **machine-checked, not asserted**: `scripts/verify.sh`'s
+  AC13 (e) greps `PIERCE_COUNT` out of `js/core.js`, requires
+  `BEST_ALIENS_PER_SHOT` out of `anticheat.js` and fails unless
+  `1 + PIERCE_COUNT === BEST_ALIENS_PER_SHOT`, and scenario 29 in
+  `scripts/check-game.js` brute-forces 60 combined flights (15 launch x
+  positions, `x = 60…900` step 60, × both launch sides × 2 heights) through a
+  full 55-alien swarm and confirms no flight ever exceeds that ceiling. What
+  the sweep asserts is the **upper bound** (`worst <= BEST_ALIENS_PER_SHOT`)
+  plus non-vacuity (`worst > 0`) — it is not pinned to an exact number, so a
+  future retune that made the worst flight *weaker* would not fail it. (Today
+  the worst flight does reach the ceiling: it removes 3.)
+- **[shipped]** **No new state and no new `Bullet` field.** `game.upgrade`
+  stays a plain string — it just has one more legal value. `Bullet.pierce` and
+  `Bullet.bounce` were already independent fields with independent owners
+  (`collide()` and `Bullet.update()` respectively), which is the entire reason
+  this combination needed **zero** new collision-handling code: `collide()`,
+  `killAlien()` and `scoreKill()` are untouched this round. Scenario 29 pins
+  the accounting behaviourally — one `killAlien()` and one `scoreKill()` per
+  alien that actually died, no kill event ever changing `bounce`, no wall
+  reflection ever changing `pierce`, and at least one reflection happening
+  while `pierce` was still above zero, so "it pierced *and* bounced in one
+  flight" is proven rather than assumed.
+- **[shipped]** `UPGRADE.COMBINED_ID` is deliberately **not** in
+  `UPGRADE.IDS`. `IDS` is the unconditional four-card pool; the combine card is
+  conditional, so putting it in `IDS` would offer it from every cannon,
+  including `'none'`. `applyUpgrade()`'s defence-in-depth check therefore
+  validates the picked id against **`this.upgradeChoices()`** — the list this
+  particular pick screen actually offered — rather than against the static
+  `IDS` pool. That is both narrower (an id that exists but was never on screen
+  is rejected too) and simpler (`COMBINED_ID` needs no special-case clause,
+  because on a screen that offers it, it is *in* the list). The "unknown id
+  falls back to `IDS[0]`" behaviour is unchanged. (The note in *Upgradeable
+  cannon* above still holds for adding a fifth **unconditional** upgrade: that
+  one really does want an `IDS` entry.)
+- **[shipped]** `upgradeChoices()` always returns a **fresh array**, on the
+  substitution path and the plain path alike, and it looks `COMBINES` up with
+  an explicit `Object.prototype.hasOwnProperty.call()` — the same idiom
+  `js/entities.js` already uses for its `byCol` walk, and now also used for
+  `js/hud.js`'s two `UPGRADES[...]` lookups. Neither is reachable as a bug
+  today (nothing writes `game.upgrade` from untrusted input, and every caller
+  only *reads* the list it gets back), but a bare bracket lookup on an object
+  literal answers for inherited `Object.prototype` keys with a truthy
+  non-entry, and handing out `CONFIG.UPGRADE.IDS` itself would let one future
+  caller's `sort`/`splice` corrupt the global config for the rest of the
+  session — and only on the common no-substitution path, which is the worst
+  kind of intermittent. Both are cheap enough that being safe by construction
+  beats being safe by a downstream guard.
+- **[shipped, documented asymmetry]** **From `'bounce'`, the plain BOUNCING
+  SHOT card that stays on screen is strictly dominated by the combine.** This
+  is an accepted consequence of the substitution design, not a defect. The
+  combined shot is the pierce field set *plus* the entire unmodified bounce
+  field set — same `vx`/`vy`, same `bounceSide` alternation, same trajectory —
+  with nothing subtracted, so the two directions are not symmetric:
+
+  | active cannon | cards offered | the choice |
+  | --- | --- | --- |
+  | `'pierce'` | `[spread, pierce, **pierce_bounce**, shield]` | a **real tradeoff** — plain PIERCING LASER is a straight, fast shot (`vy = -BULLET.PLAYER_SPEED`, `vx = 0`); the combine is angled and slower (`vy = -BOUNCE_VY`, `vx = ±BOUNCE_VX`). Neither dominates: the straight laser is the better answer to a column directly overhead. |
+  | `'bounce'` | `[spread, **pierce_bounce**, bounce, shield]` | **not a tradeoff** — plain BOUNCING SHOT has the combine's exact trajectory and none of its piercing, so there is no board state in which re-picking it beats picking the combine. |
+
+  Fixing it would mean substituting the *active* card rather than the
+  complementary one, which changes what the screen offers from `'pierce'` too
+  and is a design change, not a polish item. The current substitution is what
+  keeps the card count at four and the kill ceiling at 3, which is what keeps
+  `server/` frozen — so the asymmetry is documented and kept.
+- **[shipped]** The combined cannon obeys the **same "one only, it replaces"
+  rule** as every other upgrade. It cannot itself be combined further —
+  `COMBINES` has no entry for `'pierce_bounce'`, so from the combined cannon
+  the plain four cards come back and picking any of them replaces it outright.
+  There is no third tier. The pick-screen hint text
+  (*ONE ONLY — IT REPLACES YOUR CURRENT CANNON*) and the *1-4 TO CHOOSE*
+  digit hint are unchanged because both are still literally true.
+- **[shipped]** The two **mash-protection gates** apply to the combine card
+  identically, because they were never per-card: `upgradeArmed` (the confirm
+  binding must be seen released once after the screen opens) and
+  `UPGRADE.MIN_DWELL` (1 s) are checked in `updateUpgradePick()` before the
+  index is resolved against the list at all. Scenario 28 re-runs the held-key,
+  mashing and tap-a-card probes from scenario 16 with the combine card
+  highlighted and gets the same answers.
+- **[shipped]** Presentation: a new `UPGRADES` entry in `js/hud.js`
+  (**PIERCE + BOUNCE**, *"Pierces aliens AND ricochets off walls."*) and an
+  icon built only from primitives the two source icons already use — the
+  bounce icon's pair of wall posts around the pierce icon's shaft and
+  cross-bars, with the shaft tilted so it reads as a ricochet rather than a
+  straight lance. Flat `fillRect`/`rotate` only: **no new `shadowBlur` call
+  site** (`verify.sh` machine-checks that across all four authorized engine
+  files this round, `js/hud.js` included — it was frozen for the alien-classes
+  round and is open for this one). The bottom-right `CANNON  PIERCE + BOUNCE`
+  readout needed no new code at all: it already reads the `UPGRADES` table by
+  `game.upgrade`. Scenario 30 pins the colour at a 48/255 minimum channel gap
+  from the other four card colours, the plain bullet white, pierce-cyan and
+  bounce-amber, and reads those colours back out of the real HUD draw rather
+  than restating them as literals.
+- **[shipped]** **The combined bullet meeting a SHIELD alien is covered, not
+  assumed.** The shield class (`ALIEN_CLASS.SHIELD`, wave 4 up) redirects a
+  lethal hit aimed at a covered ally onto itself, which is the one place a
+  cross-feature interaction could have leaked an extra kill into a trigger
+  pull. Scenario 31 pins it: on a redirected kill the combined shot's `pierce`
+  falls by **exactly one** (not zero, not two), the **shield** dies and the
+  targeted ally survives and flashes, `bounce` is left completely untouched,
+  and the shot flies on — behaviourally *identical* to the same combined shot
+  killing an unshielded alien, which the scenario asserts by comparing the two
+  bullets field for field. It then sweeps every cell the shield covers ×
+  both launch sides × three launch lead times and confirms that a flight which
+  opens with a redirect can still ricochet off a wall and kill again, and that
+  no flight anywhere in the sweep exceeds `1 + PIERCE_COUNT` = 3 kills. A
+  redirect therefore buys no extra kill, which is why `BEST_ALIENS_PER_SHOT`
+  needs no re-derivation even with both features live at once.
+- **[shipped]** The wave-1 golden checksum is **unchanged**
+  (`01cfdcd7…c1c04c`, score 420, alive 29). Nothing in this round changes a
+  no-upgrade bullet: `Player.fire()`'s two field-setting `if`s are both false
+  for `'none'`, `'spread'` and `'shield'`, its single colour expression falls
+  through to `COLORS.bullet` (which is what the `Bullet` constructor was
+  already given), and wave 1 has no upgrade at all. That colour expression is
+  evaluated **once, after** the field blocks, rather than being written from
+  inside each of them: the combined shot would otherwise be repainted three
+  times with only the last write surviving — correct by ordering rather than
+  by construction. Scenario 29 (a) pins all four resulting colours, the two
+  plain cannons included.
+- **[deferred]** **Spread + Pierce.** Three piercing bullets per trigger pull
+  raises the best-case kills per trigger pull from 3 to `3 * (1 +
+  PIERCE_COUNT)` = **9**, which invalidates `BEST_ALIENS_PER_SHOT` and forces
+  a re-derivation of bound 1's shots-per-wave floor in
+  `server/src/anticheat.js` — the one thing this round was specifically built
+  to avoid. Shipping it means opening `server/` and re-deriving the bound
+  properly, not widening a constant.
+- **[deferred]** **Spread + Bounce.** There is no defined per-bullet-angle
+  semantics for three simultaneously-bouncing shots. Spread's three bullets
+  are distinguished by `±SPREAD_ANGLE` around vertical; bounce's single bullet
+  is distinguished by `bounceSide`, which *alternates between trigger pulls*.
+  Combining them means deciding what side each of the three takes, whether
+  they alternate as a group or individually, and what happens when two of them
+  reflect off opposite walls into each other's lanes — a real design problem,
+  not a plumbing one.
+- **[deferred]** **Pierce + Shield**, **Bounce + Shield** and **Spread +
+  Shield.** All three for the same structural reason: `'shield'` never touches
+  a `Bullet` at all. Its entire implementation is one line in `applyUpgrade()`
+  setting `player.invuln = UPGRADE.SHIELD_TIME` after `startWave()`. There is
+  no bullet-level interaction to combine — a "shield + X" is just X with a
+  head start, which is a different feature (a modifier that stacks on top of a
+  cannon) and would need the "exactly one upgrade, it replaces" rule that
+  `game.upgrade` being a single string encodes to be rethought first.
