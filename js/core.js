@@ -5,7 +5,8 @@
   var CONFIG = {
     // Shown on the title screen (js/hud.js drawTitle) and read by
     // scripts/verify.sh to cross-check package.json's version stays in
-    // sync. Bump both together on every user-visible change.
+    // sync. Bump the MINOR number (1.2.0 -> 1.3.0) in both places together
+    // for every new feature; patch/major are unused by this policy.
     VERSION: '1.2.0',
 
     WORLD_W: 960,

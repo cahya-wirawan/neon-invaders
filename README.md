@@ -90,11 +90,12 @@ first input handler.
   — up to ~4x sooner at x4. That knock-on is intended, not a separate
   mechanic.
 - The hi-score is kept in `localStorage` (silently skipped if storage is blocked).
-- The title screen shows a small `v1.1.0` tag in the bottom-**left** corner —
+- The title screen shows a small `v1.2.0` tag in the bottom-**left** corner —
   bottom-right is where `js/net.js`'s opt-in online panel is pinned —
   (`SI.CONFIG.VERSION` in `js/core.js`), kept in sync with the root
   `package.json`'s `version` field — `scripts/verify.sh` checks the two never
-  drift apart. Bump both together on any user-visible change.
+  drift apart. Policy: bump the **minor** number together in both places for
+  every new feature (patch/major are unused).
 
 ## Difficulty
 

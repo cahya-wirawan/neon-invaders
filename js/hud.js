@@ -200,7 +200,7 @@
     // viewport (right:10px; bottom:10px) and would otherwise sit on top of
     // this text.
     G(ctx, 'v' + C.VERSION, 16, C.WORLD_H - 14, {
-      font: font(13, 600), color: '#5c7a94', blur: 0, align: 'left', alpha: 0.55
+      font: font(13, 600), color: '#8fb6d8', blur: 6, align: 'left', alpha: 0.85
     });
   }
 
