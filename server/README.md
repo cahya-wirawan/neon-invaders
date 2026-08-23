@@ -157,9 +157,21 @@ instead of the pre-upgrade 17.8s.
 **Bound 2 -- maximum score per second of play.** Best sustainable alien rate
 is `SCORE.ROW` max (30) / 0.28s ~= 107/s; best UFO rate is `UFO.SCORES` max
 (300) / `UFO.MIN_DELAY` (14s, its fastest respawn) ~= 21/s; together with the
-+5 bullet-shootdown bonus, roughly 136/s is the game's real ceiling. The
-default enforced ceiling is **200/s** (env `RUN_MAX_SCORE_PER_SECOND`) --
-deliberate headroom, because rejecting a legitimate player's best-ever run is
++5 bullet-shootdown bonus (~8/s), roughly 136/s of *raw* kill value.
+
+That was the whole derivation until the **kill-streak multiplier** shipped.
+`CONFIG.COMBO` scales every alien and saucer kill by up to `COMBO.MAX` from
+wave 2 on, so the peak is the raw kill rate times the multiplier -- the flat
++5 shoot-down bonus stays outside it, because `js/game.js` deliberately pays
+that one through plain `addScore()` rather than `scoreKill()`:
+
+```
+(107 + 21) * COMBO_MAX(4)  +  8  =  ~522/s is the game's real ceiling
+```
+
+The default enforced ceiling is that peak times a 1.5x headroom factor, i.e.
+**800/s** (env `RUN_MAX_SCORE_PER_SECOND`) -- the same ~1.5x cushion the old
+200/s gave the old 136/s. Rejecting a legitimate player's best-ever run is
 worse than letting a small margin through:
 
 ```
@@ -168,7 +180,17 @@ maxScoreFor(elapsedSeconds) = CEILING * (elapsedSeconds + GRACE)
 
 `GRACE` defaults to 5s (env `RUN_SCORE_GRACE_SECONDS`) so a very short run
 isn't capped absurdly tightly (without it, a 0.4s-old run would be capped at
-80 points).
+320 points).
+
+`COMBO_MAX` in `src/anticheat.js` is a hand-maintained mirror of `js/core.js`,
+exactly like `BEST_ALIENS_PER_SHOT` and for the mirror-image reason: **raising
+`COMBO.MAX` without raising it there turns a legitimate high-streak run into a
+false `implausible_score` rejection.** Both halves of the ceiling
+(`PEAK_SCORE_PER_SECOND` and the `CEILING_HEADROOM` factor) are derived in
+code from the mirrored constants rather than hard-coded, so the ceiling tracks
+a retune instead of silently going stale. Note that `.env.example` still ships
+the pre-multiplier `RUN_MAX_SCORE_PER_SECOND=200`; leave it unset (or set it
+to 800) unless you intend the tighter, pre-multiplier bound.
 
 Both bounds are checked independently -- a rejection names which physical
 limit was broken (`implausible_run` vs `implausible_score`), and a request can
@@ -184,8 +206,9 @@ unconsumed run token that's old enough, which means calling
 - **The patient cheater.** Call `/api/runs/start`, wait long enough, submit
   any score under the ceiling for that elapsed time. Both bounds pass
   trivially. This raises the cost of cheating from "one curl" to "one curl
-  and a timer" -- reaching `MAX_SCORE` (9,999,999) this way needs roughly 14
-  hours of tracked wall-clock at the default 200/s ceiling. That is the
+  and a timer" -- reaching `MAX_SCORE` (9,999,999) this way needs roughly 3.5
+  hours of tracked wall-clock at the default 800/s ceiling (it was ~14 hours
+  at the pre-multiplier 200/s: a real cost of widening the bound). That is the
   honest limit of a bounds-only design that was explicitly scoped to avoid
   building a full server-side replay/simulation engine (which would mean
   porting the entire collision/scoring engine server-side -- disproportionate
@@ -193,7 +216,8 @@ unconsumed run token that's old enough, which means calling
 - **Tuning risk found during development.** The default ceiling genuinely
   rejected a plausible-looking case while this was being built: a score
   submitted essentially immediately after run-start (elapsed ~0s) hit
-  `200 * (0 + 5) = 1000` and was rejected above that. Real play can never be
+  `CEILING * (0 + 5)` (1000 points at the 200/s default of the time, 4000 at
+  today's 800/s) and was rejected above that. Real play can never be
   literally 0s old, but it illustrates that `GRACE` is the only thing standing
   between the ceiling and a false rejection on a short, high-scoring run (a
   strong player who dies fast on a later wave with bonus-heavy scoring). The

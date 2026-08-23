@@ -41,9 +41,24 @@
  * BOUND 2 -- maximum score per second of play.
  *   Best sustainable alien rate: SCORE.ROW max 30 points / 0.28 s = ~107/s.
  *   Best UFO rate: UFO.SCORES max 300 / UFO.MIN_DELAY 14 s = ~21/s.
- *   Together ~128/s, ~136/s once the +5 bullet-shootdown bonus is allowed for.
- *   The default ceiling is 200/s -- deliberate headroom, because being wrong
- *   here rejects a legitimate player's best-ever run.
+ *   Together ~128/s of RAW kill value, plus ~8/s of allowance for the flat +5
+ *   bullet-shootdown bonus = ~136/s. That was the whole derivation until the
+ *   KILL-STREAK MULTIPLIER shipped, and it is now wrong on its own:
+ *
+ *   CONFIG.COMBO scales every alien and UFO kill by up to COMBO.MAX from
+ *   COMBO.FROM_WAVE (wave 2) on, so the raw kill rate above is not the peak
+ *   any more -- the peak is that rate times the multiplier (see COMBO_MAX):
+ *
+ *     (107 + 21) * 4  +  8 (shootdown, deliberately NOT multiplied)  = ~522/s
+ *
+ *   The default ceiling is that peak times CEILING_HEADROOM (1.5), the same
+ *   ~1.5x cushion the old 200/s gave the old 136/s. Both halves are derived in
+ *   code below rather than hard-coded, so retuning COMBO.MAX in js/core.js and
+ *   mirroring it here moves the ceiling with it instead of silently turning a
+ *   legitimate multiplied run into an `implausible_score` rejection -- which is
+ *   exactly the regression BEST_ALIENS_PER_SHOT exists to prevent for bound 1.
+ *   The headroom matters because being wrong here rejects a legitimate
+ *   player's best-ever run.
  *
  *     maxScoreFor(elapsed) = CEILING * (elapsed + GRACE)
  *
@@ -86,10 +101,45 @@ const SHOTS_PER_WAVE_FLOOR = Math.ceil(ALIENS_PER_WAVE / BEST_ALIENS_PER_SHOT);
 const SECONDS_PER_WAVE_FLOOR =
   SHOTS_PER_WAVE_FLOOR * FIRE_COOLDOWN_SECONDS + WAVE_CLEAR_SECONDS;
 
+/* --- bound 2's inputs, same manual-mirror discipline as bound 1's ------ */
+const BEST_ALIEN_SCORE = 30;         // js/core.js SCORE.ROW, highest row
+const BEST_UFO_SCORE = 300;          // js/core.js UFO.SCORES, highest value
+const UFO_MIN_DELAY_SECONDS = 14;    // js/core.js UFO.MIN_DELAY, fastest respawn
+/* Allowance for the flat +5 shoot-down-an-alien-bullet bonus. Unchanged from
+ * the pre-multiplier derivation (~136/s total minus the ~128/s of kill value),
+ * and it stays OUTSIDE the multiplier below because js/game.js deliberately
+ * pays that bonus through plain addScore(), not scoreKill(). */
+const SHOOTDOWN_ALLOWANCE_PER_SECOND = 8;
+
+/* Highest score multiplier a kill can be paid at: js/core.js CONFIG.COMBO.MAX.
+ * MUST BE KEPT IN SYNC WITH js/core.js -- exactly like BEST_ALIENS_PER_SHOT
+ * above, and for the mirror-image reason. Raising COMBO.MAX (or lowering
+ * COMBO.STEP far enough to make the top step routinely reachable) without
+ * raising this number turns a legitimate high-streak run into an
+ * `implausible_score` rejection. There is deliberately no import from js/ --
+ * the server does not load browser code -- so this is a manual mirror. */
+const COMBO_MAX = 4;
+
+/* (30 / 0.28 + 300 / 14) * 4 + 8 = ~522.3 points per second */
+const PEAK_SCORE_PER_SECOND =
+  (BEST_ALIEN_SCORE / FIRE_COOLDOWN_SECONDS + BEST_UFO_SCORE / UFO_MIN_DELAY_SECONDS)
+    * COMBO_MAX
+  + SHOOTDOWN_ALLOWANCE_PER_SECOND;
+
+/* The cushion between "physically possible" and "rejected". 1.5x is what the
+ * old hard-coded 200/s was against the old ~136/s peak; keeping it as a factor
+ * means the cushion survives every future retune of the numbers above. */
+const CEILING_HEADROOM = 1.5;
+
+/* ceil(522.3 * 1.5 / 25) * 25 = 800 -- rounded to a legible step so the
+ * default reads like a decision rather than a floating-point artefact. */
+const MAX_SCORE_PER_SECOND =
+  Math.ceil(PEAK_SCORE_PER_SECOND * CEILING_HEADROOM / 25) * 25;
+
 const DEFAULTS = {
   ttlMs: 6 * 60 * 60 * 1000,     // 6 hours
   minSecondsPerWaveScale: 0.5,
-  maxScorePerSecond: 200,
+  maxScorePerSecond: MAX_SCORE_PER_SECOND,   // 800/s, derived above
   scoreGraceSeconds: 5,
   runStartMax: 60,
   runStartWindowMs: 15 * 60 * 1000
@@ -193,5 +243,9 @@ module.exports = {
   BEST_ALIENS_PER_SHOT,
   SHOTS_PER_WAVE_FLOOR,
   SECONDS_PER_WAVE_FLOOR,
+  COMBO_MAX,
+  PEAK_SCORE_PER_SECOND,
+  CEILING_HEADROOM,
+  MAX_SCORE_PER_SECOND,
   DEFAULTS
 };
