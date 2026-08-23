@@ -1557,6 +1557,511 @@ scenario('19. every personality still grounds the swarm when its commander dies'
   });
 });
 
+/* --------------------------------------------------------------------- */
+/* Kill-streak multiplier helpers. Every kill below is delivered the same
+ * way scenarios 9/13 deliver theirs -- a real player Bullet pushed into
+ * game.bullets and resolved by the game's own collide() during tick() --
+ * so what is measured is the SHIPPING scoring path, not a direct call to
+ * scoreKill(). */
+function firstAlive(game) {
+  if (!game.swarm) return null;
+  for (const a of game.swarm.aliens) {
+    if (a.alive) return a;
+  }
+  return null;
+}
+
+/* Freeze everything that could kill an alien (or the player) other than the
+ * shot the scenario fires itself. */
+function stillSwarm(game) {
+  quietSwarm(game);
+  if (game.swarm) game.swarm.formationTimer = Infinity;
+}
+
+/* Kills exactly one alien through collide() and reports the score delta.
+ * Returns null if the tick did not resolve to exactly one death, so a
+ * scenario can never mistake a miss for a x1 multiplier. */
+function killOneByShot(env, game, target) {
+  const C = env.SI.CONFIG;
+  const before = game.score;
+  const aliveBefore = game.swarm.aliveCount();
+  game.bullets.push(
+    new env.SI.Bullet(target.x, target.y, -C.BULLET.PLAYER_SPEED, 'player', '#fff'));
+  tick(env, game);
+  if (game.swarm.aliveCount() !== aliveBefore - 1) return null;
+  return game.score - before;
+}
+
+scenario('20. kill-streak multiplier builds, applies, and draws zero RNG', () => {
+  withSeed(2020, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const K = C.COMBO;
+
+    /* --- wave 1 is inert: classic scoring, no streak state at all ------ */
+    const w1 = startedGame(env);
+    stillSwarm(w1);
+    w1.player.invuln = 0;
+    let rawSum = 0;
+    let paidSum = 0;
+    let w1Kills = 0;
+    let w1Clean = true;
+    for (let k = 0; k < 8; k++) {
+      const target = firstAlive(w1);
+      if (!target) break;
+      const raw = target.score;
+      const delta = killOneByShot(env, w1, target);
+      if (delta === null) { w1Clean = false; break; }
+      rawSum += raw;
+      paidSum += delta;
+      w1Kills++;
+      if (w1.combo !== 0 || w1.comboMult() !== 1) { w1Clean = false; break; }
+    }
+    check('wave 1: eight aliens died through collide()', w1Kills === 8 && w1Clean,
+      `kills=${w1Kills} clean=${w1Clean}`);
+    check('wave 1: total paid equals the sum of the raw alien scores',
+      paidSum === rawSum && rawSum > 0, `${paidSum} vs ${rawSum}`);
+    check('wave 1: combo stays 0 and the multiplier stays x1',
+      w1.combo === 0 && w1.comboMult() === 1, `combo=${w1.combo} mult=${w1.comboMult()}`);
+
+    /* --- wave 2: the full multiplier table, kill by kill --------------- */
+    const g = startedGame(env, 2);
+    stillSwarm(g);
+    g.player.invuln = 0;
+    const total = K.STEP * K.MAX + 2;
+    let tableOk = true;
+    let tableDetail = '';
+    let firstMulted = 0;
+    let earlyOnes = 0;
+    let maxSeen = 1;
+    /* Observed pay-rate per kill (delta / raw), recorded for the literal
+     * cross-check below -- deliberately measured from the SCORE, not read
+     * back out of comboMult(). */
+    const paidRates = [];
+    for (let n = 1; n <= total; n++) {
+      const target = firstAlive(g);
+      if (!target) { tableOk = false; tableDetail = `ran out of aliens at n=${n}`; break; }
+      const raw = target.score;
+      const delta = killOneByShot(env, g, target);
+      if (delta !== null && raw > 0) paidRates.push(delta / raw);
+      /* n is the streak count AFTER this kill -- scoreKill() increments
+       * first, so the kill that reaches STEP is already worth x2. */
+      const wantMult = Math.min(K.MAX, 1 + Math.floor(n / K.STEP));
+      if (delta === null) { tableOk = false; tableDetail = `kill ${n} did not resolve`; break; }
+      if (delta !== raw * wantMult) {
+        tableOk = false;
+        tableDetail = `kill ${n}: paid ${delta}, wanted ${raw} * x${wantMult}`;
+        break;
+      }
+      if (g.combo !== n) {
+        tableOk = false;
+        tableDetail = `kill ${n}: combo=${g.combo}`;
+        break;
+      }
+      if (g.comboMult() !== wantMult) {
+        tableOk = false;
+        tableDetail = `kill ${n}: mult=${g.comboMult()} wanted ${wantMult}`;
+        break;
+      }
+      if (wantMult === 1) earlyOnes++;
+      if (wantMult > 1 && firstMulted === 0) firstMulted = n;
+      maxSeen = Math.max(maxSeen, wantMult);
+    }
+    check(`wave 2: every one of ${total} kills paid raw * min(MAX, 1 + floor(n/STEP))`,
+      tableOk, tableDetail);
+    check('wave 2: the first STEP-1 kills are still worth exactly x1',
+      earlyOnes === K.STEP - 1, `x1 kills=${earlyOnes} (STEP=${K.STEP})`);
+    check('wave 2: the multiplier first rises on the STEP-th kill',
+      firstMulted === K.STEP, `first multiplied kill=${firstMulted}`);
+    check('wave 2: the multiplier saturates at MAX and never exceeds it',
+      maxSeen === K.MAX && g.comboMult() === K.MAX,
+      `maxSeen=${maxSeen} final=${g.comboMult()} MAX=${K.MAX}`);
+    check('wave 2: the streak survived the whole back-to-back run',
+      g.combo === total, `combo=${g.combo} vs ${total}`);
+
+    /* --- the SAME table again, against a hand-written literal ----------
+     * Everything above computes its expectation with the implementation's
+     * own formula, so an off-by-one in scoreKill()/comboMult() would move
+     * both sides together and still pass. This sequence was written out by
+     * hand from the SHIPPED constants (STEP 4, MAX 4) -- kills 1-3 pay x1,
+     * 4-7 x2, 8-11 x3, and 12 onward saturate at x4 -- so it can only agree
+     * with a correct implementation. It is guarded on the constants rather
+     * than derived from them: retune COMBO and this check fails loudly
+     * saying so, instead of silently comparing against a stale literal. */
+    if (K.STEP === 4 && K.MAX === 4) {
+      const WANT = [1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4];
+      check('wave 2: 18 kills were measured for the literal cross-check',
+        paidRates.length === WANT.length, `measured ${paidRates.length} of ${WANT.length}`);
+      check('wave 2: the paid rate matches a hand-written [1,1,1,2,2,2,2,3,3,3,3,4x7] literal',
+        paidRates.length === WANT.length && WANT.every((w, i) => paidRates[i] === w),
+        `paid=[${paidRates.join(',')}] want=[${WANT.join(',')}]`);
+    } else {
+      check('wave 2: COMBO retuned -- the hand-written literal must be rewritten',
+        false, `STEP=${K.STEP} MAX=${K.MAX}; the literal below is written for STEP=4 MAX=4`);
+    }
+
+    /* --- the scoring path draws no randomness whatsoever ---------------- */
+    const seeded = Math.random;
+    let draws = 0;
+    Math.random = function () { draws++; return seeded(); };
+    try {
+      const probe = startedGame(env, 2);
+      draws = 0;                       // ignore the setup's own draws
+      for (let i = 0; i < 50; i++) probe.scoreKill(10);
+      probe.resetCombo();
+      probe.comboMult();
+      check('scoreKill/resetCombo/comboMult consume exactly zero Math.random draws',
+        draws === 0, `draws=${draws}`);
+    } finally {
+      Math.random = seeded;
+    }
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('21. reset rules are deterministic and complete', () => {
+  const C0 = loadGame(JS_DIR).SI.CONFIG;
+  const K0 = C0.COMBO;
+
+  /* Builds a wave-2 game whose streak already stands at exactly x2. */
+  function atX2(env) {
+    const game = startedGame(env, 2);
+    stillSwarm(game);
+    game.player.invuln = 0;
+    for (let n = 0; n < K0.STEP; n++) {
+      const target = firstAlive(game);
+      killOneByShot(env, game, target);
+    }
+    return game;
+  }
+
+  /* (a) taking a hit drops the streak outright. */
+  withSeed(2101, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const game = atX2(env);
+    check('(a) built up to x2 before the hit', game.comboMult() === 2,
+      `mult=${game.comboMult()} combo=${game.combo}`);
+    const lives = game.lives;
+    game.player.invuln = 0;
+    game.bullets.push(new env.SI.Bullet(game.player.x, game.player.y,
+      C.BULLET.ALIEN_SPEED, 'alien', '#f0f'));
+    tick(env, game);
+    check('(a) the player actually took the hit', game.lives === lives - 1,
+      `${lives} -> ${game.lives}`);
+    check('(a) taking a hit resets the streak', game.combo === 0 && game.comboMult() === 1,
+      `combo=${game.combo} mult=${game.comboMult()}`);
+  });
+
+  /* (b) the lapse window, tested from both sides of the boundary. */
+  withSeed(2102, () => {
+    const env = loadGame(JS_DIR);
+    const game = atX2(env);
+    check('(b) built up to x2 before the wait', game.comboMult() === 2,
+      `mult=${game.comboMult()}`);
+    /* The kill tick set comboTimer to exactly WINDOW, so WINDOW/DT - 2 more
+     * ticks must leave it alive with ~2 frames to spare. */
+    const shortOf = Math.floor(K0.WINDOW / DT) - 2;
+    for (let t = 0; t < shortOf; t++) tick(env, game);
+    check('(b) still x2 two frames short of WINDOW',
+      game.comboMult() === 2 && game.combo === K0.STEP && game.comboTimer > 0,
+      `mult=${game.comboMult()} timer=${game.comboTimer}`);
+    for (let t = 0; t < 5; t++) tick(env, game);
+    check('(b) lapsed to x1 once WINDOW elapsed with no kill',
+      game.combo === 0 && game.comboMult() === 1 && game.comboTimer === 0,
+      `combo=${game.combo} timer=${game.comboTimer}`);
+  });
+
+  /* (c) wave boundaries. */
+  withSeed(2103, () => {
+    const env = loadGame(JS_DIR);
+    let game = atX2(env);
+    check('(c) built up to x2 before clearWave()', game.comboMult() === 2);
+    game.clearWave();
+    check('(c) clearWave() resets the streak',
+      game.combo === 0 && game.comboTimer === 0 && game.comboMult() === 1,
+      `combo=${game.combo}`);
+    game = atX2(env);
+    check('(c) built up to x2 again before startWave()', game.comboMult() === 2);
+    game.startWave(3);
+    check('(c) startWave() resets the streak',
+      game.combo === 0 && game.comboTimer === 0 && game.comboMult() === 1,
+      `combo=${game.combo}`);
+  });
+
+  /* (d) the reflected-shot bonus is flat, unmultiplied, and streak-neutral. */
+  withSeed(2104, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const game = atX2(env);
+    check('(d) built up to x2 before the reflection', game.comboMult() === 2,
+      `mult=${game.comboMult()}`);
+    const comboBefore = game.combo;
+    const timerBefore = game.comboTimer;
+    const scoreBefore = game.score;
+    /* Empty airspace: below the swarm, well above the bunkers. */
+    const y = 450;
+    const x = C.WORLD_W / 2;
+    game.bullets.push(new env.SI.Bullet(x, y, -C.BULLET.PLAYER_SPEED, 'player', '#fff'));
+    game.bullets.push(new env.SI.Bullet(x, y, C.BULLET.ALIEN_SPEED, 'alien', '#f0f'));
+    const aliveBefore = game.swarm.aliveCount();
+    tick(env, game);
+    check('(d) no alien died in that tick', game.swarm.aliveCount() === aliveBefore,
+      `${aliveBefore} -> ${game.swarm.aliveCount()}`);
+    check('(d) the reflected shot paid exactly 5, unmultiplied',
+      game.score - scoreBefore === 5, `delta=${game.score - scoreBefore}`);
+    check('(d) the streak counter is untouched by the reflection',
+      game.combo === comboBefore && game.comboMult() === 2,
+      `combo=${game.combo} vs ${comboBefore}`);
+    check('(d) the reflection did not re-arm the streak window either',
+      game.comboTimer < timerBefore, `timer=${game.comboTimer} vs ${timerBefore}`);
+  });
+
+  /* (AC-2) the whole thing is deterministic: same seed, same log, same
+   * number of RNG draws. */
+  function runLog(seed) {
+    return withSeed(seed, () => {
+      const seeded = Math.random;
+      let draws = 0;
+      Math.random = function () { draws++; return seeded(); };
+      try {
+        const env = loadGame(JS_DIR);
+        const C = env.SI.CONFIG;
+        const game = startedGame(env, 2);
+        const lines = [];
+        for (let t = 0; t < 400; t++) {
+          scriptInput(env.input, t);
+          if (t % 15 === 0) {
+            const target = firstAlive(game);
+            if (target) {
+              game.bullets.push(new env.SI.Bullet(target.x, target.y,
+                -C.BULLET.PLAYER_SPEED, 'player', '#fff'));
+            }
+          }
+          tick(env, game);
+          lines.push(`${game.score}|${game.combo}|${game.comboMult()}`);
+        }
+        return { log: lines.join('\n'), draws };
+      } finally {
+        Math.random = seeded;
+      }
+    });
+  }
+  const runA = runLog(2105);
+  const runB = runLog(2105);
+  check('(AC-2) two identically seeded 400-tick runs log identical score|combo|mult',
+    runA.log === runB.log, 'per-tick logs diverged');
+  check('(AC-2) both runs consumed the same number of Math.random draws',
+    runA.draws === runB.draws, `${runA.draws} vs ${runB.draws}`);
+  check('(AC-2) the scripted run really did build a streak above x1',
+    /\|[2-9]$/m.test(runA.log), 'no multiplied tick in the log');
+});
+
+/* --------------------------------------------------------------------- */
+scenario('22. wave-1 inertness and HUD placement', () => {
+  /* (a) The golden run, replayed tick by tick with the streak state read
+   * directly -- a machine-check of "wave 1 is untouched" that does not go
+   * through the digest at all. */
+  withSeed(GOLDEN_SEED, () => {
+    const env = loadGame(JS_DIR);
+    const game = new env.SI.Game();
+    const input = env.input;
+    input.confirm = true;
+    tick(env, game, DT);                 // MENU -> startGame()
+    let badTick = -1;
+    let leftWave1 = -1;
+    for (let t = 0; t < GOLDEN_TICKS; t++) {
+      scriptInput(input, t);
+      tick(env, game, DT);
+      if (game.wave !== 1 && leftWave1 < 0) leftWave1 = t;
+      if (game.combo !== 0 || game.comboMult() !== 1) { badTick = t; break; }
+    }
+    check('(a) the golden run never leaves wave 1', leftWave1 === -1, `tick=${leftWave1}`);
+    check(`(a) combo === 0 and comboMult() === 1 on all ${GOLDEN_TICKS} golden ticks`,
+      badTick === -1, `first bad tick=${badTick}`);
+    check('(a) the replay still scored what the golden run scores',
+      game.score === GOLDEN_SCORE, `${game.score} vs ${GOLDEN_SCORE}`);
+  });
+
+  /* (b) HUD: nothing is drawn on wave 1, exactly one label on wave 2, and
+   * it does not land on top of the SCORE or HI-SCORE blocks. */
+  withSeed(2202, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const calls = [];
+    env.SI.FX.glowText = function (ctx, text, x, y, opts) {
+      calls.push({ text: String(text), x, y, opts: opts || {} });
+    };
+    const combos = () => calls.filter((c) => c.text.indexOf('COMBO') === 0);
+
+    const w1 = startedGame(env);
+    w1.combo = C.COMBO.STEP * 2;         // would be x3 IF the gate let it
+    w1.comboTimer = C.COMBO.WINDOW;
+    env.SI.HUD.draw(env.ctx, w1);
+    check('(b) wave 1 draws no COMBO label at all', combos().length === 0,
+      `drew ${combos().length}`);
+    check('(b) the wave-1 HUD frame did draw (the stub is wired up)',
+      calls.length > 0, `calls=${calls.length}`);
+
+    calls.length = 0;
+    const g = startedGame(env, 2);       // already on wave 2
+    g.combo = C.COMBO.STEP * 2;          // x3
+    g.comboTimer = C.COMBO.WINDOW;
+    g.setState(env.SI.STATE.PLAYING);
+    check('(b) the forced state really is x3', g.comboMult() === 3, `mult=${g.comboMult()}`);
+    env.SI.HUD.draw(env.ctx, g);
+    const drawn = combos();
+    check('(b) wave 2 at x3 draws exactly one COMBO label', drawn.length === 1,
+      `drew ${drawn.length}`);
+    if (drawn.length === 1) {
+      check('(b) it reads the live multiplier', drawn[0].text === 'COMBO  x3', drawn[0].text);
+      check('(b) it sits at x 176 on the SCORE baseline y 66',
+        drawn[0].x === 176 && drawn[0].y === 66, `x=${drawn[0].x} y=${drawn[0].y}`);
+
+      /* Non-collision: rough width estimate (0.62em per glyph) is plenty to
+       * show the label is not stacked on the score digits or the centred
+       * hi-score block. */
+      const sizeOf = (c) => {
+        const m = /(\d+(?:\.\d+)?)px/.exec(c.opts.font || '');
+        return m ? Number(m[1]) : 14;
+      };
+      const spanOf = (c) => {
+        const w = c.text.length * sizeOf(c) * 0.62;
+        if ((c.opts.align || 'left') === 'center') return [c.x - w / 2, c.x + w / 2];
+        if (c.opts.align === 'right') return [c.x - w, c.x];
+        return [c.x, c.x + w];
+      };
+      const mine = spanOf(drawn[0]);
+      let clash = '';
+      for (const c of calls) {
+        if (c === drawn[0] || c.y !== 66) continue;
+        const s = spanOf(c);
+        if (mine[0] < s[1] && s[0] < mine[1]) {
+          clash = `${c.text} [${s[0].toFixed(0)},${s[1].toFixed(0)}]`;
+        }
+      }
+      check('(b) no other y=66 HUD text overlaps its x-range', clash === '',
+        `overlaps ${clash} (COMBO span [${mine[0].toFixed(0)},${mine[1].toFixed(0)}])`);
+      /* And the same claim against the WORST case rather than this frame's
+       * digits: a 7-char score ends near x 156, the centred hi-score block
+       * starts near x 415. */
+      check('(b) it clears a maxed-out 7-digit score and the hi-score block',
+        mine[0] >= 7 * 30 * 0.62 + 26 && mine[1] <= C.WORLD_W / 2 - 7 * 30 * 0.62 / 2,
+        `span=[${mine[0].toFixed(0)},${mine[1].toFixed(0)}]`);
+    }
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('23. the streak cannot survive into GAME_OVER, even mid-collision-pass', () => {
+  /* THE REPRO, exactly as the red team framed it. collide() walks
+   * game.bullets in index order. If the fatal ALIEN shot sits at a lower
+   * index than player shots that are still in flight, then within one single
+   * frame:
+   *     bullets[0]  alien shot -> loseLife() -> lives 0 -> gameOver()
+   *     bullets[1..] player shots -> still hit aliens -> still scoreKill()
+   * Those later kills used to re-increment `combo` and re-arm `comboTimer`
+   * AFTER the state had already left PLAYING. updatePlaying() is the only
+   * place comboTimer ever decays, so the streak froze at a non-zero value for
+   * good -- and HUD.draw() renders the score bar in every state except MENU,
+   * so a stale "COMBO x2" was painted over the death screen permanently.
+   *
+   * The kills themselves must STILL score (flushHi() exists precisely because
+   * points land after gameOver()), so this pins both halves: the points are
+   * awarded, unmultiplied, and no streak is left standing. */
+  withSeed(2300, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const STATE = env.SI.STATE;
+
+    const game = startedGame(env, 2);
+    stillSwarm(game);
+    game.player.invuln = 0;
+
+    /* Build a real x2 streak the shipping way, through collide(). */
+    for (let n = 0; n < C.COMBO.STEP; n++) {
+      const t = firstAlive(game);
+      game.player.invuln = 0;
+      killOneByShot(env, game, t);
+    }
+    check('(a) a genuine x2 streak stands before the fatal frame',
+      game.combo === C.COMBO.STEP && game.comboMult() === 2,
+      `combo=${game.combo} mult=${game.comboMult()}`);
+
+    /* One life left, and the streak window freshly armed. */
+    game.lives = 1;
+    game.world.livesLeft = 1;
+    game.player.invuln = 0;
+    game.bullets.length = 0;
+
+    /* Pick three distinct live aliens for the shots still in flight. */
+    const targets = [];
+    for (const a of game.swarm.aliens) {
+      if (a.alive) targets.push(a);
+      if (targets.length === 3) break;
+    }
+    const rawSum = targets.reduce((s, a) => s + a.score, 0);
+    check('(a) three distinct live aliens were available to target',
+      targets.length === 3 && rawSum > 0, `n=${targets.length} rawSum=${rawSum}`);
+
+    /* ORDER IS THE WHOLE POINT: the fatal alien shot goes in FIRST, so
+     * collide() resolves it -- and calls gameOver() -- before it ever reaches
+     * the player shots behind it. */
+    game.bullets.push(new env.SI.Bullet(game.player.x, game.player.y,
+      C.BULLET.ALIEN_SPEED, 'alien', '#f0f'));
+    for (const t of targets) {
+      game.bullets.push(new env.SI.Bullet(t.x, t.y, -C.BULLET.PLAYER_SPEED, 'player', '#fff'));
+    }
+    check('(a) the fatal alien shot really is at a LOWER index than the player shots',
+      game.bullets[0].from === 'alien' &&
+      game.bullets.slice(1).every((b) => b.from === 'player'),
+      game.bullets.map((b) => b.from).join(','));
+
+    const scoreBefore = game.score;
+    const aliveBefore = game.swarm.aliveCount();
+    tick(env, game);                       // the one fatal frame
+
+    /* The repro must actually have reproduced -- otherwise the assertions
+     * below would pass vacuously against a frame where nothing happened. */
+    check('(b) the run ended in that frame', game.state === STATE.GAME_OVER && game.lives === 0,
+      `state=${game.state} lives=${game.lives}`);
+    check('(b) and the in-flight player shots DID still kill aliens in that same pass',
+      game.swarm.aliveCount() === aliveBefore - targets.length,
+      `${aliveBefore} -> ${game.swarm.aliveCount()} (wanted -${targets.length})`);
+    check('(b) those post-death kills still scored, at a flat x1',
+      game.score - scoreBefore === rawSum,
+      `delta=${game.score - scoreBefore} raw=${rawSum} (x2 would be ${rawSum * 2})`);
+
+    /* THE FIX. */
+    check('(c) combo is 0 and comboMult() is 1 once the state is GAME_OVER',
+      game.combo === 0 && game.comboMult() === 1,
+      `combo=${game.combo} mult=${game.comboMult()} timer=${game.comboTimer}`);
+    check('(c) the streak window is not left armed either', game.comboTimer === 0,
+      `timer=${game.comboTimer}`);
+
+    /* And the user-visible half: no COMBO text on the death screen. */
+    const calls = [];
+    env.SI.FX.glowText = function (ctx, text) { calls.push(String(text)); };
+    env.SI.HUD.draw(env.ctx, game);
+    check('(d) the GAME_OVER HUD frame drew something (the stub is wired up)',
+      calls.length > 0, `calls=${calls.length}`);
+    check('(d) and NONE of it is a COMBO readout',
+      calls.filter((t) => t.indexOf('COMBO') === 0).length === 0,
+      calls.filter((t) => t.indexOf('COMBO') === 0).join(' | '));
+
+    /* Idle frames on the death screen cannot resurrect it either: the
+     * GAME_OVER branch of update() never touches comboTimer, so this is
+     * checking that nothing else does. */
+    let stayed = true;
+    for (let t = 0; t < 30; t++) {
+      tick(env, game);
+      if (game.combo !== 0 || game.comboMult() !== 1) { stayed = false; break; }
+    }
+    check('(e) it stays cleared across 30 further GAME_OVER frames', stayed,
+      `combo=${game.combo} mult=${game.comboMult()}`);
+  });
+});
+
 /* ------------------------------ summary -------------------------------- */
 
 if (baselineDir) {
