@@ -476,31 +476,36 @@ else
 fi
 
 # ---------------------------------------------------------------- AC13
-hdr "AC13: nothing outside this round's authorized scope (DISTINCT ALIEN CLASSES) changed; the engine regression suite passes"
-# THIS ROUND'S SCOPE IS DIFFERENT FROM THE LAST ONE. The previous round -- the
-# KILL-STREAK SCORE MULTIPLIER -- authorized js/core.js, js/game.js and
-# js/hud.js and froze js/entities.js. This round is DISTINCT ALIEN CLASSES
-# (Shield Aliens + Kamikaze Units), so js/entities.js and js/hud.js SWAP
-# places: js/entities.js is open (both classes are Alien/Swarm behaviour --
-# assignRole, shieldFor, updateDive and the class draw tells all live there),
-# and js/hud.js goes BACK INTO the frozen list. That freeze is the machine
-# check on this round's "no new persistent HUD text" claim: every class tell
-# is in-world (an additive halo plus flat fillRects on the sprite), so the HUD
-# needs no edit at all and is proven not to have had one.
+hdr "AC13: nothing outside this round's authorized scope (WEAPON COMBINATION SYSTEM) changed; the engine regression suite passes"
+# THIS ROUND'S SCOPE IS DIFFERENT FROM THE LAST ONE. The previous round --
+# DISTINCT ALIEN CLASSES -- authorized js/core.js, js/entities.js and
+# js/game.js and froze js/hud.js. This round is the WEAPON COMBINATION SYSTEM
+# (exactly ONE combination: PIERCING LASER + BOUNCING SHOT fused onto a single
+# bullet), so js/hud.js comes BACK OUT of the frozen list and IS AUTHORIZED
+# this round: the combination is a real pick-screen card, so it needs its own
+# UPGRADES table entry (name/blurb/colour) and its own icon glyph, and the
+# card list has to be read from game.upgradeChoices() instead of
+# CONFIG.UPGRADE.IDS. js/entities.js stays authorized too -- Player.fire() is
+# where the two field sets are unioned.
 #
-# server/ is FULLY FROZEN again this round -- the anticheat.js + server/README.md
-# carve-out the kill-streak round needed is CLOSED. The reason that carve-out
-# existed was that CONFIG.COMBO multiplied every kill and so invalidated bound
-# 2's score-per-second ceiling. NEITHER class this round carries a score bonus
-# (a shield pays its own SCORE.ROW value when it eats a hit; a kamikaze pays
-# nothing at all), so BEST_ALIEN_SCORE and COMBO_MAX are unchanged,
-# PEAK_SCORE_PER_SECOND stays ~522/s and the 800/s ceiling needs no
-# re-derivation. Bound 1 is the only one the kamikaze touches at all -- it
-# removes one alien without a trigger pull, so the true one-wave floor moves
-# from ceil(55/3)*0.28+2.4 = 7.72s to ceil(54/3)*0.28+2.4 = 7.44s, still 1.93x
-# above the 3.86s the server actually enforces (see FEATURES.md for the full
-# arithmetic). Nothing under server/ may change, and the whole tree is checked
-# below with no exclusions.
+# server/ is FULLY FROZEN this round, with NO carve-out at all. The reason it
+# needs none is arithmetic, and it is MACHINE-CHECKED in (e) below rather than
+# merely asserted here: a bouncing bullet survives WALLS, it does not kill more
+# aliens, so the combined shot's kill ceiling is still exactly
+# 1 + UPGRADE.PIERCE_COUNT = 3 aliens per trigger pull -- precisely the
+# BEST_ALIENS_PER_SHOT that server/src/anticheat.js already assumes for bound 1.
+# (scripts/check-game.js scenario 29 brute-forces 60 combined flights -- 15
+# launch x positions x both launch sides x 2 heights -- through a full swarm and
+# confirms no flight ever EXCEEDS that ceiling; what it asserts is the upper
+# bound plus non-vacuity, not an exact worst-case number. Scenario 31 runs the
+# same ceiling check with the SHIELD alien's redirect in the mix, which is the
+# one cross-feature path that could have leaked an extra kill into a trigger
+# pull.) The combination also carries
+# NO score bonus of its own -- each kill pays its own SCORE.ROW value at the
+# multiplier already in force -- so BEST_ALIEN_SCORE and COMBO_MAX are
+# unchanged, PEAK_SCORE_PER_SECOND stays ~522/s and bound 2's 800/s ceiling
+# needs no re-derivation either. Nothing under server/ may change, and the whole
+# tree is checked below with no exclusions.
 #
 # The check is still the same two halves:
 #   (a) everything the round was NOT authorized to touch is still untouched,
@@ -511,29 +516,38 @@ hdr "AC13: nothing outside this round's authorized scope (DISTINCT ALIEN CLASSES
 #       bit-identical is still proven -- just by behaviour, not by bytes).
 #
 # Authorized to change this round, hence excluded from (a):
-#   js/core.js                            (CONFIG.ALIEN_CLASS, the two class
-#                                          colours, KAMIKAZE.FLOOR_Y, VERSION)
-#   js/entities.js                        (Alien.role/dive fields + draw tells;
-#                                          Swarm.assignRole/shieldFor/updateDive
-#                                          and the diver skips)
-#   js/game.js                            (the shield redirect at the existing
-#                                          kill/score choke point, the one
-#                                          alien-vs-player contact branch, the
-#                                          bunker-crush exclusion)
-#   scripts/check-game.js                 (scenarios 24-27 appended, plus ONE
-#                                          authorized edit to scenario 5 -- the
-#                                          kamikaze is a documented exemption
-#                                          from the FORMATION.MAX_Y bound)
+#   js/core.js                            (UPGRADE.COMBINED_ID + UPGRADE
+#                                          .COMBINES, COLORS.pierceBounce,
+#                                          VERSION)
+#   js/entities.js                        (Player.fire()'s pierce/bounce
+#                                          if/else-if split into two
+#                                          INDEPENDENT ifs, plus the combined
+#                                          colour override -- no new Bullet
+#                                          field, collide() untouched)
+#   js/game.js                            (Game.upgradeChoices(), and the pick
+#                                          screen's hit-test / tick / apply
+#                                          reading it instead of UPGRADE.IDS)
+#   js/hud.js                             (the pierce_bounce UPGRADES entry,
+#                                          its icon, the card list read from
+#                                          game.upgradeChoices(), and the card
+#                                          count passed to drawUpgradeCard)
+#   scripts/check-game.js                 (scenarios 28-31 appended -- 31 is
+#                                          the combined bullet vs the SHIELD
+#                                          alien's redirect; NO pre-existing
+#                                          scenario (1-27) or shared helper
+#                                          was modified this round)
 #   scripts/verify.sh                     (this retarget)
 #   README.md FEATURES.md                 (the docs for the above)
 #   package.json                          (the "version" field ONLY, bumped to
-#                                          1.2.0 with CONFIG.VERSION -- AC15
+#                                          1.3.0 with CONFIG.VERSION -- AC15
 #                                          below is what checks they agree)
-# NOT authorized: js/hud.js (frozen -- see the no-new-HUD-text note above) and
-# every path under server/ (frozen -- no score bonus, no bound to re-derive).
+# NOT authorized: js/net.js (frozen -- the combination is engine-only and the
+# opt-in leaderboard bridge has nothing to say about it) and every path under
+# server/ (frozen -- no new kill ceiling, no score bonus, nothing to
+# re-derive; see (e)).
 
 # --- (a) untouched-outside-scope, tracked AND untracked -----------------
-FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js js/hud.js css/style.css index.html js/net.js"
+FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js css/style.css index.html js/net.js"
 FROZEN_MOBILE="android ios capacitor.config.json package-lock.json"
 DIRTY_ENGINE="$(git status --porcelain --untracked-files=all -- $FROZEN_ENGINE)"
 DIRTY_MOBILE="$(git status --porcelain --untracked-files=all -- $FROZEN_MOBILE)"
@@ -547,9 +561,9 @@ DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
 DIRTY_PKGJSON="$(git diff HEAD -- package.json | grep -E '^[+-]' \
   | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true)"
 DIRTY="$DIRTY_ENGINE$DIRTY_MOBILE$DIRTY_SERVER$DIRTY_SCRIPTS$DIRTY_PKGJSON"
-note "8 frozen engine files (js/hud.js back among them) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
+note "7 frozen engine files (js/hud.js is AUTHORIZED this round) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
 note "android/ ios/ capacitor.config.json package-lock.json      -> '${DIRTY_MOBILE:-<clean>}'"
-note "ALL of server/ (the anticheat carve-out is closed)         -> '${DIRTY_SERVER:-<clean>}'"
+note "ALL of server/ (no carve-out at all this round)            -> '${DIRTY_SERVER:-<clean>}'"
 note "pre-existing scripts/* (minus check-game.js + verify.sh)    -> '${DIRTY_SCRIPTS:-<clean>}'"
 note "package.json lines changed that are NOT the version field  -> '${DIRTY_PKGJSON:-<clean>}'"
 
@@ -598,28 +612,59 @@ fi
 # Glow is faked with prerendered additive sprite blits on purpose; the
 # expensive shadowBlur is reserved for exactly two existing places -- the
 # player ship's own draw (js/entities.js) and HUD text (js/hud.js). This
-# round adds per-alien class tells, which is precisely the kind of change
+# round adds a new upgrade-card ICON, which is precisely the kind of change
 # that is tempting to write with a third shadowBlur, so pin it: every ADDED
-# line across the three authorized engine files must be free of it. Removals
-# and unchanged lines are not counted, so the ship's existing call site is
-# untouched by this check.
+# line across the FOUR authorized engine files must be free of it. js/hud.js
+# is included this round because it is newly authorized/open -- it already
+# owns the HUD-text call sites, and only ADDED lines are counted, so those
+# existing ones are untouched by this check while the new icon code (flat
+# fillRect/rotate only) is genuinely constrained. Removals and unchanged
+# lines are not counted, so the ship's existing call site is unaffected too.
 # NOTE ON THE PATTERNS: the '+++' filter is a BASIC regex ('^+++'), NOT
 # '^\+\+\+'. In BRE a backslash-plus is a repetition OPERATOR, so the escaped
 # form is a syntax error on some greps (ugrep among them) -- and a grep that
 # errors out emits nothing, which would make this check pass vacuously no
 # matter what the diff contained.
-SHADOW_ADDED="$(git diff HEAD -- js/core.js js/entities.js js/game.js \
+SHADOW_ADDED="$(git diff HEAD -- js/core.js js/entities.js js/game.js js/hud.js \
   | grep '^+' | grep -v '^+++' | grep -c 'shadowBlur' || true)"
-note "shadowBlur occurrences on ADDED lines in js/core.js+js/entities.js+js/game.js: $SHADOW_ADDED (must be 0 -- the ship's draw and the HUD text stay the only two call sites)"
+note "shadowBlur occurrences on ADDED lines in js/core.js+js/entities.js+js/game.js+js/hud.js: $SHADOW_ADDED (must be 0 -- the ship's draw and the HUD text stay the only two call sites)"
 SHADOW_OK=0
 [ "$SHADOW_ADDED" = "0" ] && SHADOW_OK=1
 
+# --- (e) the combined shot's kill ceiling is the server's bound ------------
+# THIS ROUND'S machine check for "server/ needed no carve-out", mirroring the
+# COMBO_MAX cross-check in (c) above. The WEAPON COMBINATION fuses PIERCING
+# LASER onto BOUNCING SHOT; bouncing lets a bullet survive a WALL, which is
+# not a kill, so the combined shot still removes at most
+#   1 (the hit that spends the shot) + UPGRADE.PIERCE_COUNT (the hits it
+#   survives) = 3
+# aliens per trigger pull. server/src/anticheat.js derives bound 1's
+# shots-per-wave floor from BEST_ALIENS_PER_SHOT, so as long as those two
+# numbers satisfy 1 + PIERCE_COUNT == BEST_ALIENS_PER_SHOT the server bound is
+# still exactly right and nothing under server/ has to change. Both values are
+# read from their REAL source files -- PIERCE_COUNT grepped out of js/core.js,
+# BEST_ALIENS_PER_SHOT required out of the (dependency-free) anticheat module
+# -- rather than restated here, so a future retune of either side fails loudly.
+# scripts/check-game.js scenarios 29 and 31 make the same claim behaviourally:
+# 29 brute-forces 60 combined flights through a full swarm and 31 re-runs the
+# ceiling with a SHIELD alien redirecting one of the kills. Both assert that no
+# flight EXCEEDS the ceiling (plus non-vacuity), not an exact worst case.
+CORE_PIERCE_COUNT="$(grep -oE '^[[:space:]]+PIERCE_COUNT: [0-9]+' js/core.js \
+  | head -1 | grep -oE '[0-9]+')"
+AC_BEST_PER_SHOT="$(node -e "process.stdout.write(String(require('./server/src/anticheat.js').BEST_ALIENS_PER_SHOT))" 2>/dev/null || true)"
+PIERCE_SYNC=0
+if [ -n "$CORE_PIERCE_COUNT" ] && [ -n "$AC_BEST_PER_SHOT" ] \
+   && [ "$((1 + CORE_PIERCE_COUNT))" = "$AC_BEST_PER_SHOT" ]; then
+  PIERCE_SYNC=1
+fi
+note "kill ceiling: 1 + js/core.js UPGRADE.PIERCE_COUNT ($CORE_PIERCE_COUNT) = $((1 + ${CORE_PIERCE_COUNT:-0})) vs server/src/anticheat.js BEST_ALIENS_PER_SHOT=$AC_BEST_PER_SHOT (must be equal -- this is why server/ stayed frozen)"
+
 if [ -z "$DIRTY" ] && [ "$ORDER" = "$EXPECTED" ] && [ "$GSTATIC_IN_HTML" = "0" ] \
    && [ "$CHECKGAME_OK" = "1" ] && [ "$COMBO_SYNC" = "1" ] && [ "$CEILING_OK" = "1" ] \
-   && [ "$SHADOW_OK" = "1" ]; then
-  pass 13 "every path in this round's frozen-file list is byte-identical to HEAD -- 8 engine files INCLUDING js/hud.js (this round's no-new-HUD-text proof), css, index.html, net.js, android/ios/capacitor, package-lock.json, pre-existing scripts/*, and ALL of server/ with no carve-out at all -- and package.json's only changed line is its version field (note: this is an allowlist of enumerated paths, not a whole-tree scan, so paths in neither the frozen nor the authorized list are outside what AC13 inspects); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; server/src/anticheat.js's COMBO_MAX still mirrors js/core.js and its ceiling still clears the derived peak; this round introduced no new shadowBlur call site; and scripts/check-game.js passes every scenario, which is what gates js/core.js, js/entities.js and js/game.js"
+   && [ "$SHADOW_OK" = "1" ] && [ "$PIERCE_SYNC" = "1" ]; then
+  pass 13 "every path in this round's frozen-file list is byte-identical to HEAD -- 7 engine files (js/hud.js is AUTHORIZED this round: the combination is a real pick-screen card and needs its own UPGRADES entry and icon), css, index.html, net.js, android/ios/capacitor, package-lock.json, pre-existing scripts/*, and ALL of server/ with no carve-out at all -- and package.json's only changed line is its version field (note: this is an allowlist of enumerated paths, not a whole-tree scan, so paths in neither the frozen nor the authorized list are outside what AC13 inspects); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; server/src/anticheat.js's COMBO_MAX still mirrors js/core.js and its ceiling still clears the derived peak; 1 + UPGRADE.PIERCE_COUNT still equals BEST_ALIENS_PER_SHOT, which is the machine proof that the combined bullet needs no anti-cheat re-derivation; this round introduced no new shadowBlur call site in any of the four authorized engine files; and scripts/check-game.js passes every scenario, which is what gates js/core.js, js/entities.js, js/game.js and js/hud.js"
 else
-  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML check_game_ok=$CHECKGAME_OK combo_mirror_ok=$COMBO_SYNC ceiling_ok=$CEILING_OK shadowblur_ok=$SHADOW_OK (added=$SHADOW_ADDED)"
+  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML check_game_ok=$CHECKGAME_OK combo_mirror_ok=$COMBO_SYNC ceiling_ok=$CEILING_OK shadowblur_ok=$SHADOW_OK (added=$SHADOW_ADDED) pierce_ceiling_ok=$PIERCE_SYNC (1+$CORE_PIERCE_COUNT vs $AC_BEST_PER_SHOT)"
 fi
 
 # ---------------------------------------------------------------- AC14
