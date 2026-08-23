@@ -477,15 +477,32 @@ fi
 
 # ---------------------------------------------------------------- AC13
 hdr "AC13: nothing outside this round's authorized scope changed; the engine regression suite passes"
-# THIS ROUND'S SCOPE IS NARROWER THAN THE LAST ONE. The previous round
-# authorized four engine files (js/core.js, js/entities.js, js/game.js,
-# js/hud.js) plus the server-side anti-cheat fix. This round -- distinct
-# alien COMMANDER PERSONALITIES -- authorizes only three engine files, and
-# js/game.js is deliberately NOT one of them: the whole design routes the
-# personality through hooks that already exist in entities.js, so the state
-# machine needs no edit at all. Freezing js/game.js here is what machine-
-# checks that claim instead of leaving it as prose. server/ goes back to
-# fully frozen too -- this round touches no backend code.
+# THIS ROUND'S SCOPE IS DIFFERENT FROM THE LAST ONE. The previous round --
+# commander personalities -- authorized js/core.js, js/entities.js and
+# js/hud.js, and froze js/game.js. This round is the KILL-STREAK SCORE
+# MULTIPLIER, so the two swap places: js/game.js is open (the streak state,
+# scoreKill() and the reset rules all live in the state machine), and
+# js/entities.js goes BACK INTO the frozen list -- the multiplier is pure
+# arithmetic on the existing addScore() path, so the swarm, the aliens and
+# the bullets need no edit at all, and freezing entities.js is what machine-
+# checks that claim instead of leaving it as prose.
+#
+# server/ is frozen with ONE narrowly-scoped, named exception, carved out for
+# the same reason the pierce upgrade got one last round (commit a1d8682, "Fix
+# anti-cheat's per-shot assumption for the pierce upgrade"): a client-side
+# scoring change INVALIDATES a server-side plausibility bound, and leaving the
+# stale bound in place would falsely reject a legitimate player's run.
+# server/src/anticheat.js's bound 2 derived its score-per-second ceiling
+# assuming no score multiplier (~136/s peak -> 200/s enforced). CONFIG.COMBO
+# now multiplies every alien and saucer kill by up to COMBO.MAX (4) from wave 2
+# on, putting the real peak at ~522/s -- 2.6x ABOVE the enforced ceiling -- and
+# js/net.js submits against exactly that ceiling on game over, so it is a live,
+# reachable false-rejection path, not a hypothetical. The exception is
+# therefore server/src/anticheat.js plus server/README.md, which documents the
+# same derivation verbatim and would otherwise contradict the code. Every other
+# path under server/ (routes, store, auth, tests, .env.example, package*.json)
+# stays frozen and IS still checked below -- this is a carve-out, not a
+# reopening of the backend.
 #
 # The check is still the same two halves:
 #   (a) everything the round was NOT authorized to touch is still untouched,
@@ -496,25 +513,40 @@ hdr "AC13: nothing outside this round's authorized scope changed; the engine reg
 #       bit-identical is still proven -- just by behaviour, not by bytes).
 #
 # Authorized to change this round, hence excluded from (a):
-#   js/core.js js/entities.js js/hud.js   (the personality table, the swarm
-#                                          hooks that read it, the HUD tell)
-#   scripts/check-game.js                 (scenarios 18 + 19, appended only)
+#   js/core.js js/game.js js/hud.js       (CONFIG.COMBO, the streak state and
+#                                          scoreKill()/reset rules, the HUD
+#                                          readout)
+#   scripts/check-game.js                 (scenarios 20-23, appended only)
 #   scripts/verify.sh                     (this retarget)
 #   README.md FEATURES.md                 (the docs for the above)
+#   package.json                          (the "version" field ONLY, bumped to
+#                                          1.1.0 with CONFIG.VERSION -- AC15
+#                                          below is what checks they agree)
+#   server/src/anticheat.js               (bound 2's ceiling, re-derived for
+#   server/README.md                       COMBO.MAX -- see the carve-out note
+#                                          above; nothing else under server/)
 
 # --- (a) untouched-outside-scope, tracked AND untracked -----------------
-FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js js/game.js css/style.css index.html js/net.js"
-FROZEN_MOBILE="android ios capacitor.config.json package.json package-lock.json"
+FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js js/entities.js css/style.css index.html js/net.js"
+FROZEN_MOBILE="android ios capacitor.config.json package-lock.json"
 DIRTY_ENGINE="$(git status --porcelain --untracked-files=all -- $FROZEN_ENGINE)"
 DIRTY_MOBILE="$(git status --porcelain --untracked-files=all -- $FROZEN_MOBILE)"
-DIRTY_SERVER="$(git status --porcelain --untracked-files=all -- server)"
+DIRTY_SERVER="$(git status --porcelain --untracked-files=all -- server \
+  ':(exclude)server/src/anticheat.js' ':(exclude)server/README.md')"
 DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
   ':(exclude)scripts/check-game.js' ':(exclude)scripts/verify.sh')"
-DIRTY="$DIRTY_ENGINE$DIRTY_MOBILE$DIRTY_SERVER$DIRTY_SCRIPTS"
-note "8 frozen engine files (js/game.js now among them) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
-note "android/ ios/ capacitor.config.json package*.json          -> '${DIRTY_MOBILE:-<clean>}'"
-note "server/ (fully frozen again this round)                    -> '${DIRTY_SERVER:-<clean>}'"
+# package.json is authorized for its "version" field ONLY, so do not simply
+# exclude it -- pin the claim instead: every added/removed line in its diff
+# must BE a "version" line. Anything else (a new dependency, a changed script,
+# a stray edit) still trips AC13.
+DIRTY_PKGJSON="$(git diff HEAD -- package.json | grep -E '^[+-]' \
+  | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true)"
+DIRTY="$DIRTY_ENGINE$DIRTY_MOBILE$DIRTY_SERVER$DIRTY_SCRIPTS$DIRTY_PKGJSON"
+note "8 frozen engine files (js/entities.js back among them) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
+note "android/ ios/ capacitor.config.json package-lock.json      -> '${DIRTY_MOBILE:-<clean>}'"
+note "server/ minus the named anticheat carve-out                -> '${DIRTY_SERVER:-<clean>}'"
 note "pre-existing scripts/* (minus check-game.js + verify.sh)    -> '${DIRTY_SCRIPTS:-<clean>}'"
+note "package.json lines changed that are NOT the version field  -> '${DIRTY_PKGJSON:-<clean>}'"
 
 GSTATIC_IN_HTML="$(grep -c 'gstatic\|firebase' index.html || true)"
 ORDER="$(grep -o 'js/[a-z]*\.js' index.html | paste -sd, -)"
@@ -534,11 +566,30 @@ else
   note "$(grep -E '^\s+FAIL|^  FAIL' "$TMP/checkgame.log" | head -10)"
 fi
 
+# --- (c) the anti-cheat mirror actually mirrors --------------------------
+# COMBO_MAX in server/src/anticheat.js is a hand-copied mirror of js/core.js's
+# CONFIG.COMBO.MAX and bound 2's ceiling is derived from it, so drift between
+# the two is exactly the stale-bound bug this carve-out exists to fix. Check
+# it by value rather than trusting the comment.
+# Anchored at line start so BOUNCE_MAX and friends cannot match instead.
+CORE_COMBO_MAX="$(grep -oE '^[[:space:]]+MAX: [0-9]+' js/core.js | head -1 | grep -oE '[0-9]+')"
+AC_COMBO_MAX="$(node -e "process.stdout.write(String(require('./server/src/anticheat.js').COMBO_MAX))" 2>/dev/null || true)"
+AC_CEILING="$(node -e "process.stdout.write(String(require('./server/src/anticheat.js').DEFAULTS.maxScorePerSecond))" 2>/dev/null || true)"
+AC_PEAK="$(node -e "process.stdout.write(String(Math.round(require('./server/src/anticheat.js').PEAK_SCORE_PER_SECOND)))" 2>/dev/null || true)"
+COMBO_SYNC=0
+[ -n "$CORE_COMBO_MAX" ] && [ "$CORE_COMBO_MAX" = "$AC_COMBO_MAX" ] && COMBO_SYNC=1
+note "COMBO.MAX: js/core.js=$CORE_COMBO_MAX  server/src/anticheat.js COMBO_MAX=$AC_COMBO_MAX (must match)"
+note "bound 2: derived peak ~$AC_PEAK/s -> enforced default ceiling $AC_CEILING/s (must be >= the peak)"
+CEILING_OK=0
+if [ -n "$AC_CEILING" ] && [ -n "$AC_PEAK" ] && [ "$AC_CEILING" -ge "$AC_PEAK" ]; then
+  CEILING_OK=1
+fi
+
 if [ -z "$DIRTY" ] && [ "$ORDER" = "$EXPECTED" ] && [ "$GSTATIC_IN_HTML" = "0" ] \
-   && [ "$CHECKGAME_OK" = "1" ]; then
-  pass 13 "everything outside this round's authorized scope is byte-identical to HEAD (8 engine files INCLUDING js/game.js + css + index.html + net.js + all of server/ + android/ios/capacitor + pre-existing scripts); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; and scripts/check-game.js passes every scenario, which is what now gates js/core.js, js/entities.js and js/hud.js"
+   && [ "$CHECKGAME_OK" = "1" ] && [ "$COMBO_SYNC" = "1" ] && [ "$CEILING_OK" = "1" ]; then
+  pass 13 "every path in this round's frozen-file list is byte-identical to HEAD -- 8 engine files INCLUDING js/entities.js, css, index.html, net.js, android/ios/capacitor, package-lock.json, pre-existing scripts/*, and all of server/ except the named anticheat carve-out -- and package.json's only changed line is its version field (note: this is an allowlist of enumerated paths, not a whole-tree scan, so paths in neither the frozen nor the authorized list are outside what AC13 inspects); script order is the original 11 tags + net.js; no gstatic/firebase in index.html; server/src/anticheat.js's COMBO_MAX still mirrors js/core.js and its ceiling still clears the derived peak; and scripts/check-game.js passes every scenario, which is what gates js/core.js, js/game.js and js/hud.js"
 else
-  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML check_game_ok=$CHECKGAME_OK"
+  fail 13 "dirty='$DIRTY' order_ok=$([ "$ORDER" = "$EXPECTED" ] && echo yes || echo no) gstatic=$GSTATIC_IN_HTML check_game_ok=$CHECKGAME_OK combo_mirror_ok=$COMBO_SYNC ceiling_ok=$CEILING_OK"
 fi
 
 # ---------------------------------------------------------------- AC14
