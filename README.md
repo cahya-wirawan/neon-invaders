@@ -72,9 +72,26 @@ first input handler.
 - Front-row aliens are worth more (30 / 20 / 20 / 10 / 10 by row).
 - The bonus saucer is worth 50–300 points.
 - Shooting down an incoming alien shot scores 5 points.
-- An extra life every 5,000 points.
+- **Kill-streak multiplier** (`SI.CONFIG.COMBO`), active from wave 2 — wave 1
+  stays classic. Every 4 consecutive kills raises the multiplier one step, up
+  to x4, and it scales what each alien or bonus saucer kill pays (the saucer
+  banner shows the multiplied amount actually awarded). That includes a
+  commander's `+150` bonus, which is already baked into its score before the
+  multiplier is applied — so a commander killed at x4 pays `(30 + 150) * 4 =
+  720`, the largest single award in the game. The streak drops back to x1 if
+  you are hit, when the wave ends, when the run ends, or after 2.6 seconds
+  with no kill; a `COMBO  x4` readout (that spelling, ASCII `x`, is literally
+  what `js/hud.js` draws) appears next to the score whenever the multiplier is
+  above x1 and fades as its window runs out. The flat 5-point reflected-shot
+  bonus is deliberately **not** multiplied and neither builds nor breaks the
+  streak.
+- An extra life every 5,000 points. The multiplier feeds the same `addScore()`
+  path, so during a sustained streak extra lives arrive proportionally sooner
+  — up to ~4x sooner at x4. That knock-on is intended, not a separate
+  mechanic.
 - The hi-score is kept in `localStorage` (silently skipped if storage is blocked).
-- The title screen shows a small `v1.0.0` tag in the bottom-right corner
+- The title screen shows a small `v1.1.0` tag in the bottom-**left** corner —
+  bottom-right is where `js/net.js`'s opt-in online panel is pinned —
   (`SI.CONFIG.VERSION` in `js/core.js`), kept in sync with the root
   `package.json`'s `version` field — `scripts/verify.sh` checks the two never
   drift apart. Bump both together on any user-visible change.
