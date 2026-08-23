@@ -3,6 +3,11 @@
   'use strict';
 
   var CONFIG = {
+    // Shown on the title screen (js/hud.js drawTitle) and read by
+    // scripts/verify.sh to cross-check package.json's version stays in
+    // sync. Bump both together on every user-visible change.
+    VERSION: '1.0.0',
+
     WORLD_W: 960,
     WORLD_H: 720,
     MAX_DT: 1 / 30,

@@ -74,6 +74,10 @@ first input handler.
 - Shooting down an incoming alien shot scores 5 points.
 - An extra life every 5,000 points.
 - The hi-score is kept in `localStorage` (silently skipped if storage is blocked).
+- The title screen shows a small `v1.0.0` tag in the bottom-right corner
+  (`SI.CONFIG.VERSION` in `js/core.js`), kept in sync with the root
+  `package.json`'s `version` field — `scripts/verify.sh` checks the two never
+  drift apart. Bump both together on any user-visible change.
 
 ## Difficulty
 

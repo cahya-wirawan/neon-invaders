@@ -171,6 +171,10 @@
     G(ctx, 'HI-SCORE  ' + SI.formatScore(game.hi), C.WORLD_W / 2, 650, {
       font: font(18), color: '#ffd166', blur: 12, align: 'center', alpha: 0.9
     });
+
+    G(ctx, 'v' + C.VERSION, C.WORLD_W - 16, C.WORLD_H - 14, {
+      font: font(13, 600), color: '#5c7a94', blur: 0, align: 'right', alpha: 0.55
+    });
   }
 
   function drawPaused(ctx, game) {

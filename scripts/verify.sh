@@ -555,7 +555,18 @@ else
 fi
 
 # ---------------------------------------------------------------- AC15
-hdr "AC15: full automated suite passes end to end"
+hdr "AC15: the version shown on the title screen matches package.json, and is genuinely rendered"
+CORE_VERSION="$(grep -oE "VERSION: '[^']+'" js/core.js | head -1 | sed -E "s/VERSION: '([^']+)'/\1/")"
+PKG_VERSION="$(node -e "console.log(require('./package.json').version)" 2>/dev/null)"
+if [ -n "$CORE_VERSION" ] && [ "$CORE_VERSION" = "$PKG_VERSION" ] \
+   && grep -q 'CONFIG.VERSION\|C\.VERSION' js/hud.js; then
+  pass 15 "js/core.js CONFIG.VERSION ($CORE_VERSION) matches package.json ($PKG_VERSION), and js/hud.js draws it"
+else
+  fail 15 "core=$CORE_VERSION pkg=$PKG_VERSION hud_draws=$(grep -q 'CONFIG.VERSION\|C\.VERSION' js/hud.js && echo yes || echo no)"
+fi
+
+# ---------------------------------------------------------------- AC16
+hdr "AC16: full automated suite passes end to end"
 if ( cd server && FIREBASE_AUTH_EMULATOR_HOST="$EMULATOR_HOST" FIREBASE_PROJECT_ID="$PROJECT" npm test ) \
     > "$TMP/npmtest.log" 2>&1; then
   note "$(grep -E '^# (tests|pass|fail|skipped)' "$TMP/npmtest.log" | paste -sd' ' - || tail -5 "$TMP/npmtest.log")"
@@ -578,9 +589,9 @@ done
 # explicitly part of the "full suite" claim, not only of AC13's.
 if [ "$NPM_TEST_OK" = "1" ] && [ "$CHECKNET_OK" = "1" ] \
    && [ "${CHECKGAME_OK:-0}" = "1" ] && [ "$VERIFY_AC_FAILED" = "0" ]; then
-  pass 15 "npm test exit 0, check-net.js exit 0, check-game.js exit 0, and every AC1-AC14 above is PASS or the documented emulator-fallback PARTIAL"
+  pass 16 "npm test exit 0, check-net.js exit 0, check-game.js exit 0, and every AC1-AC15 above is PASS or the documented emulator-fallback PARTIAL"
 else
-  fail 15 "npm_test_ok=$NPM_TEST_OK checknet_ok=$CHECKNET_OK checkgame_ok=${CHECKGAME_OK:-0} any_ac_failed=$VERIFY_AC_FAILED"
+  fail 16 "npm_test_ok=$NPM_TEST_OK checknet_ok=$CHECKNET_OK checkgame_ok=${CHECKGAME_OK:-0} any_ac_failed=$VERIFY_AC_FAILED"
 fi
 
 # ============================================================ REGRESSION
