@@ -835,8 +835,8 @@ scenario('12. a new upgrade REPLACES the previous one (never stacks)', () => {
     env.input.fire = false;
 
     check('reached second upgrade screen', driveToUpgradeScreen(env, game), game.state);
-    check('bounce confirmed', confirmUpgrade(env, game, 'bounce'));
-    check("upgrade replaced, not stacked ('bounce')", game.upgrade === 'bounce', game.upgrade);
+    check('pierce confirmed', confirmUpgrade(env, game, 'pierce'));
+    check("upgrade replaced, not stacked ('pierce')", game.upgrade === 'pierce', game.upgrade);
     quietSwarm(game);
     env.input.fire = true;
     env.input.firePress = true;
@@ -844,10 +844,10 @@ scenario('12. a new upgrade REPLACES the previous one (never stacks)', () => {
     const second = alivePlayerBullets(game);
     check('exactly one bullet now, not three', second.length === 1, `got ${second.length}`);
     if (second.length === 1) {
-      check('it is a bouncing shot', second[0].bounce === C.UPGRADE.BOUNCE_MAX,
-        `bounce=${second[0].bounce}`);
-      check('it has horizontal velocity', second[0].vx !== 0, `vx=${second[0].vx}`);
-      check('it is NOT a piercing shot', second[0].pierce === 0, `pierce=${second[0].pierce}`);
+      check('it is a piercing shot', second[0].pierce === C.UPGRADE.PIERCE_COUNT,
+        `pierce=${second[0].pierce}`);
+      check('it is NOT a bouncing shot', second[0].bounce === 0, `bounce=${second[0].bounce}`);
+      check('it has no horizontal velocity', second[0].vx === 0, `vx=${second[0].vx}`);
     }
   });
 });
@@ -2162,13 +2162,17 @@ scenario('24. alien classes are wave-derived, mutually exclusive with the comman
       const sw = new env.SI.Swarm(w);
       const shields = sw.aliens.filter((a) => a.role === 'shield');
       const kams = sw.aliens.filter((a) => a.role === 'kamikaze');
+      const phases = sw.aliens.filter((a) => a.role === 'phase');
       const wantShield = w >= K.SHIELD.FROM_WAVE ? 1 : 0;
       const wantKam = w >= K.KAMIKAZE.FROM_WAVE ? 1 : 0;
+      const wantPhase = (K.PHASE && w >= K.PHASE.FROM_WAVE) ? 1 : 0;
       if (shields.length !== wantShield || kams.length !== wantKam ||
-          roleAliens(sw).length !== wantShield + wantKam ||
-          (!!sw.shield) !== !!wantShield || (!!sw.kamikaze) !== !!wantKam) {
+          phases.length !== wantPhase ||
+          roleAliens(sw).length !== wantShield + wantKam + wantPhase ||
+          (!!sw.shield) !== !!wantShield || (!!sw.kamikaze) !== !!wantKam ||
+          (!!sw.phaseAlien) !== !!wantPhase) {
         gateOk = false;
-        gateDetail += ` w${w}:shield=${shields.length}/${wantShield},kam=${kams.length}/${wantKam}`;
+        gateDetail += ` w${w}:shield=${shields.length}/${wantShield},kam=${kams.length}/${wantKam},phase=${phases.length}/${wantPhase}`;
       }
       /* (b) AC-4: a commander NEVER also carries a class, and no class-tagged
        * alien is ever the commander. Checked on every wave that has one. */
@@ -2960,36 +2964,24 @@ scenario('28. the PIERCE+BOUNCE combination is offered only from its two halves'
 
     let plainOk = true;
     let plainDetail = '';
-    for (const up of ['none', 'spread', 'shield', U.COMBINED_ID]) {
+    for (const up of ['none', 'shield', U.COMBINED_ID]) {
       const got = listFor(up);
       if (got.length !== IDS.length || got.some((id, i) => id !== IDS[i])) {
         plainOk = false;
         plainDetail += ` ${up}->[${got.join(',')}]`;
       }
     }
-    check('(a) upgrade none/spread/shield/pierce_bounce all offer the unchanged 4 IDS',
+    check('(a) upgrade none/shield/pierce_bounce all offer the unchanged 4 IDS',
       plainOk, plainDetail.trim());
     check('(a) the combined upgrade itself cannot be combined again -- no third tier',
       listFor(U.COMBINED_ID).indexOf(U.COMBINED_ID) < 0);
 
-    for (const half of ['pierce', 'bounce']) {
-      const mate = U.COMBINES[half];
-      const got = listFor(half);
-      check(`(a) from '${half}' the list is still exactly ${IDS.length} cards`,
-        got.length === IDS.length, `len=${got.length}`);
-      check(`(a) from '${half}' the combine card sits in '${mate}'s slot ` +
-        `(index ${IDS.indexOf(mate)})`,
-        got[IDS.indexOf(mate)] === U.COMBINED_ID, `[${got.join(',')}]`);
-      let othersOk = true;
-      for (let i = 0; i < IDS.length; i++) {
-        if (i === IDS.indexOf(mate)) continue;
-        if (got[i] !== IDS[i]) othersOk = false;
-      }
-      check(`(a) from '${half}' every other card keeps its normal index`,
-        othersOk, `[${got.join(',')}]`);
-      check(`(a) from '${half}' the complement '${mate}' is no longer offered on its own`,
-        got.indexOf(mate) < 0, `[${got.join(',')}]`);
-    }
+    const pierceGot = listFor('pierce');
+    check("(a) from 'pierce' the list is still exactly 4 cards", pierceGot.length === IDS.length);
+    check("(a) from 'pierce' pierce_bounce sits in slot 2 (bounce's slot)",
+      pierceGot[IDS.indexOf('bounce')] === U.COMBINED_ID);
+    check("(a) from 'pierce' complement 'bounce' is no longer offered on its own",
+      pierceGot.indexOf('bounce') < 0);
 
     /* (b) the LIVE path: pierce, then the combine card ---------------------- */
     const game = startedGame(env);
@@ -3026,18 +3018,18 @@ scenario('28. the PIERCE+BOUNCE combination is offered only from its two halves'
     check("(b2) 'one only, replaces' still governs the combined cannon",
       confirmChoice(env, game, 'shield') && game.upgrade === 'shield', game.upgrade);
 
-    /* (c) NEGATIVE: from 'spread', card 2 is still plain 'bounce' ----------- */
+    /* (c) NEGATIVE: from 'shield', card 2 is still plain 'bounce' ----------- */
     const neg = startedGame(env);
-    neg.upgrade = 'spread';
+    neg.upgrade = 'shield';
     check('(c) reached the upgrade screen', driveToUpgradeScreen(env, neg), neg.state);
-    check('(c) no substitution applies from spread',
+    check('(c) no substitution applies from shield',
       neg.upgradeChoices()[2] === 'bounce', `[${neg.upgradeChoices().join(',')}]`);
     neg.upgradeIndex = 2;
     const dwell = Math.ceil(U.MIN_DWELL / DT) + 1;
     for (let t = 0; t < dwell; t++) tick(env, neg);
     env.input.confirm = true;
     tick(env, neg);
-    check("(c) confirming card 2 from 'spread' yields plain 'bounce'",
+    check("(c) confirming card 2 from 'shield' yields plain 'bounce'",
       neg.upgrade === 'bounce', neg.upgrade);
 
     /* (d) mash protection applies identically to the combine card ----------- */
@@ -4155,7 +4147,215 @@ scenario('42. HUD presentation of EMP meter and Achievement badges', () => {
   });
 });
 
-/* ------------------------------ summary -------------------------------- */
+/* --------------------------------------------------------------------- */
+/* PRISM SCATTER (spread_bounce) FUSED WEAPON (scenario 43).
+ * Weapon fusion offering via card substitution, 3-way bouncing volley,
+ * deterministic alternation, and kill ceiling invariance. */
+scenario('43. Prism Scatter (spread_bounce) fused weapon offering and firing mechanics', () => {
+  withSeed(4301, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const game = startedGame(env, 2);
+
+    /* (a) Upgrade choice substitutions */
+    game.upgrade = 'none';
+    check('from none, choices are standard 4 cards',
+      game.upgradeChoices().join(',') === 'spread,pierce,bounce,shield');
+
+    game.upgrade = 'spread';
+    check('from spread, bounce card is substituted with spread_bounce in slot 2',
+      game.upgradeChoices().join(',') === 'spread,pierce,spread_bounce,shield');
+
+    game.upgrade = 'pierce';
+    check('from pierce, bounce card is substituted with pierce_bounce in slot 2',
+      game.upgradeChoices().join(',') === 'spread,pierce,pierce_bounce,shield');
+
+    game.upgrade = 'bounce';
+    check('from bounce, spread is swapped to spread_bounce and pierce to pierce_bounce',
+      game.upgradeChoices().join(',') === 'spread_bounce,pierce_bounce,bounce,shield');
+
+    /* (b) Firing mechanics with spread_bounce */
+    game.upgrade = 'spread_bounce';
+    game.world.upgrade = 'spread_bounce';
+    game.bullets.length = 0;
+    game.player.x = 480;
+    game.player.bounceSide = 1;
+    game.player.fire(game.world);
+
+    const playerShots = game.bullets.filter((b) => !b.dead && b.from === 'player');
+    check('spread_bounce fires exactly 3 bullets per volley', playerShots.length === 3);
+    check('all 3 bullets have bounce = BOUNCE_MAX (2)',
+      playerShots.every((b) => b.bounce === C.UPGRADE.BOUNCE_MAX));
+    check('all 3 bullets have pierce = 0 (each bullet removes at most 1 alien)',
+      playerShots.every((b) => b.pierce === 0));
+    check('all 3 bullets are painted with COLORS.spreadBounce',
+      playerShots.every((b) => b.color === C.COLORS.spreadBounce));
+
+    const left = playerShots[0];
+    const center = playerShots[1];
+    const right = playerShots[2];
+    check('left bullet has negative horizontal velocity', left.vx < 0);
+    check('right bullet has positive horizontal velocity', right.vx > 0);
+    check('center bullet carries initial positive bounceSide bias', center.vx > 0);
+    check('player bounceSide alternates after firing', game.player.bounceSide === -1);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* PHASE / CLOAKING ALIEN CLASS (scenario 44).
+ * Deterministic wave assignment at wave 6+, phase state cycling,
+ * bullet intangibility while phased, and normal vulnerability when solid. */
+scenario('44. Phase Alien deterministic assignment, phase cycling and bullet intangibility', () => {
+  withSeed(4401, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+
+    /* (a) Gated assignment */
+    const sw1 = new env.SI.Swarm(1);
+    const sw5 = new env.SI.Swarm(5);
+    const sw6 = new env.SI.Swarm(6);
+    const sw7 = new env.SI.Swarm(7);
+
+    check('wave 1-5 has no phase alien', sw1.phaseAlien === null && sw5.phaseAlien === null);
+    check('wave 6 assigns phase alien', sw6.phaseAlien !== null && sw6.phaseAlien.role === 'phase');
+    check('wave 6 phase alien is on row 1, col 0',
+      sw6.phaseAlien.row === C.ALIEN_CLASS.PHASE.ROW && sw6.phaseAlien.col === 0);
+    check('wave 7 phase alien is on row 1, col 1',
+      sw7.phaseAlien.row === C.ALIEN_CLASS.PHASE.ROW && sw7.phaseAlien.col === 1);
+    check('phase alien color matches COLORS.phaseAlien',
+      sw6.phaseAlien.color === C.COLORS.phaseAlien);
+
+    /* (b) Phase state cycling & intangibility */
+    const game = startedGame(env, 6);
+    quietSwarm(game);
+    const phaseAlien = game.swarm.phaseAlien;
+    check('phase alien starts solid (phased = false)', phaseAlien.phased === false);
+
+    /* Fast-forward time to trigger cloaked / phased state */
+    phaseAlien.phaseTimer = 0.01;
+    tick(env, game);
+    check('phase alien transitions to phased = true', phaseAlien.phased === true);
+
+    /* Fire shot directly at phased alien */
+    const bullet = new env.SI.Bullet(phaseAlien.x, phaseAlien.y, -C.BULLET.PLAYER_SPEED, 'player', '#fff');
+    game.bullets.push(bullet);
+    tick(env, game);
+
+    check('phased alien is intangible: survives shot while phased', phaseAlien.alive === true);
+    check('player bullet passes through without dying on phased alien', !bullet.dead);
+
+    /* Switch back to solid state and land hit */
+    phaseAlien.phased = false;
+    phaseAlien.phaseTimer = 2.0;
+    tick(env, game);
+
+    check('solid phase alien takes hit and dies', phaseAlien.alive === false);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* CRT SCANLINE / PHOSPHOR BLOOM VISUAL MODES (scenario 45).
+ * Mode cycling (OFF, SCANLINES, PHOSPHOR), persistence, and render execution. */
+scenario('45. CRT Scanline and Phosphor Bloom visual modes and persistence', () => {
+  withSeed(4501, () => {
+    const env = loadGame(JS_DIR);
+    const FX = env.SI.FX;
+
+    check('SI.FX exports CRT mode helpers',
+      typeof FX.getCRTMode === 'function' &&
+      typeof FX.getCRTModeName === 'function' &&
+      typeof FX.setCRTMode === 'function' &&
+      typeof FX.cycleCRTMode === 'function');
+
+    FX.setCRTMode(0);
+    check('mode 0 is OFF', FX.getCRTMode() === 0 && FX.getCRTModeName() === 'OFF');
+
+    FX.cycleCRTMode();
+    check('cycling from OFF gives SCANLINES (mode 1)', FX.getCRTMode() === 1 && FX.getCRTModeName() === 'SCANLINES');
+
+    FX.cycleCRTMode();
+    check('cycling from SCANLINES gives PHOSPHOR (mode 2)', FX.getCRTMode() === 2 && FX.getCRTModeName() === 'PHOSPHOR');
+
+    FX.cycleCRTMode();
+    check('cycling from PHOSPHOR wraps back to OFF (mode 0)', FX.getCRTMode() === 0 && FX.getCRTModeName() === 'OFF');
+
+    /* Test drawOverlay under all 3 modes */
+    const mockCtx = {
+      save: () => {},
+      restore: () => {},
+      drawImage: () => {},
+      fillRect: () => {},
+      createRadialGradient: () => ({ addColorStop: () => {} })
+    };
+
+    let drawOk = true;
+    try {
+      FX.setCRTMode(0);
+      FX.drawOverlay(mockCtx);
+      FX.setCRTMode(1);
+      FX.drawOverlay(mockCtx);
+      FX.setCRTMode(2);
+      FX.drawOverlay(mockCtx);
+    } catch (e) {
+      drawOk = false;
+    }
+    check('drawOverlay executes cleanly across all CRT modes', drawOk);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* WAVE 21 "HIVE NEXUS" MILESTONE BOSS (scenario 46).
+ * Milestone wave 21 detection, 120 HP, 3-phase enraged/overload transitions,
+ * radial spread barrages, and defeat reward. */
+scenario('46. Wave 21 Hive Nexus boss encounters, multi-phase scaling and defeat', () => {
+  withSeed(4601, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+
+    check('isBossWave returns true for milestone wave 21', env.SI.isBossWave(21) === true);
+
+    const game = startedGame(env, 21);
+    const boss = game.boss;
+    check('wave 21 spawns HIVE NEXUS boss entity', boss !== null && boss.name === 'HIVE NEXUS');
+    check('HIVE NEXUS has 120 max HP and 5000 score value',
+      boss.maxHp === 120 && boss.hp === 120 && boss.score === 5000);
+    check('HIVE NEXUS starts in Phase 1', boss.phase === 1);
+
+    /* Phase 2 transition at <= 65% HP */
+    boss.hp = 78; // 65% of 120
+    tick(env, game);
+    check('HIVE NEXUS enters Phase 2 (CHARGED) at 65% HP', boss.phase === 2);
+
+    /* Phase 2 firing produces 4-way pulse barrage */
+    boss.fireTimer = 0.01;
+    game.bullets.length = 0;
+    tick(env, game);
+    const p2AlienShots = game.bullets.filter((b) => !b.dead && b.from === 'alien');
+    check('Phase 2 fires 4-way pulse barrage', p2AlienShots.length === 4);
+
+    /* Phase 3 transition at <= 30% HP */
+    boss.hp = 36; // 30% of 120
+    tick(env, game);
+    check('HIVE NEXUS enters Phase 3 (OVERLOAD CRISIS) at 30% HP', boss.phase === 3);
+
+    /* Phase 3 firing produces 5-way desperate radial spread */
+    boss.fireTimer = 0.01;
+    game.bullets.length = 0;
+    tick(env, game);
+    const p3AlienShots = game.bullets.filter((b) => !b.dead && b.from === 'alien');
+    check('Phase 3 fires 5-way desperate radial spread', p3AlienShots.length === 5);
+
+    /* Defeat Hive Nexus */
+    const preScore = game.score;
+    boss.hp = 1;
+    game.bullets.push(new env.SI.Bullet(boss.x, boss.y, -C.BULLET.PLAYER_SPEED, 'player', '#fff'));
+    tick(env, game);
+
+    check('Hive Nexus is defeated', !boss.alive);
+    check('Score awards 5000 points upon defeat', game.score === preScore + 5000);
+    check('Game state transitions to WAVE_CLEAR', game.state === env.SI.STATE.WAVE_CLEAR);
+  });
+});
 
 if (baselineDir) {
   try { fs.rmSync(baselineDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }

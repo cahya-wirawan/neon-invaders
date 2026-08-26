@@ -221,6 +221,11 @@
     if (Input.mutePressed()) {
       SI.Audio.toggleMute();
     }
+    if (Input.crtPressed && Input.crtPressed()) {
+      if (SI.FX && typeof SI.FX.cycleCRTMode === 'function') {
+        SI.FX.cycleCRTMode();
+      }
+    }
 
     switch (this.state) {
       case STATE.MENU:
@@ -298,29 +303,26 @@
 
   /* -------------------------- cannon upgrade ------------------------ */
 
-  // The card list for THIS pick screen. Normally exactly CONFIG.UPGRADE.IDS.
-  // When the active cannon is one half of the shipped combination, the
-  // COMPLEMENTARY card is swapped for the combine card -- same count, same
-  // slot, so every card rect, digit binding and arrow wrap are untouched.
-  // `this.upgrade` cannot change while STATE.UPGRADE is open (applyUpgrade is
-  // its only writer and it leaves the state), so this is stable across the
-  // pause/resume path and needs no snapshot.
-  // ALWAYS returns a FRESH array, on both paths. The no-substitution path
-  // used to hand back CONFIG.UPGRADE.IDS itself; every caller only reads it,
-  // but one future caller sorting or splicing "its own" list would have
-  // corrupted the global CONFIG for the rest of the session, and only on the
-  // common path -- an intermittent bug by construction. Four elements; the
-  // copy is not a cost worth an asymmetric contract.
   Game.prototype.upgradeChoices = function () {
     var U = C.UPGRADE;
     var out = U.IDS.slice();
-    if (!Object.prototype.hasOwnProperty.call(U.COMBINES, this.upgrade)) {
+    if (!U.COMBINES || !Object.prototype.hasOwnProperty.call(U.COMBINES, this.upgrade)) {
       return out;
     }
-    var mate = U.COMBINES[this.upgrade];
-    var i = out.indexOf(mate);
-    if (i < 0) { return out; }
-    out[i] = U.COMBINED_ID;
+    var map = U.COMBINES[this.upgrade];
+    if (typeof map === 'string') {
+      var mateIdx = out.indexOf(map);
+      if (mateIdx >= 0) { out[mateIdx] = U.COMBINED_ID; }
+      return out;
+    }
+    for (var src in map) {
+      if (Object.prototype.hasOwnProperty.call(map, src)) {
+        var i = out.indexOf(src);
+        if (i >= 0) {
+          out[i] = map[src];
+        }
+      }
+    }
     return out;
   };
 
@@ -511,6 +513,7 @@
           for (j = 0; j < aliens.length; j++) {
             var a = aliens[j];
             if (!a.alive) { continue; }
+            if (a.role === 'phase' && a.phased) { continue; }
             if (SI.aabb(box, a.box())) {
               // SHIELD REDIRECT. A shield alien eats the lethal hit aimed at
               // a neighbour inside SHIELD.RADIUS grid cells of it. The whole

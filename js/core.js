@@ -7,7 +7,7 @@
     // scripts/verify.sh to cross-check package.json's version stays in
     // sync. Bump the MINOR number (1.3.0 -> 1.4.0) in both places together
     // for every new feature; patch/major are unused by this policy.
-    VERSION: '1.6.0',
+    VERSION: '1.7.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -169,19 +169,19 @@
     // pick REPLACES the previous one, it never stacks.
     UPGRADE: {
       IDS: ['spread', 'pierce', 'bounce', 'shield'],
-      // The one shipped WEAPON COMBINATION. Deliberately NOT in IDS: IDS is
-      // the unconditional 4-card pool, and this option must appear only when
+      // The shipped WEAPON COMBINATIONS. Deliberately NOT in IDS: IDS is
+      // the unconditional 4-card pool, and combination options appear only when
       // the active cannon is one half of it. Game.upgradeChoices() swaps the
-      // COMPLEMENTARY card for this id -- it never adds a 5th card, because
+      // COMPLEMENTARY card for the combine id -- it never adds a 5th card, because
       // 5 * CARD.W + 4 * CARD.GAP = 5 * 196 + 4 * 18 = 1052 > WORLD_W (960).
       // See js/hud.js's CARD table and upgradeCardRect().
-      // It needs no tuning of its own: the combined shot is exactly the union
-      // of the pierce and bounce fields already set below, which is what keeps
-      // server/src/anticheat.js's BEST_ALIENS_PER_SHOT (3) valid -- a bouncing
-      // bullet survives WALLS, it does not kill more aliens, so the ceiling is
-      // still 1 + PIERCE_COUNT = 3 aliens per trigger pull.
       COMBINED_ID: 'pierce_bounce',
-      COMBINES: { pierce: 'bounce', bounce: 'pierce' },
+      COMBINED_IDS: ['pierce_bounce', 'spread_bounce'],
+      COMBINES: {
+        pierce: { bounce: 'pierce_bounce' },
+        spread: { bounce: 'spread_bounce' },
+        bounce: { pierce: 'pierce_bounce', spread: 'spread_bounce' }
+      },
       PICK_TIMEOUT: 12,   // auto-confirm so an idle session never hangs
       // Two independent gates guard the pick (see game.js): the confirm
       // binding must be RELEASED once after the screen opens, and this many
@@ -193,13 +193,7 @@
       PIERCE_COUNT: 2,    // extra aliens a laser survives after the first
       // Bounce tuning. A shot spawns at y = PLAYER.Y - PLAYER.H/2 - 6 = 629
       // and dies at y < -40, so it lives 669 / BOUNCE_VY seconds; in that time
-      // it covers 669 * BOUNCE_VX / BOUNCE_VY world units horizontally. The
-      // widest gap any legal shot can face is from a ship at its movement
-      // limit (x = 38) fired at the FAR wall (x = 958) -- 920 units. With
-      // vy 360 / vx 560 the shot covers 669 * 560/360 = 1040 units, so it
-      // reaches a wall from every position on the field; from near an edge it
-      // covers the extra 956 for the second reflection too, which is why
-      // BOUNCE_MAX is 2 rather than a number nothing can reach.
+      // it covers 669 * BOUNCE_VX / BOUNCE_VY world units horizontally.
       BOUNCE_MAX: 2,      // wall reflections before the shot expires
       BOUNCE_VX: 560,
       BOUNCE_VY: 360,     // slower climb than BULLET.PLAYER_SPEED, on purpose
@@ -211,13 +205,6 @@
     // outright if you are hit or the wave ends. Pure arithmetic on the existing
     // addScore() path: no new entity, no timer of its own beyond one float, and
     // not a single Math.random() draw.
-    //
-    // FROM_WAVE is 2 for the same reason FORMATION.FROM_WAVE is: wave 1 is the
-    // classic wave -- plain swarm, no commander, and now classic scoring too.
-    // It is also what keeps scripts/check-game.js's wave-1 golden checksum
-    // pinned to the pre-feature digest: a wave-1 multiplier would change the
-    // scripted run's score (26 kills in 20s) and that constant may only ever be
-    // re-measured against commit b316fc6, never re-pasted from current output.
     COMBO: {
       FROM_WAVE: 2,
       WINDOW: 2.6,   // seconds since the last kill before the streak lapses
@@ -225,32 +212,9 @@
       MAX: 4         // ceiling: x4
     },
 
-    // Distinct alien classes. Exactly one SHIELD and one KAMIKAZE per wave,
-    // from their own FROM_WAVE gates up, and WHICH alien carries each one is
-    // WAVE-DERIVED arithmetic -- (wave - FROM_WAVE) % SWARM.COLS -- exactly
-    // like the commander's personality.
-    //
-    // The class ASSIGNMENT itself spends zero Math.random() draws at any
-    // wave -- scripts/check-game.js scenario 24 measures the draws inside
-    // `new SI.Swarm(wave)` and pins them against a hand-written literal.
-    // Below a class's FROM_WAVE gate nothing is assigned and neither class
-    // has any runtime behaviour at all, so those waves are completely
-    // unaffected, which is what keeps the wave-1 golden checksum pinned.
-    //
-    // That is the whole of the claim. It is NOT a claim that the classes
-    // draw nothing at RUNTIME: from FROM_WAVE up, the kamikaze's dive emits
-    // cosmetic particles every tick and a spark burst on commit, and
-    // SI.Particles' emitters consume draws when a pool slot is free --
-    // exactly the same cosmetics-on-the-RNG-stream coupling Bullet.update
-    // and the UFO already have, and the same disclaimer the commander
-    // personalities carry for their own effects. Expected, not a defect.
-    //
-    // Neither class carries a SCORE BONUS (unlike COMMANDER.SCORE_BONUS), and
-    // that is deliberate: server/src/anticheat.js's plausibility ceiling is
-    // derived from the highest points-per-second the client can legitimately
-    // produce, so a bonus here would mean re-deriving a server bound. A shield
-    // pays its own row's score when it eats a hit, and a kamikaze pays nothing
-    // at all -- so the ceiling is unchanged and server/ stays frozen.
+    // Distinct alien classes. Exactly one SHIELD, one KAMIKAZE, and one PHASE
+    // per wave from their own FROM_WAVE gates up, and WHICH alien carries each
+    // is WAVE-DERIVED arithmetic -- (wave - FROM_WAVE) % SWARM.COLS.
     ALIEN_CLASS: {
       SHIELD: {
         FROM_WAVE: 4,
@@ -263,6 +227,13 @@
         FIRST_DELAY: 8,  // seconds of wave time before it commits
         SPEED_Y: 260,    // < BULLET.ALIEN_SPEED (300): the dive is dodgeable
         SPEED_X: 170     // steering cap, < PLAYER.SPEED (420): strafing out-runs it
+      },
+      PHASE: {
+        FROM_WAVE: 6,
+        ROW: 1,          // upper-middle row
+        ACTIVE_TIME: 2.8,
+        PHASE_TIME: 1.5,
+        FLICKER_SPEED: 16
       }
     },
 
@@ -277,18 +248,11 @@
       bunker: '#54ffa8',
       ufo: '#ffb0f7',
       commander: '#ffe066',
-      // Class tells. Each has to read as clearly NOT the commander amber,
-      // not any alien row colour, not a personality crest and not the ship
-      // -- check-game.js scenario 24 enforces a minimum channel distance
-      // against all of those and against each other.
+      // Class tells.
       shieldAlien: '#3d5bff',
       kamikaze: '#ff4d00',
-      // The combined PIERCE+BOUNCE cannon's tell. It has to read as neither
-      // pierce-cyan (playerGlow) nor bounce-amber (warn), so it is an acid
-      // green that sits between them and near neither -- check-game.js
-      // scenario 30 enforces the same 48/255 minimum channel distance the
-      // commander and alien-class palettes use, against every upgrade colour
-      // and the plain bullet white.
+      phaseAlien: '#d066ff',
+      // Fused weapon tells.
       pierceBounce: '#b6ff4d',
       spreadBounce: '#ffaa40',
       spreadShield: '#38ef7d',
@@ -296,10 +260,10 @@
     },
 
     // Milestone Boss Encounters. Replaces the 11x5 swarm on milestone waves
-    // (waves 5, 10, 15...). Boss has multi-phase mechanics, animated twin/burst
+    // (waves 7, 14, 21...). Boss has multi-phase mechanics, animated twin/burst
     // cannons, hitFlash, and dedicated HUD boss health bar.
     BOSS: {
-      WAVES: [7, 14],
+      WAVES: [7, 14, 21],
       W: 130,
       H: 52,
       Y: 155,
@@ -324,6 +288,16 @@
           bulletSpeed: 380,
           color: '#ff007f',
           coreColor: '#5ffbf1'
+        },
+        21: {
+          name: 'HIVE NEXUS',
+          hp: 120,
+          score: 5000,
+          speed: 120,
+          fireRate: 0.55,
+          bulletSpeed: 420,
+          color: '#00f5d4',
+          coreColor: '#ff007f'
         }
       }
     },
@@ -482,7 +456,7 @@
   }
 
   function isBossWave(wave) {
-    return wave === 7 || wave === 14 || (wave > 14 && wave % 7 === 0);
+    return wave === 7 || wave === 14 || wave === 21 || (wave > 21 && wave % 7 === 0);
   }
 
   function getCombinedUpgrade(current, candidate) {

@@ -47,8 +47,8 @@
       color: '#b6ff4d'
     },
     spread_bounce: {
-      name: 'RICOCHET FLAK',
-      blurb: '3-way spread volley,\nflanks bounce off walls.',
+      name: 'PRISM SCATTER',
+      blurb: '3-way spread volley,\nall shots ricochet.',
       color: '#ffaa40'
     },
     spread_shield: {
@@ -194,9 +194,10 @@
       var barW = 320;
       var barH = 8;
       var ratio = SI.clamp(boss.hp / boss.maxHp, 0, 1);
-      var bossColor = boss.phase === 2 ? '#ff2d55' : boss.color;
+      var bossColor = boss.phase === 3 ? '#ff007f' : (boss.phase === 2 ? '#ff2d55' : boss.color);
+      var phaseLabel = boss.phase === 3 ? '  [OVERLOAD]' : (boss.phase === 2 ? '  [ENRAGED]' : '  [PHASE 1]');
 
-      G(ctx, boss.name + (boss.phase === 2 ? '  [ENRAGED]' : '  [PHASE 1]'), bx, by - 4, {
+      G(ctx, boss.name + phaseLabel, bx, by - 4, {
         font: font(11, 800), color: bossColor, align: 'center', blur: 8
       });
 
@@ -209,7 +210,7 @@
 
       if (ratio > 0) {
         var fillW = Math.max(2, (barW - 4) * ratio);
-        ctx.fillStyle = boss.phase === 2 ? '#ff2d55' : (ratio > 0.4 ? '#54ffa8' : '#ffd166');
+        ctx.fillStyle = boss.phase === 3 ? '#ff007f' : (boss.phase === 2 ? '#ff2d55' : (ratio > 0.4 ? '#54ffa8' : '#ffd166'));
         ctx.fillRect(bx - barW / 2 + 2, by + 2, fillW, barH - 4);
       }
       ctx.restore();
@@ -276,7 +277,7 @@
     var lines = [
       'MOVE: ← → / A D / GAMEPAD STICK      FIRE: SPACE / Z / BTN A',
       'EMP BOMB: X / SHIFT / BTN B          PAUSE: P / START',
-      'Defeat boss flagships at Wave 7 & 14. Discover weapon fusions.'
+      'Defeat boss flagships at Wave 7, 14 & 21. Discover weapon fusions.'
     ];
     for (var i = 0; i < lines.length; i++) {
       G(ctx, lines[i], C.WORLD_W / 2, 520 + i * 34, {
@@ -293,23 +294,26 @@
       font: font(17, 700), color: '#ffd166', blur: 12, align: 'center', alpha: 0.9
     });
 
-    // Bottom-LEFT, not bottom-right: js/net.js's opt-in online panel is a
-    // fixed-position DOM element pinned to the bottom-right corner of the
-    // viewport (right:10px; bottom:10px) and would otherwise sit on top of
-    // this text.
+    // Bottom-LEFT version tag
     G(ctx, 'v' + C.VERSION, 16, C.WORLD_H - 14, {
       font: font(13, 600), color: '#8fb6d8', blur: 6, align: 'left', alpha: 0.85
+    });
+
+    var crtName = SI.FX && SI.FX.getCRTModeName ? SI.FX.getCRTModeName() : 'OFF';
+    G(ctx, 'CRT MODE [C]: ' + crtName, C.WORLD_W / 2, C.WORLD_H - 14, {
+      font: font(12, 600), color: '#5ffbf1', blur: 6, align: 'center', alpha: 0.85
     });
   }
 
   function drawPaused(ctx, game) {
     var G = SI.FX.glowText;
+    var crtName = SI.FX && SI.FX.getCRTModeName ? SI.FX.getCRTModeName() : 'OFF';
     dim(ctx, 0.55);
-    G(ctx, 'PAUSED', C.WORLD_W / 2, C.WORLD_H / 2 - 10, {
+    G(ctx, 'PAUSED', C.WORLD_W / 2, C.WORLD_H / 2 - 18, {
       font: font(62, 900), color: '#eafcff', glow: C.COLORS.playerGlow, blur: 30, align: 'center'
     });
-    G(ctx, 'PRESS  P  TO  RESUME', C.WORLD_W / 2, C.WORLD_H / 2 + 46, {
-      font: font(20), color: '#9df3ff', blur: 14, align: 'center',
+    G(ctx, 'PRESS  P  TO  RESUME      CRT MODE [C]: ' + crtName, C.WORLD_W / 2, C.WORLD_H / 2 + 42, {
+      font: font(18), color: '#9df3ff', blur: 14, align: 'center',
       alpha: 0.6 + 0.4 * Math.sin(game.time * 4)
     });
   }

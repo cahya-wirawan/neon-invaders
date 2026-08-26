@@ -50,6 +50,7 @@ python3 -m http.server 8000
 | Move            | `←` `→` or `A` `D` / Mouse Drag| Left Stick / D-Pad                  |
 | Fire            | `Space` or `Z` / Hold Click    | Button A / Button X / Right Trigger |
 | EMP Super Bomb  | `X` or `Shift`                 | Button B / Left Trigger / Button Y  |
+| CRT Mode Toggle | `C`                            | -                                   |
 | Pause           | `P`                            | Start / Options Button              |
 | Mute            | `M`                            | -                                   |
 | Start / Restart | `Enter`, `Space`, or tap/click | Button A / Start Button             |
@@ -64,12 +65,15 @@ A pick made in the very first instant the screen appears is ignored — release 
 mashing fire through the wave-clear screen can't blow past the choice
 unread; left alone for 12 seconds it picks the highlighted card for you.
 
-## Special Abilities & Features (v1.6.0)
+## Special Abilities & Features (v1.7.0)
 
+- **Prism Scatter Fused Weapon**: Combines `spread` + `bounce` upgrades into a 3-way ricocheting volley where all projectiles bounce off side walls up to 2 times.
+- **Phase / Cloaking Alien Class**: Specialist cloaked aliens (Wave 6+) that cycle between active solid state and intangible phased states with high-frequency sine flicker tells.
+- **CRT Scanline & Phosphor Bloom Modes**: Real-time switchable visual post-processing (`OFF`, `SCANLINES`, `PHOSPHOR`) toggled with `C` key or via Pause Menu.
+- **Wave 21 "Hive Nexus" Milestone Encounter**: 120 HP crystalline flagship encounter with 3 enraged/overload combat phases, 4-way pulse barrages, and 5-way radial desperate spreads.
 - **Secondary EMP Super Bomb**: Combat kills, kill-streaks, commanders, UFOs, and boss combat charge the secondary EMP meter (0–100%). When ready, activate `X` / `Shift` / Gamepad `LT`/`B` to vaporize all incoming enemy projectiles, damage the alien swarm / boss, and trigger haptic rumble feedback.
 - **Native Gamepad + Haptics**: Full plug-and-play support for standard gamepads with analog stick deadzones, D-pad navigation, and dual-motor haptic vibration feedback.
 - **Retro Achievements System**: 10 offline persistent achievements tracked in `localStorage` with in-game animated toast notifications and Title Screen progress display.
-- **Milestone Boss Encounters**: Milestone encounters at Wave 7 (Vanguard Mothership) and Wave 14 (Dreadnought Sovereign) with multi-phase rage modes, burst barrages, and dynamic HUD boss health bars.
 
 Sound only starts after your first key press or tap: browsers require a user
 gesture before an `AudioContext` may run, so the context is created inside that

@@ -16,7 +16,7 @@
   // Keys we own: never let the page scroll or the button re-trigger.
   var SWALLOW = {
     ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1,
-    Space: 1, Enter: 1, KeyA: 1, KeyD: 1, KeyZ: 1, KeyX: 1,
+    Space: 1, Enter: 1, KeyA: 1, KeyD: 1, KeyZ: 1, KeyX: 1, KeyC: 1,
     KeyP: 1, KeyM: 1, ShiftLeft: 1, ShiftRight: 1,
     Digit1: 1, Digit2: 1, Digit3: 1, Digit4: 1
   };
@@ -279,6 +279,13 @@
     return gamepadJustPressed(8);
   }
 
+  function crtPressed() {
+    if (pressed.KeyC) {
+      return true;
+    }
+    return false;
+  }
+
   function confirmPressed() {
     if (pressed.Enter || pressed.Space || pressed.KeyZ || pressed.Pointer) {
       return true;
@@ -332,6 +339,7 @@
     empPressed: empPressed,
     pausePressed: pausePressed,
     mutePressed: mutePressed,
+    crtPressed: crtPressed,
     confirmPressed: confirmPressed,
     cardPressed: cardPressed,
     vibrate: vibrate,

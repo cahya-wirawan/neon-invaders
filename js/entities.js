@@ -149,6 +149,18 @@
       return;
     }
 
+    if (up === 'spread_bounce') {
+      var sbAngles = [-U.SPREAD_ANGLE, 0, U.SPREAD_ANGLE];
+      for (i = 0; i < sbAngles.length; i++) {
+        b = new Bullet(bx, by, -U.BOUNCE_VY, 'player', C.COLORS.spreadBounce);
+        b.bounce = U.BOUNCE_MAX;
+        b.vx = i === 0 ? -U.BOUNCE_VX * 0.85 : (i === 2 ? U.BOUNCE_VX * 0.85 : U.BOUNCE_VX * 0.45 * this.bounceSide);
+        world.spawnBullet(b);
+      }
+      this.bounceSide = -this.bounceSide;
+      return;
+    }
+
     b = new Bullet(bx, by, -speed, 'player', C.COLORS.bullet);
     // TWO INDEPENDENT `if`s, not an if/else chain: the WEAPON COMBINATION
     // (U.COMBINED_ID) is exactly the union of both blocks, and pierce/bounce
@@ -385,6 +397,8 @@
     this.role = null;
     this.dive = null;
     this.diveTimer = 0;
+    this.phaseTimer = 0;
+    this.phased = false;
     this.w = C.SWARM.ALIEN_W;
     this.h = C.SWARM.ALIEN_H;
     this.hitFlash = 0;
@@ -423,6 +437,10 @@
     } else if (this.role === 'kamikaze') {
       SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.kamikaze), this.x, this.y + bob,
         this.dive ? this.w * 3.2 : this.w * 2.4, this.dive ? 0.7 : 0.45);
+    } else if (this.role === 'phase') {
+      var flicker = Math.sin(this.phaseTimer * (C.ALIEN_CLASS.PHASE.FLICKER_SPEED || 16));
+      SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.phaseAlien), this.x, this.y + bob,
+        this.phased ? this.w * 2.0 : this.w * 2.6, this.phased ? 0.35 + 0.15 * flicker : 0.5);
     }
     // A shield that just ATE a hit flares for SHIELD.FLASH seconds. hitFlash
     // is an existing per-alien timer already ticked down in Swarm.update.
@@ -431,7 +449,11 @@
     }
     ctx.restore();
 
-    ctx.globalAlpha = 1;
+    var alpha = 1;
+    if (this.role === 'phase' && this.phased) {
+      alpha = 0.28 + 0.18 * Math.sin(this.phaseTimer * (C.ALIEN_CLASS.PHASE.FLICKER_SPEED || 16));
+    }
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = this.color;
     for (var r = 0; r < rows; r++) {
       var line = shape[r];
@@ -474,6 +496,11 @@
       ctx.fillStyle = '#ffd0b0';
       ctx.fillRect(ox + cw * 2.6, oy + this.h + ch * 0.1, cw * 2.4, ch * 0.7);
       ctx.fillRect(ox + cw * 4.4, oy + this.h + ch * 0.8, cw * 2.4, ch * 0.7);
+    } else if (this.role === 'phase') {
+      // Flank antennae / quantum prongs
+      ctx.fillStyle = '#eeddff';
+      ctx.fillRect(ox - cw * 0.7, oy + ch * 0.6, cw * 0.7, ch * 2.2);
+      ctx.fillRect(ox + this.w, oy + ch * 0.6, cw * 0.7, ch * 2.2);
     }
   };
 
@@ -555,6 +582,7 @@
     // place a class is ever attached, so it is the single extension point.
     this.shield = null;
     this.kamikaze = null;
+    this.phaseAlien = null;
     var K = C.ALIEN_CLASS;
     if (wave >= K.SHIELD.FROM_WAVE) {
       this.shield = this.assignRole(
@@ -568,27 +596,25 @@
         this.kamikaze.diveTimer = K.KAMIKAZE.FIRST_DELAY;
       }
     }
+    if (wave >= K.PHASE.FROM_WAVE) {
+      this.phaseAlien = this.assignRole(
+        'phase', K.PHASE.ROW, (wave - K.PHASE.FROM_WAVE) % S.COLS);
+      if (this.phaseAlien) {
+        this.phaseAlien.phaseTimer = K.PHASE.ACTIVE_TIME;
+        this.phaseAlien.phased = false;
+      }
+    }
     // PRE-WARM the class glow sprites, and only on the waves that will
-    // actually draw them. js/fx.js's own init() warm-list is frozen this
-    // round, but SI.FX.glow() builds-and-CACHES lazily, so one throwaway
-    // call here has exactly the same effect as being in that list: the
-    // radial-gradient offscreen canvas is built at wave start rather than
-    // mid-frame the first time a class tell is blitted. glow() draws a
-    // gradient into a canvas and consumes no Math.random, so the RNG stream
-    // is untouched (scenario 24 counts the draws and pins that).
+    // actually draw them.
     if (SI.FX && SI.FX.glow) {
       if (this.shield) { SI.FX.glow(C.COLORS.shieldAlien); }
       if (this.kamikaze) { SI.FX.glow(C.COLORS.kamikaze); }
+      if (this.phaseAlien) { SI.FX.glow(C.COLORS.phaseAlien); }
     }
 
     // Applied after the commander block so the timer's own draw (above)
     // keeps its original position in the random stream; this only rescales
     // the value that draw already produced.
-    //
-    // Only the JITTER is scaled. FORMATION.FIRST_DELAY is the documented
-    // grace period before the first formation of a wave, and no personality
-    // is allowed to quietly shorten (or stretch) it -- a TACTICIAN wave
-    // re-arms sooner AFTER that grace period, not during it.
     if (this.personality && this.formationsEnabled) {
       this.formationTimer = F.FIRST_DELAY + firstJitter * this.personality.gapScale;
     }
@@ -596,21 +622,11 @@
 
   /* --------------------------- alien classes ------------------------ */
 
-  // Tags one grid cell with a class. `aliens` is row-major -- the
-  // constructor fills row 0 first, COLS entries per row -- so the cell is
-  // at row * COLS + col, the same convention the commander pick uses when
-  // it treats indices 0..COLS-1 as row 0.
-  //
-  // The commander guard is what makes "a commander never also carries a
-  // class" STRUCTURAL rather than a coincidence of the row numbers: even if
-  // a future round moved SHIELD.ROW to 0, the class would simply not be
-  // assigned rather than stacking two tells on one sprite. One unit, one
-  // tell -- the second guard (`a.role`) keeps two classes off one alien too.
   Swarm.prototype.assignRole = function (role, row, col) {
     var a = this.aliens[row * C.SWARM.COLS + col];
     if (!a || a.commander || a.role) { return null; }
     a.role = role;
-    a.color = role === 'shield' ? C.COLORS.shieldAlien : C.COLORS.kamikaze;
+    a.color = role === 'shield' ? C.COLORS.shieldAlien : (role === 'kamikaze' ? C.COLORS.kamikaze : C.COLORS.phaseAlien);
     return a;
   };
 
@@ -765,6 +781,16 @@
     for (i = 0; i < this.aliens.length; i++) {
       a = this.aliens[i];
       if (a.hitFlash > 0) { a.hitFlash -= dt; }
+    }
+
+    if (this.phaseAlien && this.phaseAlien.alive) {
+      var ph = this.phaseAlien;
+      var Pk = C.ALIEN_CLASS.PHASE;
+      ph.phaseTimer -= dt;
+      if (ph.phaseTimer <= 0) {
+        ph.phased = !ph.phased;
+        ph.phaseTimer = ph.phased ? Pk.PHASE_TIME : Pk.ACTIVE_TIME;
+      }
     }
 
     // Writes the effective x/y for this tick. With no formation running
@@ -1120,7 +1146,7 @@
 
   function Boss(wave) {
     var bcfg = C.BOSS;
-    var wcfg = bcfg.CONFIGS[wave] || (wave >= 14 ? bcfg.CONFIGS[14] : bcfg.CONFIGS[7]);
+    var wcfg = bcfg.CONFIGS[wave] || (wave >= 21 ? bcfg.CONFIGS[21] : (wave >= 14 ? bcfg.CONFIGS[14] : bcfg.CONFIGS[7]));
     this.wave = wave;
     this.name = wcfg.name;
     this.score = wcfg.score;
@@ -1160,17 +1186,30 @@
       this.hitFlash = Math.max(0, this.hitFlash - dt);
     }
 
-    // Phase transition when HP drops to 50% or below
     var hpRatio = this.hp / this.maxHp;
-    if (hpRatio <= 0.5 && this.phase === 1) {
-      this.phase = 2;
-      this.vx = (this.vx > 0 ? 1 : -1) * this.baseSpeed * 1.35;
-      if (world && world.shake) {
-        world.shake(8, 0.25);
+    var isHive = this.wave === 21 || this.maxHp >= 100;
+    if (isHive) {
+      if (hpRatio <= 0.30 && this.phase < 3) {
+        this.phase = 3;
+        this.vx = (this.vx > 0 ? 1 : -1) * this.baseSpeed * 1.45;
+        if (world && world.shake) { world.shake(12, 0.35); }
+      } else if (hpRatio <= 0.65 && this.phase < 2) {
+        this.phase = 2;
+        this.vx = (this.vx > 0 ? 1 : -1) * this.baseSpeed * 1.25;
+        if (world && world.shake) { world.shake(8, 0.25); }
+      }
+    } else {
+      if (hpRatio <= 0.5 && this.phase === 1) {
+        this.phase = 2;
+        this.vx = (this.vx > 0 ? 1 : -1) * this.baseSpeed * 1.35;
+        if (world && world.shake) {
+          world.shake(8, 0.25);
+        }
       }
     }
 
-    var speed = this.baseSpeed * (this.phase === 2 ? 1.35 : 1.0);
+    var speedMult = this.phase === 3 ? 1.45 : (this.phase === 2 ? 1.35 : 1.0);
+    var speed = this.baseSpeed * speedMult;
     this.x += (this.vx > 0 ? 1 : -1) * speed * dt;
 
     var minX = C.BOSS.MARGIN + this.w / 2;
@@ -1184,7 +1223,8 @@
     }
 
     // Fire logic
-    var rate = this.baseFireRate * (this.phase === 2 ? 0.65 : 1.0);
+    var rateMult = this.phase === 3 ? 0.55 : (this.phase === 2 ? 0.65 : 1.0);
+    var rate = this.baseFireRate * rateMult;
     this.fireTimer -= dt;
     if (this.fireTimer <= 0) {
       this.fireTimer = rate;
@@ -1197,14 +1237,39 @@
 
     var vy = this.bulletSpeed;
     var color = C.COLORS.alienBullet;
+    var isHive = this.wave === 21 || this.maxHp >= 100;
 
-    if (this.phase === 1) {
+    if (isHive) {
+      if (this.phase === 1) {
+        var leftX = this.x - this.w * 0.35;
+        var rightX = this.x + this.w * 0.35;
+        var gunY = this.y + this.h / 2 + 2;
+        world.spawnBullet(new Bullet(leftX, gunY, vy, 'alien', color));
+        world.spawnBullet(new Bullet(rightX, gunY, vy, 'alien', color));
+      } else if (this.phase === 2) {
+        var offsets = [-36, -12, 12, 36];
+        var vxs = [-50, -15, 15, 50];
+        for (var k = 0; k < 4; k++) {
+          var bP2 = new Bullet(this.x + offsets[k], this.y + this.h / 2 + 2, vy, 'alien', k === 1 || k === 2 ? '#00f5d4' : color);
+          bP2.vx = vxs[k];
+          world.spawnBullet(bP2);
+        }
+      } else {
+        var radOffsets = [-48, -24, 0, 24, 48];
+        var radVxs = [-90, -45, 0, 45, 90];
+        for (var m = 0; m < 5; m++) {
+          var bP3 = new Bullet(this.x + radOffsets[m], this.y + this.h / 2 + 2, vy * 1.1, 'alien', m === 2 ? '#ff007f' : color);
+          bP3.vx = radVxs[m];
+          world.spawnBullet(bP3);
+        }
+      }
+    } else if (this.phase === 1) {
       // Twin cannons
-      var leftX = this.x - this.w * 0.32;
-      var rightX = this.x + this.w * 0.32;
-      var gunY = this.y + this.h / 2 + 2;
-      world.spawnBullet(new Bullet(leftX, gunY, vy, 'alien', color));
-      world.spawnBullet(new Bullet(rightX, gunY, vy, 'alien', color));
+      var leftX1 = this.x - this.w * 0.32;
+      var rightX1 = this.x + this.w * 0.32;
+      var gunY1 = this.y + this.h / 2 + 2;
+      world.spawnBullet(new Bullet(leftX1, gunY1, vy, 'alien', color));
+      world.spawnBullet(new Bullet(rightX1, gunY1, vy, 'alien', color));
     } else {
       // Phase 2: Enraged 3-way burst
       var cX = this.x;
@@ -1230,7 +1295,7 @@
     this.hitFlash = 0.08;
 
     if (world && world.particles) {
-      var sparkColor = this.phase === 2 ? '#ff2d55' : this.coreColor;
+      var sparkColor = this.phase >= 2 ? '#ff2d55' : this.coreColor;
       world.particles.emitSparks(this.x + SI.rand(-30, 30), this.y + SI.rand(-10, 10), sparkColor, 6, 0, 1, Math.PI);
     }
     if (world && world.audio && world.audio.alienHit) {
@@ -1271,7 +1336,8 @@
     ctx.save();
 
     // Halo glow using pre-rendered cached glow sprite
-    var glowSprite = SI.FX.glow(this.phase === 2 ? '#ff2d55' : this.color);
+    var glowColor = this.phase === 3 ? '#ff007f' : (this.phase === 2 ? '#ff2d55' : this.color);
+    var glowSprite = SI.FX.glow(glowColor);
     if (glowSprite) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
@@ -1281,7 +1347,7 @@
     }
 
     // Hull polygon
-    var hullColor = this.hitFlash > 0 ? '#ffffff' : (this.phase === 2 ? '#ff4d79' : this.color);
+    var hullColor = this.hitFlash > 0 ? '#ffffff' : (this.phase === 3 ? '#ff007f' : (this.phase === 2 ? '#ff4d79' : this.color));
     ctx.strokeStyle = hullColor;
     ctx.lineWidth = 3;
     ctx.fillStyle = '#0a0818';
@@ -1308,7 +1374,7 @@
     ctx.stroke();
 
     // Inner wing accents
-    ctx.strokeStyle = this.hitFlash > 0 ? '#ffffff' : (this.phase === 2 ? '#ffd166' : '#5ffbf1');
+    ctx.strokeStyle = this.hitFlash > 0 ? '#ffffff' : (this.phase >= 2 ? '#ffd166' : '#5ffbf1');
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(x - halfW * 0.6, y);
@@ -1319,7 +1385,7 @@
 
     // Glowing power core
     var corePulse = 8 + Math.sin(this.pulse * 1.5) * 3;
-    var coreColor = this.hitFlash > 0 ? '#ffffff' : (this.phase === 2 ? '#ff2d55' : this.coreColor);
+    var coreColor = this.hitFlash > 0 ? '#ffffff' : (this.phase === 3 ? '#ff007f' : (this.phase === 2 ? '#ff2d55' : this.coreColor));
     ctx.fillStyle = coreColor;
     ctx.beginPath();
     ctx.arc(x, y - 2, corePulse, 0, Math.PI * 2);

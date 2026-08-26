@@ -120,29 +120,101 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* Overlay: scanlines + vignette, prerendered once at world size.      */
+  /* Overlay: CRT Scanlines + Phosphor Bloom modes                       */
   /* ------------------------------------------------------------------ */
+
+  var CRT_KEY = 'neon_invaders_crt_mode';
+  var CRT_MODES = ['OFF', 'SCANLINES', 'PHOSPHOR'];
+  var currentCRTMode = 1;
+  var scanlinesCanvas = null;
+  var phosphorCanvas = null;
+
+  function loadCRTMode() {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        var v = localStorage.getItem(CRT_KEY);
+        if (v !== null) {
+          var idx = parseInt(v, 10);
+          if (!isNaN(idx) && idx >= 0 && idx < CRT_MODES.length) {
+            currentCRTMode = idx;
+          }
+        }
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  function saveCRTMode() {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(CRT_KEY, String(currentCRTMode));
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  function getCRTMode() {
+    return currentCRTMode;
+  }
+
+  function getCRTModeName() {
+    return CRT_MODES[currentCRTMode] || 'OFF';
+  }
+
+  function setCRTMode(mode) {
+    if (typeof mode === 'number') {
+      currentCRTMode = (mode % CRT_MODES.length + CRT_MODES.length) % CRT_MODES.length;
+    } else if (typeof mode === 'string') {
+      var idx = CRT_MODES.indexOf(mode.toUpperCase());
+      if (idx >= 0) { currentCRTMode = idx; }
+    }
+    saveCRTMode();
+    return currentCRTMode;
+  }
+
+  function cycleCRTMode() {
+    currentCRTMode = (currentCRTMode + 1) % CRT_MODES.length;
+    saveCRTMode();
+    return currentCRTMode;
+  }
 
   function buildOverlay() {
     var W = SI.CONFIG.WORLD_W;
     var H = SI.CONFIG.WORLD_H;
-    var c = document.createElement('canvas');
-    c.width = W;
-    c.height = H;
-    var g = c.getContext('2d');
 
-    g.fillStyle = 'rgba(0,0,0,0.16)';
+    // Scanlines mode: standard 3px scanline + radial vignette
+    var c1 = document.createElement('canvas');
+    c1.width = W;
+    c1.height = H;
+    var g1 = c1.getContext('2d');
+    g1.fillStyle = 'rgba(0,0,0,0.16)';
     for (var y = 0; y < H; y += 3) {
-      g.fillRect(0, y, W, 1);
+      g1.fillRect(0, y, W, 1);
     }
+    var vg1 = g1.createRadialGradient(W / 2, H / 2, H * 0.32, W / 2, H / 2, H * 0.82);
+    vg1.addColorStop(0, 'rgba(0,0,0,0)');
+    vg1.addColorStop(1, 'rgba(0,0,0,0.62)');
+    g1.fillStyle = vg1;
+    g1.fillRect(0, 0, W, H);
+    scanlinesCanvas = c1;
 
-    var vg = g.createRadialGradient(W / 2, H / 2, H * 0.32, W / 2, H / 2, H * 0.82);
-    vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(0,0,0,0.62)');
-    g.fillStyle = vg;
-    g.fillRect(0, 0, W, H);
+    // Phosphor mode: denser 2px scanlines + phosphor curvature vignette
+    var c2 = document.createElement('canvas');
+    c2.width = W;
+    c2.height = H;
+    var g2 = c2.getContext('2d');
+    g2.fillStyle = 'rgba(0,0,0,0.24)';
+    for (var y2 = 0; y2 < H; y2 += 2) {
+      g2.fillRect(0, y2, W, 1);
+    }
+    var vg2 = g2.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.78);
+    vg2.addColorStop(0, 'rgba(0,0,0,0)');
+    vg2.addColorStop(0.7, 'rgba(0,20,10,0.22)');
+    vg2.addColorStop(1, 'rgba(0,0,0,0.78)');
+    g2.fillStyle = vg2;
+    g2.fillRect(0, 0, W, H);
+    phosphorCanvas = c2;
 
-    overlayCanvas = c;
+    overlayCanvas = scanlinesCanvas;
+    loadCRTMode();
   }
 
   function buildNebula() {
@@ -189,11 +261,15 @@
   }
 
   function drawOverlay(ctx) {
-    if (overlayCanvas) {
+    if (currentCRTMode === 0) {
+      return;
+    }
+    var activeCanvas = currentCRTMode === 2 ? phosphorCanvas : scanlinesCanvas;
+    if (activeCanvas) {
       ctx.save();
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
-      ctx.drawImage(overlayCanvas, 0, 0);
+      ctx.drawImage(activeCanvas, 0, 0);
       ctx.restore();
     }
   }
@@ -247,6 +323,10 @@
     drawOverlay: drawOverlay,
     drawNebula: drawNebula,
     glowText: glowText,
-    hexToRgba: hexToRgba
+    hexToRgba: hexToRgba,
+    getCRTMode: getCRTMode,
+    getCRTModeName: getCRTModeName,
+    setCRTMode: setCRTMode,
+    cycleCRTMode: cycleCRTMode
   };
 })(window.SI = window.SI || {});

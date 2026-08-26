@@ -580,3 +580,37 @@ flow in `js/game.js`).
   - Title Screen displays total unlocked achievements count badge strip.
   - Offline-first persistence via `localStorage` (degrades gracefully if storage is disabled).
 
+## Prism Scatter Fused Weapon (v1.7.0)
+
+- **[shipped]** **Prism Scatter (`spread_bounce`) Combination**:
+  - Fused upgrade combining `spread` and `bounce` cannon upgrades (`CONFIG.UPGRADE.COMBINES`).
+  - Fires a 3-way spread volley where all three projectiles ricochet off boundary walls up to `UPGRADE.BOUNCE_MAX` times.
+  - Center projectile alternates initial bounce deflection direction.
+  - Anti-cheat ceiling invariant preserved: max 3 kills per trigger pull (`BEST_ALIENS_PER_SHOT = 3`).
+
+## Phase / Cloaking Alien Class (v1.7.0)
+
+- **[shipped]** **Phase Specialist Alien (`ALIEN_CLASS.PHASE`)**:
+  - Unlocked deterministically from Wave 6+ on row 1 at `(wave - 6) % COLS`.
+  - Cycles between solid active state (2.8s) and intangible phased state (1.5s).
+  - Phased state renders translucent with high-frequency sine flicker tell and quantum flank prongs.
+  - Completely intangible to player bullets while phased (bullets pass through without colliding).
+
+## CRT Scanline & Phosphor Bloom Visual Modes (v1.7.0)
+
+- **[shipped]** **3-Stage Toggleable Visual Filter**:
+  - `OFF`: Ultra-crisp high-framerate modern digital display.
+  - `SCANLINES`: Standard 3px spaced scanlines with smooth radial vignette.
+  - `PHOSPHOR`: Dense 2px phosphor scanline mesh with green/cyan curvature glow.
+  - Switchable in real time via `KeyC` / Pause Menu / Gamepad, persisted to `localStorage['neon_invaders_crt_mode']`.
+  - Zero-cost prerendered offscreen canvas blits with 0 new `shadowBlur` calls.
+
+## Wave 21 "Hive Nexus" Boss Encounter (v1.7.0)
+
+- **[shipped]** **Ultimate Milestone Boss Flagship**:
+  - Spawns at milestone Wave 21 with 120 HP, 5,000 pts score award, and custom crystalline hive architecture.
+  - **Phase 1 (100% - 65% HP)**: Twin heavy forward plasma cannons.
+  - **Phase 2 (65% - 30% HP / CHARGED)**: +25% speed with 4-way concentrated pulse barrages.
+  - **Phase 3 (< 30% HP / OVERLOAD CRISIS)**: +45% speed, crimson hull glow, and 5-way desperate radial spreads.
+  - Dedicated HUD health bar supporting `[PHASE 1]`, `[ENRAGED]`, and `[OVERLOAD]` status banners.
+
