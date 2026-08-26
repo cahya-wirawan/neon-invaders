@@ -1271,7 +1271,7 @@
     ctx.save();
 
     // Halo glow using pre-rendered cached glow sprite
-    var glowSprite = SI.FX.glow(this.phase === 2 ? '#ff2d55' : this.color, 42);
+    var glowSprite = SI.FX.glow(this.phase === 2 ? '#ff2d55' : this.color);
     if (glowSprite) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';

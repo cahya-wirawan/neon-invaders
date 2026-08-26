@@ -133,8 +133,20 @@ function makeCtx() {
     shadowColor: '',
     shadowBlur: 0,
     measureText: () => ({ width: 10 }),
-    createRadialGradient: () => ({ addColorStop() {} }),
-    createLinearGradient: () => ({ addColorStop() {} }),
+    createRadialGradient: () => ({
+      addColorStop(offset) {
+        if (typeof offset !== 'number' || offset < 0 || offset > 1) {
+          throw new Error('IndexSizeError: addColorStop offset outside [0, 1]: ' + offset);
+        }
+      }
+    }),
+    createLinearGradient: () => ({
+      addColorStop(offset) {
+        if (typeof offset !== 'number' || offset < 0 || offset > 1) {
+          throw new Error('IndexSizeError: addColorStop offset outside [0, 1]: ' + offset);
+        }
+      }
+    }),
     createPattern: () => null,
     getImageData: () => ({ data: new Uint8ClampedArray(4) })
   };
@@ -3985,6 +3997,11 @@ scenario('38. Boss defeat awards score, triggers wave clear, and HUD renders hea
     check('HUD draws boss bar without exception', () => {
       const hud = new env.SI.HUDStub();
       env.SI.drawHud(hud.ctx, game);
+      return true;
+    });
+
+    check('Boss draws with valid canvas gradient offsets without exception', () => {
+      game.draw(env.ctx);
       return true;
     });
 
