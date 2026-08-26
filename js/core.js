@@ -5,9 +5,9 @@
   var CONFIG = {
     // Shown on the title screen (js/hud.js drawTitle) and read by
     // scripts/verify.sh to cross-check package.json's version stays in
-    // sync. Bump the MINOR number (1.2.0 -> 1.3.0) in both places together
+    // sync. Bump the MINOR number (1.3.0 -> 1.4.0) in both places together
     // for every new feature; patch/major are unused by this policy.
-    VERSION: '1.3.0',
+    VERSION: '1.4.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -101,6 +101,10 @@
       WEDGE_DEPTH: 78,  // how far the centre column dips in a wedge
       WEDGE_PINCH: 9,   // horizontal squeeze per column away from centre
       DIVE_DEPTH: 150,
+      PINCER_DEPTH: 70, // how far outer wings plunge forward in pincer
+      PINCER_PINCH: 12, // horizontal squeeze inward for outer wings
+      INVERTED_WEDGE_DEPTH: 75, // how far outer wings dip in inverted wedge
+      SWEEP_DEPTH: 80,  // how far diagonal wave dips
       EDGE_PAD: 46      // effective x is clamped into [PAD, WORLD_W - PAD]
     },
 
@@ -120,9 +124,9 @@
     //   * From FROM_WAVE up the effects below DO intentionally change how
     //     many draws a wave consumes relative to an uncommanded wave. `kinds`
     //     is the clearest case: startFormation's 'dive' branch spends one
-    //     SI.pick(cols) draw and its 'wedge' branch spends none, so a
-    //     dive-only commander draws MORE per formation and a wedge-only one
-    //     draws none at all. `extraBullets` likewise un-short-circuits the
+    //     SI.pick(cols) draw and its other branches spend none, so a
+    //     dive-containing commander draws more per dive formation.
+    //     `extraBullets` likewise un-short-circuits the
     //     `alienBulletCount() < cap && SI.chance(0.86)` test, letting
     //     SI.chance() run on ticks where it previously could not. That is
     //     expected, not a bug -- different behaviour is the whole point.
@@ -134,7 +138,7 @@
     //                 It scales only the VARIABLE part of a wave's first
     //                 delay -- FORMATION.FIRST_DELAY is a documented grace
     //                 period and stays intact for every personality.
-    //   kinds         replaces the default wedge/dive parity alternation;
+    //   kinds         replaces the default wave formation repertoire;
     //                 an explicitly-passed kind still wins outright
     //   fireScale     scales the already-computed alien fire delay, before
     //                 the existing Math.max(0.16, ...) clamp
@@ -153,14 +157,11 @@
       // channel distance against COLORS.commander and COLORS.warn.
       PERSONALITIES: [
         { id: 'aggressive', name: 'AGGRESSOR', color: '#ff7a5c',
-          kinds: ['dive'], gapScale: 0.75, fireScale: 0.92, extraBullets: 0 },
-        // Not ['wedge','dive'] -- that is byte-for-byte the default parity
-        // alternation, i.e. a no-op field. The 3-long cycle biases toward
-        // dives and gives the wave its own rhythm.
+          kinds: ['dive', 'pincer', 'dive'], gapScale: 0.75, fireScale: 0.92, extraBullets: 0 },
         { id: 'tactical', name: 'TACTICIAN', color: '#7ce8ff',
-          kinds: ['wedge', 'dive', 'dive'], gapScale: 0.55, fireScale: 1, extraBullets: 0 },
+          kinds: ['wedge', 'pincer', 'inverted_wedge', 'sweep'], gapScale: 0.55, fireScale: 1, extraBullets: 0 },
         { id: 'barrage', name: 'BARRAGE', color: '#ff2d55',
-          kinds: ['wedge'], gapScale: 1.25, fireScale: 0.7, extraBullets: 1 }
+          kinds: ['wedge', 'inverted_wedge'], gapScale: 1.35, fireScale: 0.7, extraBullets: 1 }
       ]
     },
 

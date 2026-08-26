@@ -845,17 +845,37 @@
     return this.commander ? this.personality : null;
   };
 
+  Swarm.prototype.waveGapScale = function () {
+    if (this.wave < C.FORMATION.FROM_WAVE) { return 1; }
+    return Math.max(0.5, 1 - (this.wave - C.FORMATION.FROM_WAVE) * 0.0625);
+  };
+
+  Swarm.prototype.waveSpeedScale = function () {
+    if (this.wave < C.FORMATION.FROM_WAVE) { return 1; }
+    return Math.max(0.8, 1 - (this.wave - C.FORMATION.FROM_WAVE) * 0.025);
+  };
+
+  Swarm.prototype.unlockedFormations = function () {
+    var w = this.wave;
+    if (w < 2) { return []; }
+    if (w === 2) { return ['wedge', 'dive']; }
+    if (w === 3) { return ['wedge', 'dive', 'pincer']; }
+    if (w === 4) { return ['wedge', 'dive', 'pincer', 'inverted_wedge']; }
+    return ['wedge', 'dive', 'pincer', 'inverted_wedge', 'sweep'];
+  };
+
   // Drop-in for the inline SI.rand(MIN_GAP, MAX_GAP) re-arms: still exactly
   // ONE draw, so the random stream keeps its shape whether or not a
   // personality is in play.
   Swarm.prototype.nextFormationGap = function () {
     var g = SI.rand(C.FORMATION.MIN_GAP, C.FORMATION.MAX_GAP);
+    g *= this.waveGapScale();
     var p = this.activePersonality();
     if (p) { g *= p.gapScale; }
     return g;
   };
 
-  // `kind` may be 'wedge', 'dive', or null to alternate.
+  // `kind` may be 'wedge', 'dive', 'pincer', 'inverted_wedge', 'sweep', or null to rotate.
   Swarm.prototype.startFormation = function (kind, world) {
     var F = C.FORMATION;
     var S = C.SWARM;
@@ -866,9 +886,12 @@
     // reorders the repertoire it cycles through.
     var p = this.activePersonality();
     if (!kind) {
-      kind = (p && p.kinds) ?
-        p.kinds[this.formationCount % p.kinds.length] :
-        ((this.formationCount % 2 === 0) ? 'wedge' : 'dive');
+      if (p && p.kinds && p.kinds.length) {
+        kind = p.kinds[this.formationCount % p.kinds.length];
+      } else {
+        var pool = this.unlockedFormations();
+        kind = pool.length ? pool[this.formationCount % pool.length] : 'wedge';
+      }
     }
     // A committed diver is never a formation participant: applyFormation()
     // and snapToGrid() both skip it, so writing fx/fy on it would only leave
@@ -881,6 +904,7 @@
     }
 
     var col = -1;
+    var m = (S.COLS - 1) / 2;
     if (kind === 'dive') {
       var cols = [];
       for (i = 0; i < this.aliens.length; i++) {
@@ -903,9 +927,37 @@
         a.fy = F.DIVE_DEPTH;
         a.fx = targetX - a.gx;
       }
+    } else if (kind === 'pincer') {
+      // Outer wings plunge forward and pinch inward toward center
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (!a.alive || a.dive) { continue; }
+        var dp = Math.abs(a.col - m);
+        a.fy = m > 0 ? F.PINCER_DEPTH * (dp / m) : 0;
+        a.fx = -(a.col - m) * F.PINCER_PINCH;
+      }
+    } else if (kind === 'inverted_wedge') {
+      // Inverted Chevron: outer wings advance forward, center stays back
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (!a.alive || a.dive) { continue; }
+        var di = Math.abs(a.col - m);
+        a.fy = m > 0 ? F.INVERTED_WEDGE_DEPTH * (di / m) : 0;
+        a.fx = (a.col - m) * F.WEDGE_PINCH;
+      }
+    } else if (kind === 'sweep') {
+      // Staggered diagonal step rolling across columns
+      var maxCol = S.COLS - 1;
+      var reverse = (this.formationCount % 2 !== 0);
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (!a.alive || a.dive) { continue; }
+        var frac = maxCol > 0 ? (reverse ? (maxCol - a.col) / maxCol : a.col / maxCol) : 0;
+        a.fy = F.SWEEP_DEPTH * frac;
+        a.fx = 0;
+      }
     } else {
       // V-shape: apex at the centre column, pinched inwards.
-      var m = (S.COLS - 1) / 2;
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
         if (!a.alive || a.dive) { continue; }
@@ -925,27 +977,31 @@
   Swarm.prototype.updateFormation = function (dt, world) {
     var F = C.FORMATION;
     var f = this.formation;
+    var speedScale = this.waveSpeedScale();
+    var easeIn = F.EASE_IN * speedScale;
+    var hold = F.HOLD * speedScale;
+    var easeOut = F.EASE_OUT * speedScale;
 
     if (f) {
       f.t += dt;
       if (f.phase === 0) {
-        if (f.t >= F.EASE_IN) {
+        if (f.t >= easeIn) {
           f.phase = 1;
           f.t = 0;
           f.k = 1;
         } else {
-          f.k = SI.smoothstep(f.t / F.EASE_IN);
+          f.k = SI.smoothstep(f.t / easeIn);
         }
       } else if (f.phase === 1) {
         f.k = 1;
-        if (f.t >= F.HOLD) {
+        if (f.t >= hold) {
           f.phase = 2;
           f.t = 0;
         }
-      } else if (f.t >= F.EASE_OUT) {
+      } else if (f.t >= easeOut) {
         this.endFormation();
       } else {
-        f.k = 1 - SI.smoothstep(f.t / F.EASE_OUT);
+        f.k = 1 - SI.smoothstep(f.t / easeOut);
       }
     } else if (this.formationsEnabled) {
       this.formationTimer -= dt;

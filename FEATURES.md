@@ -8,30 +8,30 @@ promise about a future round.
 
 ## Alien formations that evolve
 
-- **[shipped]** Enemies dynamically rearrange into wedges and attack columns
+- **[shipped]** Enemies dynamically rearrange into multiple tactical formations
   (`CONFIG.FORMATION`, `Swarm.startFormation` in `js/entities.js`). Each
   formation eases in, holds, then eases back out onto the marching grid.
-- **[deferred]** Shield and spiral formations — the wedge/dive pair already
-  covers the readable silhouettes at this alien count; more shapes read as
-  noise rather than choreography.
+- **[shipped]** Progressive formation unlock tiers by wave:
+  - Wave 1: Classic marching grid.
+  - Wave 2: **Wedge** (center apex dips forward) and **Dive** (single column commits toward ship $X$).
+  - Wave 3: **Pincer** (flanks plunge forward and pinch inward toward center).
+  - Wave 4: **Inverted Wedge / Chevron** (outer wings advance forward in chevron, center holds back).
+  - Wave 5+: **Sweep** (staggered diagonal wave step across columns).
+- **[shipped]** Dual wave-based difficulty scaling:
+  - Formation interval gaps compress smoothly by ~6.25% per wave, shrinking from 7–12s (wave 2) down to 3.5–6s (wave 10+).
+  - Animation transition times (`EASE_IN`, `HOLD`, `EASE_OUT`) scale up to 20% faster on higher waves.
 - **[shipped]** Certain aliens act as commanders; killing one cancels the
   formation in flight and grounds the swarm for the rest of the wave
   (`CONFIG.COMMANDER`, `Swarm.killAlien`).
 - **[shipped]** Three distinct commander personalities
   (`CONFIG.COMMANDER.PERSONALITIES`), selected by wave number rather than by
   a random draw, each with its own halo/crown tint and a `COMMANDER <name>`
-  HUD label: **AGGRESSOR** choreographs dives only and re-arms them roughly a
-  third sooner (a 0.75 gap scale), with slightly faster alien fire;
-  **TACTICIAN** keeps both shapes but runs its own `wedge → dive → dive`
-  cycle instead of the default alternation, at ~1.8× the cadence;
-  **BARRAGE** choreographs wedges only, a fifth less often, and instead fires
-  markedly faster with one extra alien bullet allowed in the air — clamped so
-  it can never exceed the difficulty table's own wave-10 bullet ceiling. The
-  per-wave grace period (`FORMATION.FIRST_DELAY`) is outside the gap scaling,
-  so no personality shortens it. All of it is read through
-  `Swarm.activePersonality()`, which returns null the moment the commander
-  dies, so every effect lapses with the existing death path and needs no code
-  of its own.
+  HUD label:
+  - **AGGRESSOR**: uses aggressive flanking routines (`dive → pincer → dive`), re-arms formations ~33% sooner (0.75 gap scale), with slightly faster alien fire.
+  - **TACTICIAN**: orchestrates the full tactical repertoire (`wedge → pincer → inverted_wedge → sweep`), re-arming ~80% faster (0.55 gap scale).
+  - **BARRAGE**: deploys wide wall formations (`wedge → inverted_wedge`) with dense firepower (1.35 gap scale, 0.70 fire scale, +1 simultaneous bullet cap).
+- **[deferred]** Shield and spiral formations — the wedge, dive, pincer, chevron, and sweep set already
+  covers readable silhouettes without visual clutter.
 - **[deferred]** A *defensive* commander that pulls the swarm into a
   protective screen — that needs a new formation SHAPE, and shape variety
   was explicitly settled and descoped in the previous round (see the

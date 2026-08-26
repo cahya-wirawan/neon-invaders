@@ -1390,7 +1390,7 @@ scenario('18. commander personalities are distinct and deterministic', () => {
       }
       return seq;
     };
-    const SEQ_N = 6;
+    const SEQ_N = 12;
     const baseSeq = kindSeq(2, SEQ_N);
     const aggSeq = kindSeq(3, SEQ_N);
     const tacSeq = kindSeq(4, SEQ_N);
@@ -1403,14 +1403,15 @@ scenario('18. commander personalities are distinct and deterministic', () => {
       `\n      AGGRESSOR      (wave 3) = ${aggSeq.join(',')}` +
       `\n      TACTICIAN      (wave 4) = ${tacSeq.join(',')}` +
       `\n      BARRAGE        (wave 5) = ${barSeq.join(',')}`);
-    check('the no-personality baseline still alternates wedge/dive by parity',
-      baseSeq.join(',') === 'wedge,dive,wedge,dive,wedge,dive', baseSeq.join(','));
-    check('the wave-3 (dive-only) commander never choreographs a wedge',
-      aggressive.size === 1 && aggressive.has('dive'), [...aggressive].join(','));
-    check('the wave-5 (wedge-only) commander never choreographs a dive',
-      barrage.size === 1 && barrage.has('wedge'), [...barrage].join(','));
-    check('the wave-4 commander still uses BOTH kinds across enough draws',
-      tactical.size === 2 && tactical.has('wedge') && tactical.has('dive'),
+    check('the no-personality baseline still alternates wedge/dive on wave 2',
+      baseSeq.slice(0, 6).join(',') === 'wedge,dive,wedge,dive,wedge,dive', baseSeq.join(','));
+    check('the wave-3 (aggressive) commander uses dive and pincer, never a wedge',
+      aggressive.has('dive') && aggressive.has('pincer') && !aggressive.has('wedge'), [...aggressive].join(','));
+    check('the wave-5 (barrage) commander uses wedge and inverted_wedge, never a dive',
+      barrage.has('wedge') && barrage.has('inverted_wedge') && !barrage.has('dive'), [...barrage].join(','));
+    check('the wave-4 (tactician) commander uses all four tactical formation kinds',
+      tactical.size === 4 && tactical.has('wedge') && tactical.has('pincer') &&
+      tactical.has('inverted_wedge') && tactical.has('sweep'),
       [...tactical].join(','));
     /* The real anti-no-op gate: every personality's ORDERED sequence must
      * differ from the uncommanded one. TACTICIAN is the case this catches --
@@ -1555,13 +1556,13 @@ scenario('19. every personality still grounds the swarm when its commander dies'
           lapsed === relit, `${lapsed} vs ${relit}`);
       }
 
-      /* And so must the formation gap, even though nothing can use it now.
-       * plainGap is built OUTSIDE its seeded region on purpose: a Swarm
-       * constructor draws for fireTimer, which would otherwise shift which
-       * value nextFormationGap() lands on. */
+      /* And so must the personality gap scale, dropping back to the wave's uncommanded gap. */
+      const uncommandedSwarm = new env.SI.Swarm(wave);
+      uncommandedSwarm.commander = null;
+      const uncommandedGap = withSeed(GAP_SEED, () => uncommandedSwarm.nextFormationGap());
       const gapAfter = withSeed(GAP_SEED, () => sw.nextFormationGap());
-      check(`wave ${wave}: the formation gap drops back to the unscaled value`,
-        gapAfter === plainGap, `${gapAfter} vs ${plainGap}`);
+      check(`wave ${wave}: the formation gap drops back to the unscaled personality value`,
+        gapAfter === uncommandedGap, `${gapAfter} vs ${uncommandedGap}`);
     }
   });
 });
@@ -3677,6 +3678,212 @@ scenario('31. a combined shot through a SHIELD redirect spends exactly one pierc
       flights.every((f) => f.log.length === f.died),
       flights.filter((f) => f.log.length !== f.died)
         .map((f) => `${f.log.length}!=${f.died}`).join(' '));
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('32. PINCER, INVERTED WEDGE and SWEEP formations deviate, hold, and return cleanly to grid', () => {
+  withSeed(3232, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const F = C.FORMATION;
+    const game = startedGame(env, 5);
+    quietSwarm(game);
+    const sw = game.swarm;
+    if (sw.kamikaze) sw.kamikaze.diveTimer = Infinity;
+    sw.formationTimer = Infinity;
+
+    /* (a) PINCER: flanks plunge forward and squeeze inward toward center */
+    sw.snapToGrid();
+    sw.formationTimer = Infinity;
+    const pincer = sw.startFormation('pincer', game.world);
+    check('pincer formation started', !!pincer && pincer.kind === 'pincer');
+
+    let pincerHold = false;
+    let pincerLeftDip = 0, pincerRightDip = 0, pincerMidDip = 0;
+    let pincerLeftPinch = 0, pincerRightPinch = 0;
+    for (let t = 0; t < 300 && sw.formation; t++) {
+      tick(env, game);
+      if (sw.formation && sw.formation.phase === 1 && !pincerHold) {
+        pincerHold = true;
+        for (const a of sw.aliens) {
+          if (!a.alive) continue;
+          if (a.col === 0 && a.row === 0) { pincerLeftDip = a.y - a.gy; pincerLeftPinch = a.x - a.gx; }
+          if (a.col === 10 && a.row === 0) { pincerRightDip = a.y - a.gy; pincerRightPinch = a.x - a.gx; }
+          if (a.col === 5 && a.row === 0) { pincerMidDip = a.y - a.gy; }
+        }
+      }
+    }
+    check('pincer reached HOLD phase', pincerHold);
+    check('pincer left and right flanks dip ~PINCER_DEPTH',
+      Math.abs(pincerLeftDip - F.PINCER_DEPTH) < 0.5 && Math.abs(pincerRightDip - F.PINCER_DEPTH) < 0.5,
+      `left=${pincerLeftDip} right=${pincerRightDip}`);
+    check('pincer center stays at grid height', Math.abs(pincerMidDip) < 0.5, `mid=${pincerMidDip}`);
+    check('pincer left flank pinches rightward (positive shift)', pincerLeftPinch > 0, `leftShift=${pincerLeftPinch}`);
+    check('pincer right flank pinches leftward (negative shift)', pincerRightPinch < 0, `rightShift=${pincerRightPinch}`);
+    check('pincer finished and all aliens returned cleanly to grid',
+      sw.formation === null && maxOffGrid(sw) === 0, `off=${maxOffGrid(sw)}`);
+
+    /* (b) INVERTED WEDGE: outer wings advance forward in chevron, center holds back */
+    sw.snapToGrid();
+    sw.formationTimer = Infinity;
+    const invWedge = sw.startFormation('inverted_wedge', game.world);
+    check('inverted_wedge formation started', !!invWedge && invWedge.kind === 'inverted_wedge');
+
+    let invHold = false;
+    let invLeftDip = 0, invRightDip = 0, invMidDip = 0;
+    let invLeftSpread = 0, invRightSpread = 0;
+    for (let t = 0; t < 300 && sw.formation; t++) {
+      tick(env, game);
+      if (sw.formation && sw.formation.phase === 1 && !invHold) {
+        invHold = true;
+        for (const a of sw.aliens) {
+          if (!a.alive) continue;
+          if (a.col === 0 && a.row === 0) { invLeftDip = a.y - a.gy; invLeftSpread = a.x - a.gx; }
+          if (a.col === 10 && a.row === 0) { invRightDip = a.y - a.gy; invRightSpread = a.x - a.gx; }
+          if (a.col === 5 && a.row === 0) { invMidDip = a.y - a.gy; }
+        }
+      }
+    }
+    check('inverted_wedge reached HOLD phase', invHold);
+    check('inverted_wedge outer wings dip ~INVERTED_WEDGE_DEPTH',
+      Math.abs(invLeftDip - F.INVERTED_WEDGE_DEPTH) < 0.5 && Math.abs(invRightDip - F.INVERTED_WEDGE_DEPTH) < 0.5,
+      `left=${invLeftDip} right=${invRightDip}`);
+    check('inverted_wedge center column stays at grid height', Math.abs(invMidDip) < 0.5, `mid=${invMidDip}`);
+    check('inverted_wedge wings spread outward', invLeftSpread < 0 && invRightSpread > 0,
+      `left=${invLeftSpread} right=${invRightSpread}`);
+    check('inverted_wedge completed and all aliens returned cleanly to grid',
+      sw.formation === null && maxOffGrid(sw) === 0, `off=${maxOffGrid(sw)}`);
+
+    /* (c) SWEEP: staggered diagonal wave step across columns */
+    sw.snapToGrid();
+    sw.formationTimer = Infinity;
+    sw.formationCount = 0; // even count -> left-to-right sweep
+    const sweep = sw.startFormation('sweep', game.world);
+    check('sweep formation started', !!sweep && sweep.kind === 'sweep');
+
+    let sweepHold = false;
+    let sweepCol0Dip = 0, sweepCol10Dip = 0, sweepCol5Dip = 0;
+    for (let t = 0; t < 300 && sw.formation; t++) {
+      tick(env, game);
+      if (sw.formation && sw.formation.phase === 1 && !sweepHold) {
+        sweepHold = true;
+        for (const a of sw.aliens) {
+          if (!a.alive) continue;
+          if (a.col === 0 && a.row === 0) { sweepCol0Dip = a.y - a.gy; }
+          if (a.col === 5 && a.row === 0) { sweepCol5Dip = a.y - a.gy; }
+          if (a.col === 10 && a.row === 0) { sweepCol10Dip = a.y - a.gy; }
+        }
+      }
+    }
+    check('sweep reached HOLD phase', sweepHold);
+    check('sweep col 0 stays at 0 offset', Math.abs(sweepCol0Dip) < 0.5, `col0=${sweepCol0Dip}`);
+    check('sweep col 10 dips to ~SWEEP_DEPTH', Math.abs(sweepCol10Dip - F.SWEEP_DEPTH) < 0.5, `col10=${sweepCol10Dip}`);
+    check('sweep col 5 dips to intermediate depth (~SWEEP_DEPTH * 0.5)',
+      Math.abs(sweepCol5Dip - F.SWEEP_DEPTH * 0.5) < 0.5, `col5=${sweepCol5Dip}`);
+    check('sweep completed and returned cleanly to grid',
+      sw.formation === null && maxOffGrid(sw) === 0, `off=${maxOffGrid(sw)}`);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('33. progressive wave formation unlocking and deterministic sequencing', () => {
+  withSeed(3333, () => {
+    const env = loadGame(JS_DIR);
+
+    /* (a) Unlocked pool tiers per wave */
+    const sw1 = new env.SI.Swarm(1);
+    const sw2 = new env.SI.Swarm(2);
+    const sw3 = new env.SI.Swarm(3);
+    const sw4 = new env.SI.Swarm(4);
+    const sw5 = new env.SI.Swarm(5);
+    const sw10 = new env.SI.Swarm(10);
+
+    check('wave 1 unlocked formations is empty', sw1.unlockedFormations().length === 0);
+    check('wave 2 unlocks [wedge, dive]',
+      sw2.unlockedFormations().join(',') === 'wedge,dive', sw2.unlockedFormations().join(','));
+    check('wave 3 unlocks [wedge, dive, pincer]',
+      sw3.unlockedFormations().join(',') === 'wedge,dive,pincer', sw3.unlockedFormations().join(','));
+    check('wave 4 unlocks [wedge, dive, pincer, inverted_wedge]',
+      sw4.unlockedFormations().join(',') === 'wedge,dive,pincer,inverted_wedge', sw4.unlockedFormations().join(','));
+    check('wave 5+ unlocks full pool [wedge, dive, pincer, inverted_wedge, sweep]',
+      sw5.unlockedFormations().join(',') === 'wedge,dive,pincer,inverted_wedge,sweep', sw5.unlockedFormations().join(','));
+    check('wave 10 keeps full pool',
+      sw10.unlockedFormations().join(',') === 'wedge,dive,pincer,inverted_wedge,sweep', sw10.unlockedFormations().join(','));
+
+    /* (b) Deterministic uncommanded rotation on wave 3 */
+    const game3 = startedGame(env, 3);
+    quietSwarm(game3);
+    const s3 = game3.swarm;
+    s3.commander = null; // test pure uncommanded wave progression
+    const seq3 = [];
+    for (let i = 0; i < 6; i++) {
+      s3.snapToGrid();
+      const f = s3.startFormation(null, game3.world);
+      if (f) seq3.push(f.kind);
+    }
+    check('uncommanded wave 3 rotates wedge -> dive -> pincer deterministically',
+      seq3.join(',') === 'wedge,dive,pincer,wedge,dive,pincer', seq3.join(','));
+
+    /* (c) Deterministic uncommanded rotation on wave 5 */
+    const game5 = startedGame(env, 5);
+    quietSwarm(game5);
+    const s5 = game5.swarm;
+    s5.commander = null;
+    const seq5 = [];
+    for (let i = 0; i < 10; i++) {
+      s5.snapToGrid();
+      const f = s5.startFormation(null, game5.world);
+      if (f) seq5.push(f.kind);
+    }
+    check('uncommanded wave 5 rotates all 5 shapes across 10 formations',
+      seq5.join(',') === 'wedge,dive,pincer,inverted_wedge,sweep,wedge,dive,pincer,inverted_wedge,sweep',
+      seq5.join(','));
+  });
+});
+
+/* --------------------------------------------------------------------- */
+scenario('34. wave frequency and animation speed scale smoothly with higher waves', () => {
+  withSeed(3434, () => {
+    const env = loadGame(JS_DIR);
+
+    /* (a) Gap scaling ramp */
+    const gapScales = [];
+    for (let w = 1; w <= 12; w++) {
+      const sw = new env.SI.Swarm(w);
+      gapScales.push({ wave: w, scale: sw.waveGapScale() });
+    }
+    check('wave 1 and 2 gap scale is 1.0 (unscaled baseline)',
+      gapScales[0].scale === 1 && gapScales[1].scale === 1,
+      `w1=${gapScales[0].scale} w2=${gapScales[1].scale}`);
+    check('wave 3 gap scale is 0.9375',
+      Math.abs(gapScales[2].scale - 0.9375) < 1e-6, `w3=${gapScales[2].scale}`);
+    check('wave 10 gap scale clamps to 0.50 (50% interval)',
+      Math.abs(gapScales[9].scale - 0.50) < 1e-6, `w10=${gapScales[9].scale}`);
+    check('wave 12 stays clamped at 0.50',
+      Math.abs(gapScales[11].scale - 0.50) < 1e-6, `w12=${gapScales[11].scale}`);
+
+    /* (b) Animation speed scaling ramp */
+    const speedScales = [];
+    for (let w = 1; w <= 12; w++) {
+      const sw = new env.SI.Swarm(w);
+      speedScales.push({ wave: w, scale: sw.waveSpeedScale() });
+    }
+    check('wave 1 and 2 animation speed scale is 1.0',
+      speedScales[0].scale === 1 && speedScales[1].scale === 1,
+      `w1=${speedScales[0].scale} w2=${speedScales[1].scale}`);
+    check('wave 10 animation speed scale clamps to 0.80 (20% faster transitions)',
+      Math.abs(speedScales[9].scale - 0.80) < 1e-6, `w10=${speedScales[9].scale}`);
+
+    /* (c) Measurable difference in formation gap under identical seed */
+    const SEED = 8888;
+    const sw2 = new env.SI.Swarm(2);
+    const sw10 = new env.SI.Swarm(10);
+    sw10.commander = null; // compare uncommanded wave scaling
+    const gapW2 = withSeed(SEED, () => sw2.nextFormationGap());
+    const gapW10 = withSeed(SEED, () => sw10.nextFormationGap());
+    check('wave 10 formation gap is strictly half of wave 2 gap under identical seed',
+      Math.abs(gapW10 - gapW2 * 0.5) < 1e-6, `w2=${gapW2} w10=${gapW10}`);
   });
 });
 

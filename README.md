@@ -107,12 +107,15 @@ also accelerates as its numbers thin out, and the music tempo rises with the wav
 
 ## Gameplay: evolving formations and cannon upgrades
 
-From wave 2 the swarm periodically breaks formation: a **wedge** (a V-shape,
-apex pointed at you) or a **dive**, where one column peels off and sweeps
-toward your position before rejoining the grid. From wave 3, one alien per
-wave is a visually distinct **commander** — kill it and any choreography in
-progress is cancelled instantly, grounding the swarm back to plain marching
-for the rest of that wave.
+From wave 2 the swarm periodically breaks into dynamic formations, unlocking richer shapes as waves advance:
+- **Wave 2**: **Wedge** (V-shape with center apex dipping forward) and **Dive** (single column commits toward ship $X$).
+- **Wave 3**: **Pincer** (left and right wings plunge forward and pinch inward toward center).
+- **Wave 4**: **Inverted Chevron / Funnel** (outer wings advance forward in chevron, center holds back).
+- **Wave 5+**: **Sweeping Wave** (staggered diagonal wave rolling across the columns).
+
+Formations scale in frequency and speed as you climb: formation cooldown intervals decrease from 7–12s (wave 2) down to 3.5–6s (wave 10+), while transition animations become up to 20% faster.
+
+From wave 3, one alien per wave is a visually distinct **commander** — kill it and any choreography in progress is cancelled instantly, grounding the swarm back to plain marching for the rest of that wave.
 
 That commander is one of three named personalities, cycling by wave number
 (wave 3, 6, 9… get the first, wave 4, 7, 10… the second, and so on). You can
@@ -122,11 +125,11 @@ while it is alive.
 
 | Commander | Tell | While it is alive |
 | --- | --- | --- |
-| **AGGRESSOR** | warm orange halo/crown | choreographs **dives only** — a column peeling at you, never a wedge — and shortens the gap between formations by a quarter, so it re-arms roughly **a third sooner** than an uncommanded swarm; aliens shoot slightly faster |
-| **TACTICIAN** | ice cyan halo/crown | keeps **both** wedges and dives but on its own `wedge → dive → dive` cycle rather than the plain alternation, and nearly **halves** the gap between them (about 1.8× as many formations); leaves the fire rate alone |
-| **BARRAGE** | hot crimson halo/crown | choreographs **wedges only** and calls them a fifth less often, trading choreography for firepower: aliens shoot noticeably faster and one extra alien bullet may be in the air at a time |
+| **AGGRESSOR** | warm orange halo/crown | choreographs **dives and pincers** (`dive → pincer → dive`) and shortens the gap between formations by a quarter (0.75 scale), re-arming roughly **a third sooner**; aliens shoot slightly faster |
+| **TACTICIAN** | ice cyan halo/crown | orchestrates **the full tactical rotation** (`wedge → pincer → inverted_wedge → sweep`) and nearly **halves** the gap between them (0.55 scale, about 1.8× as many formations); leaves the fire rate alone |
+| **BARRAGE** | hot crimson halo/crown | deploys **wide wall formations** (`wedge → inverted_wedge`) with heavy firepower: aliens shoot noticeably faster and one extra alien bullet may be in the air at a time |
 
-The formation gap is the only thing a commander speeds up — the grace period
+The formation gap is scaled further by wave difficulty — the grace period
 at the start of every wave (`FORMATION.FIRST_DELAY`) is never shortened, and
 BARRAGE's extra bullet can never push the swarm above the wave-10 ceiling the
 difficulty table already sets, so late waves stay exactly as hard as they were
