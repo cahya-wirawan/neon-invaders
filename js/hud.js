@@ -45,6 +45,16 @@
       name: 'PIERCE + BOUNCE',
       blurb: 'Pierces aliens AND\nricochets off walls.',
       color: '#b6ff4d'
+    },
+    spread_bounce: {
+      name: 'RICOCHET FLAK',
+      blurb: '3-way spread volley,\nflanks bounce off walls.',
+      color: '#ffaa40'
+    },
+    spread_shield: {
+      name: 'AEGIS SCATTER',
+      blurb: '3-way energy cone,\ndestroys alien bullets.',
+      color: '#38ef7d'
     }
   };
 
@@ -175,6 +185,66 @@
     ctx.fillStyle = grad;
     ctx.fillRect(0, 86, C.WORLD_W, 2);
     ctx.restore();
+
+    // Boss Health Bar. Centred just below the separator bar during milestone boss encounters.
+    if (game.boss && game.boss.alive) {
+      var boss = game.boss;
+      var bx = C.WORLD_W / 2;
+      var by = 96;
+      var barW = 320;
+      var barH = 8;
+      var ratio = SI.clamp(boss.hp / boss.maxHp, 0, 1);
+      var bossColor = boss.phase === 2 ? '#ff2d55' : boss.color;
+
+      G(ctx, boss.name + (boss.phase === 2 ? '  [ENRAGED]' : '  [PHASE 1]'), bx, by - 4, {
+        font: font(11, 800), color: bossColor, align: 'center', blur: 8
+      });
+
+      ctx.save();
+      ctx.fillStyle = '#0f0a1c';
+      ctx.strokeStyle = bossColor;
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(bx - barW / 2, by, barW, barH);
+      ctx.strokeRect(bx - barW / 2, by, barW, barH);
+
+      if (ratio > 0) {
+        var fillW = Math.max(2, (barW - 4) * ratio);
+        ctx.fillStyle = boss.phase === 2 ? '#ff2d55' : (ratio > 0.4 ? '#54ffa8' : '#ffd166');
+        ctx.fillRect(bx - barW / 2 + 2, by + 2, fillW, barH - 4);
+      }
+      ctx.restore();
+    }
+
+    // Secondary EMP super ability meter (bottom-left overlay).
+    if (game.state === SI.STATE.PLAYING) {
+      var empRatio = SI.clamp(game.emp / C.EMP.MAX, 0, 1);
+      var empReady = empRatio >= 1;
+      var empColor = empReady ? C.EMP.COLOR_READY : C.EMP.COLOR;
+      var empLabel = empReady ? 'EMP READY  [X / LT]' : 'EMP ' + Math.floor(empRatio * 100) + '%';
+      G(ctx, empLabel, 26, C.WORLD_H - 45, {
+        font: font(11, 800), color: empColor, blur: empReady ? 10 : 5, alpha: 0.92
+      });
+      ctx.save();
+      ctx.fillStyle = '#0f0a1c';
+      ctx.strokeStyle = empColor;
+      ctx.lineWidth = 1;
+      ctx.fillRect(26, C.WORLD_H - 38, 100, 5);
+      ctx.strokeRect(26, C.WORLD_H - 38, 100, 5);
+      if (empRatio > 0) {
+        ctx.fillStyle = empColor;
+        ctx.fillRect(27, C.WORLD_H - 37, Math.max(2, 98 * empRatio), 3);
+      }
+      ctx.restore();
+    }
+
+    // Toast notification for unlockable achievements.
+    if (game.toastTimer > 0 && game.toast) {
+      var ta = Math.min(1, game.toastTimer);
+      G(ctx, game.toast, C.WORLD_W / 2, 160 - (1 - ta) * 15, {
+        font: font(17, 800), color: '#ffd166', glow: '#ff2d55',
+        blur: 16, align: 'center', alpha: ta
+      });
+    }
   }
 
   function dim(ctx, alpha) {
@@ -204,17 +274,23 @@
     });
 
     var lines = [
-      'MOVE   ←  →   or   A  D        FIRE   SPACE  /  Z',
-      'PAUSE   P              MUTE   M              RESTART   ENTER',
-      'Shoot down incoming fire for bonus points. The saucer pays big.'
+      'MOVE: ← → / A D / GAMEPAD STICK      FIRE: SPACE / Z / BTN A',
+      'EMP BOMB: X / SHIFT / BTN B          PAUSE: P / START',
+      'Defeat boss flagships at Wave 7 & 14. Discover weapon fusions.'
     ];
     for (var i = 0; i < lines.length; i++) {
       G(ctx, lines[i], C.WORLD_W / 2, 520 + i * 34, {
-        font: font(17, 600), color: '#8fb6d8', blur: 6, align: 'center', alpha: 0.9
+        font: font(16, 600), color: '#8fb6d8', blur: 6, align: 'center', alpha: 0.9
       });
     }
-    G(ctx, 'HI-SCORE  ' + SI.formatScore(game.hi), C.WORLD_W / 2, 650, {
-      font: font(18), color: '#ffd166', blur: 12, align: 'center', alpha: 0.9
+
+    var achCount = SI.Achievements ? SI.Achievements.count() : 0;
+    G(ctx, 'ACHIEVEMENTS: ' + achCount + ' / 10 UNLOCKED', C.WORLD_W / 2, 640, {
+      font: font(14, 700), color: '#00f5d4', blur: 8, align: 'center', alpha: 0.9
+    });
+
+    G(ctx, 'HI-SCORE  ' + SI.formatScore(game.hi), C.WORLD_W / 2, 672, {
+      font: font(17, 700), color: '#ffd166', blur: 12, align: 'center', alpha: 0.9
     });
 
     // Bottom-LEFT, not bottom-right: js/net.js's opt-in online panel is a
@@ -281,8 +357,6 @@
       // source icons already use: the BOUNCE icon's pair of wall posts, and
       // the PIERCE icon's long shaft plus its two cross-bar markers -- the
       // shaft tilted so it reads as a ricochet rather than a straight lance.
-      // Flat fillRect/rotate only -- no expensive blurred-shadow glow is
-      // introduced here, which verify.sh's AC13 (d) machine-checks.
       ctx.save();
       ctx.rotate(-0.42);
       ctx.fillRect(-3, -24, 6, 48);
@@ -293,6 +367,35 @@
       ctx.globalAlpha = 0.5;
       ctx.fillRect(-20, -24, 3, 48);
       ctx.fillRect(17, -24, 3, 48);
+    } else if (id === 'spread_bounce') {
+      // 3 angled bars with wall posts on the flanks
+      var sbAngles = [-0.34, 0, 0.34];
+      for (i = 0; i < sbAngles.length; i++) {
+        ctx.save();
+        ctx.rotate(sbAngles[i]);
+        ctx.fillRect(-2.5, -20, 5, 30);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(-20, -24, 3, 48);
+      ctx.fillRect(17, -24, 3, 48);
+    } else if (id === 'spread_shield') {
+      // 3 spread lines plus an aegis shield chevron
+      var ssAngles = [-0.32, 0, 0.32];
+      for (i = 0; i < ssAngles.length; i++) {
+        ctx.save();
+        ctx.rotate(ssAngles[i]);
+        ctx.fillRect(-2, -22, 4, 26);
+        ctx.restore();
+      }
+      ctx.beginPath();
+      ctx.moveTo(0, 4);
+      ctx.lineTo(16, 12);
+      ctx.lineTo(0, 24);
+      ctx.lineTo(-16, 12);
+      ctx.closePath();
+      ctx.globalAlpha = 0.65;
+      ctx.fill();
     } else {
       ctx.beginPath();
       ctx.moveTo(0, -24);

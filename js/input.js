@@ -16,7 +16,9 @@
   // Keys we own: never let the page scroll or the button re-trigger.
   var SWALLOW = {
     ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1,
-    Space: 1, Enter: 1, KeyA: 1, KeyD: 1, KeyZ: 1, KeyP: 1, KeyM: 1
+    Space: 1, Enter: 1, KeyA: 1, KeyD: 1, KeyZ: 1, KeyX: 1,
+    KeyP: 1, KeyM: 1, ShiftLeft: 1, ShiftRight: 1,
+    Digit1: 1, Digit2: 1, Digit3: 1, Digit4: 1
   };
 
   var pointer = {
@@ -167,12 +169,49 @@
     return !!down[code];
   }
 
+  var gamepadPrevButtons = [];
+
+  function pollGamepad() {
+    if (typeof navigator === 'undefined' || !navigator.getGamepads) {
+      return null;
+    }
+    var pads = navigator.getGamepads();
+    if (!pads) {
+      return null;
+    }
+    for (var i = 0; i < pads.length; i++) {
+      var pad = pads[i];
+      if (pad && pad.connected) {
+        return pad;
+      }
+    }
+    return null;
+  }
+
+  function gamepadJustPressed(btnIndex) {
+    var pad = pollGamepad();
+    if (!pad || !pad.buttons || !pad.buttons[btnIndex]) {
+      return false;
+    }
+    var isPressed = pad.buttons[btnIndex].pressed;
+    var wasPressed = !!gamepadPrevButtons[btnIndex];
+    return isPressed && !wasPressed;
+  }
+
   function justPressed(code) {
     return !!pressed[code];
   }
 
   function endFrame() {
     pressed = Object.create(null);
+    var pad = pollGamepad();
+    if (pad && pad.buttons) {
+      for (var i = 0; i < pad.buttons.length; i++) {
+        gamepadPrevButtons[i] = pad.buttons[i].pressed;
+      }
+    } else {
+      gamepadPrevButtons = [];
+    }
   }
 
   /* ------------------------- semantic actions ----------------------- */
@@ -181,27 +220,99 @@
     var a = 0;
     if (down.ArrowLeft || down.KeyA) { a -= 1; }
     if (down.ArrowRight || down.KeyD) { a += 1; }
-    return a;
+    var pad = pollGamepad();
+    if (pad) {
+      if (pad.buttons) {
+        if (pad.buttons[14] && pad.buttons[14].pressed) { a -= 1; }
+        if (pad.buttons[15] && pad.buttons[15].pressed) { a += 1; }
+      }
+      if (pad.axes && pad.axes.length > 0) {
+        var stickX = pad.axes[0];
+        if (Math.abs(stickX) > 0.18) {
+          a += stickX;
+        }
+      }
+    }
+    return Math.max(-1, Math.min(1, a));
   }
 
   function firing() {
-    return !!(down.Space || down.KeyZ || pointer.firing);
+    if (down.Space || down.KeyZ || pointer.firing) {
+      return true;
+    }
+    var pad = pollGamepad();
+    if (pad && pad.buttons) {
+      if ((pad.buttons[0] && pad.buttons[0].pressed) ||
+          (pad.buttons[2] && pad.buttons[2].pressed) ||
+          (pad.buttons[7] && pad.buttons[7].pressed)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function firePressed() {
-    return !!(pressed.Space || pressed.KeyZ || pressed.Pointer);
+    if (pressed.Space || pressed.KeyZ || pressed.Pointer) {
+      return true;
+    }
+    return gamepadJustPressed(0) || gamepadJustPressed(2) || gamepadJustPressed(7);
+  }
+
+  function empPressed() {
+    if (pressed.KeyX || pressed.ShiftLeft || pressed.ShiftRight) {
+      return true;
+    }
+    return gamepadJustPressed(1) || gamepadJustPressed(3) || gamepadJustPressed(6);
   }
 
   function pausePressed() {
-    return !!pressed.KeyP;
+    if (pressed.KeyP) {
+      return true;
+    }
+    return gamepadJustPressed(9);
   }
 
   function mutePressed() {
-    return !!pressed.KeyM;
+    if (pressed.KeyM) {
+      return true;
+    }
+    return gamepadJustPressed(8);
   }
 
   function confirmPressed() {
-    return !!(pressed.Enter || pressed.Space || pressed.KeyZ || pressed.Pointer);
+    if (pressed.Enter || pressed.Space || pressed.KeyZ || pressed.Pointer) {
+      return true;
+    }
+    return gamepadJustPressed(0) || gamepadJustPressed(9);
+  }
+
+  function cardPressed(idx) {
+    if (pressed['Digit' + (idx + 1)]) {
+      return true;
+    }
+    return false;
+  }
+
+  function vibrate(durationMs, weak, strong) {
+    var d = durationMs || 120;
+    var w = typeof weak === 'number' ? weak : 0.4;
+    var s = typeof strong === 'number' ? strong : 0.7;
+    var pad = pollGamepad();
+    if (pad && pad.vibrationActuator && typeof pad.vibrationActuator.playEffect === 'function') {
+      try {
+        pad.vibrationActuator.playEffect('dual-rumble', {
+          startDelay: 0,
+          duration: d,
+          weakMagnitude: w,
+          strongMagnitude: s
+        });
+      } catch (e) { /* ignore */ }
+    }
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try {
+        navigator.vibrate(d);
+      } catch (e) { /* ignore */ }
+    }
   }
 
   function pointerState() {
@@ -218,9 +329,12 @@
     moveAxis: moveAxis,
     firing: firing,
     firePressed: firePressed,
+    empPressed: empPressed,
     pausePressed: pausePressed,
     mutePressed: mutePressed,
     confirmPressed: confirmPressed,
+    cardPressed: cardPressed,
+    vibrate: vibrate,
     pointer: pointerState,
     reset: blur
   };

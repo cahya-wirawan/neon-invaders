@@ -30,6 +30,7 @@
     this.prevX = x;
     this.pierce = 0;
     this.bounce = 0;
+    this.antiBullet = false;
   }
 
   Bullet.prototype.update = function (dt, world) {
@@ -1115,8 +1116,221 @@
     }
   };
 
+  /* ------------------------------- Boss ----------------------------- */
+
+  function Boss(wave) {
+    var bcfg = C.BOSS;
+    var wcfg = bcfg.CONFIGS[wave] || (wave >= 14 ? bcfg.CONFIGS[14] : bcfg.CONFIGS[7]);
+    this.wave = wave;
+    this.name = wcfg.name;
+    this.score = wcfg.score;
+    this.maxHp = wcfg.hp;
+    this.hp = this.maxHp;
+    this.w = bcfg.W;
+    this.h = bcfg.H;
+    this.x = C.WORLD_W / 2;
+    this.y = bcfg.Y;
+    this.baseSpeed = wcfg.speed;
+    this.vx = this.baseSpeed;
+    this.color = wcfg.color;
+    this.coreColor = wcfg.coreColor;
+    this.bulletSpeed = wcfg.bulletSpeed;
+    this.baseFireRate = wcfg.fireRate;
+    this.fireTimer = 1.0;
+    this.phase = 1;
+    this.hitFlash = 0;
+    this.alive = true;
+    this.pulse = 0;
+  }
+
+  Boss.prototype.box = function () {
+    return {
+      x: this.x - this.w / 2,
+      y: this.y - this.h / 2,
+      w: this.w,
+      h: this.h
+    };
+  };
+
+  Boss.prototype.update = function (dt, world) {
+    if (!this.alive) { return; }
+
+    this.pulse += dt * 4;
+    if (this.hitFlash > 0) {
+      this.hitFlash = Math.max(0, this.hitFlash - dt);
+    }
+
+    // Phase transition when HP drops to 50% or below
+    var hpRatio = this.hp / this.maxHp;
+    if (hpRatio <= 0.5 && this.phase === 1) {
+      this.phase = 2;
+      this.vx = (this.vx > 0 ? 1 : -1) * this.baseSpeed * 1.35;
+      if (world && world.shake) {
+        world.shake(8, 0.25);
+      }
+    }
+
+    var speed = this.baseSpeed * (this.phase === 2 ? 1.35 : 1.0);
+    this.x += (this.vx > 0 ? 1 : -1) * speed * dt;
+
+    var minX = C.BOSS.MARGIN + this.w / 2;
+    var maxX = C.WORLD_W - C.BOSS.MARGIN - this.w / 2;
+    if (this.x < minX) {
+      this.x = minX;
+      this.vx = Math.abs(this.vx);
+    } else if (this.x > maxX) {
+      this.x = maxX;
+      this.vx = -Math.abs(this.vx);
+    }
+
+    // Fire logic
+    var rate = this.baseFireRate * (this.phase === 2 ? 0.65 : 1.0);
+    this.fireTimer -= dt;
+    if (this.fireTimer <= 0) {
+      this.fireTimer = rate;
+      this.fire(world);
+    }
+  };
+
+  Boss.prototype.fire = function (world) {
+    if (!world || !world.spawnBullet) { return; }
+
+    var vy = this.bulletSpeed;
+    var color = C.COLORS.alienBullet;
+
+    if (this.phase === 1) {
+      // Twin cannons
+      var leftX = this.x - this.w * 0.32;
+      var rightX = this.x + this.w * 0.32;
+      var gunY = this.y + this.h / 2 + 2;
+      world.spawnBullet(new Bullet(leftX, gunY, vy, 'alien', color));
+      world.spawnBullet(new Bullet(rightX, gunY, vy, 'alien', color));
+    } else {
+      // Phase 2: Enraged 3-way burst
+      var cX = this.x;
+      var gY = this.y + this.h / 2 + 2;
+      var bLeft = new Bullet(cX - 24, gY, vy, 'alien', color);
+      var bCenter = new Bullet(cX, gY, vy * 1.1, 'alien', '#ff2d55');
+      var bRight = new Bullet(cX + 24, gY, vy, 'alien', color);
+      bLeft.vx = -60;
+      bRight.vx = 60;
+      world.spawnBullet(bLeft);
+      world.spawnBullet(bCenter);
+      world.spawnBullet(bRight);
+    }
+
+    if (world && world.particles) {
+      world.particles.emitSparks(this.x, this.y + this.h / 2, C.COLORS.alienBullet, 6, 0, 1, 0.8);
+    }
+  };
+
+  Boss.prototype.takeDamage = function (amount, world) {
+    if (!this.alive) { return; }
+    this.hp = Math.max(0, this.hp - (amount || 1));
+    this.hitFlash = 0.08;
+
+    if (world && world.particles) {
+      var sparkColor = this.phase === 2 ? '#ff2d55' : this.coreColor;
+      world.particles.emitSparks(this.x + SI.rand(-30, 30), this.y + SI.rand(-10, 10), sparkColor, 6, 0, 1, Math.PI);
+    }
+    if (world && world.audio && world.audio.alienHit) {
+      world.audio.alienHit();
+    }
+
+    if (this.hp <= 0) {
+      this.die(world);
+    }
+  };
+
+  Boss.prototype.die = function (world) {
+    this.alive = false;
+    this.hp = 0;
+    if (world && world.particles) {
+      world.particles.emitExplosion(this.x, this.y, this.color, 48, 2.0);
+      world.particles.emitDebris(this.x, this.y, this.coreColor, 20, 1.6);
+      world.particles.emitSparks(this.x, this.y, '#ffffff', 24, 0, 0, Math.PI * 2);
+    }
+    if (world && world.shake) {
+      world.shake(20, 0.5);
+    }
+    if (world && world.audio && world.audio.ufoKilled) {
+      world.audio.ufoKilled();
+    }
+  };
+
+  Boss.prototype.draw = function (ctx) {
+    if (!this.alive) { return; }
+
+    var x = this.x;
+    var y = this.y;
+    var w = this.w;
+    var h = this.h;
+    var halfW = w / 2;
+    var halfH = h / 2;
+
+    ctx.save();
+
+    // Halo glow using pre-rendered cached glow sprite
+    var glowSprite = SI.FX.glow(this.phase === 2 ? '#ff2d55' : this.color, 42);
+    if (glowSprite) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.55 + Math.sin(this.pulse) * 0.15;
+      ctx.drawImage(glowSprite, x - 84, y - 56, 168, 112);
+      ctx.restore();
+    }
+
+    // Hull polygon
+    var hullColor = this.hitFlash > 0 ? '#ffffff' : (this.phase === 2 ? '#ff4d79' : this.color);
+    ctx.strokeStyle = hullColor;
+    ctx.lineWidth = 3;
+    ctx.fillStyle = '#0a0818';
+
+    ctx.beginPath();
+    ctx.moveTo(x, y - halfH);
+    ctx.lineTo(x + halfW * 0.6, y - halfH * 0.7);
+    ctx.lineTo(x + halfW, y - halfH * 0.2);
+    ctx.lineTo(x + halfW * 0.85, y + halfH * 0.5);
+    ctx.lineTo(x + halfW * 0.4, y + halfH * 0.4);
+    ctx.lineTo(x + halfW * 0.35, y + halfH);
+    ctx.lineTo(x + halfW * 0.25, y + halfH);
+    ctx.lineTo(x + halfW * 0.2, y + halfH * 0.3);
+    ctx.lineTo(x, y + halfH * 0.6);
+    ctx.lineTo(x - halfW * 0.2, y + halfH * 0.3);
+    ctx.lineTo(x - halfW * 0.25, y + halfH);
+    ctx.lineTo(x - halfW * 0.35, y + halfH);
+    ctx.lineTo(x - halfW * 0.4, y + halfH * 0.4);
+    ctx.lineTo(x - halfW * 0.85, y + halfH * 0.5);
+    ctx.lineTo(x - halfW, y - halfH * 0.2);
+    ctx.lineTo(x - halfW * 0.6, y - halfH * 0.7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Inner wing accents
+    ctx.strokeStyle = this.hitFlash > 0 ? '#ffffff' : (this.phase === 2 ? '#ffd166' : '#5ffbf1');
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - halfW * 0.6, y);
+    ctx.lineTo(x - halfW * 0.15, y);
+    ctx.moveTo(x + halfW * 0.15, y);
+    ctx.lineTo(x + halfW * 0.6, y);
+    ctx.stroke();
+
+    // Glowing power core
+    var corePulse = 8 + Math.sin(this.pulse * 1.5) * 3;
+    var coreColor = this.hitFlash > 0 ? '#ffffff' : (this.phase === 2 ? '#ff2d55' : this.coreColor);
+    ctx.fillStyle = coreColor;
+    ctx.beginPath();
+    ctx.arc(x, y - 2, corePulse, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  };
+
   SI.Bullet = Bullet;
   SI.Player = Player;
   SI.Alien = Alien;
   SI.Swarm = Swarm;
+  SI.Boss = Boss;
 })(window.SI = window.SI || {});

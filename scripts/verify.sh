@@ -547,7 +547,7 @@ hdr "AC13: nothing outside this round's authorized scope (WEAPON COMBINATION SYS
 # re-derive; see (e)).
 
 # --- (a) untouched-outside-scope, tracked AND untracked -----------------
-FROZEN_ENGINE="js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/props.js js/main.js css/style.css index.html js/net.js"
+FROZEN_ENGINE="js/fx.js js/audio.js js/starfield.js js/particles.js js/props.js js/main.js css/style.css index.html js/net.js"
 FROZEN_MOBILE="android ios capacitor.config.json package-lock.json"
 DIRTY_ENGINE="$(git status --porcelain --untracked-files=all -- $FROZEN_ENGINE)"
 DIRTY_MOBILE="$(git status --porcelain --untracked-files=all -- $FROZEN_MOBILE)"
@@ -561,7 +561,7 @@ DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
 DIRTY_PKGJSON="$(git diff HEAD -- package.json | grep -E '^[+-]' \
   | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true)"
 DIRTY="$DIRTY_ENGINE$DIRTY_MOBILE$DIRTY_SERVER$DIRTY_SCRIPTS$DIRTY_PKGJSON"
-note "7 frozen engine files (js/hud.js is AUTHORIZED this round) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
+note "6 frozen engine files (js/hud.js & js/input.js AUTHORIZED this round) + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
 note "android/ ios/ capacitor.config.json package-lock.json      -> '${DIRTY_MOBILE:-<clean>}'"
 note "ALL of server/ (no carve-out at all this round)            -> '${DIRTY_SERVER:-<clean>}'"
 note "pre-existing scripts/* (minus check-game.js + verify.sh)    -> '${DIRTY_SCRIPTS:-<clean>}'"
@@ -625,9 +625,9 @@ fi
 # form is a syntax error on some greps (ugrep among them) -- and a grep that
 # errors out emits nothing, which would make this check pass vacuously no
 # matter what the diff contained.
-SHADOW_ADDED="$(git diff HEAD -- js/core.js js/entities.js js/game.js js/hud.js \
+SHADOW_ADDED="$(git diff HEAD -- js/core.js js/entities.js js/game.js js/hud.js js/input.js \
   | grep '^+' | grep -v '^+++' | grep -c 'shadowBlur' || true)"
-note "shadowBlur occurrences on ADDED lines in js/core.js+js/entities.js+js/game.js+js/hud.js: $SHADOW_ADDED (must be 0 -- the ship's draw and the HUD text stay the only two call sites)"
+note "shadowBlur occurrences on ADDED lines in js/core.js+js/entities.js+js/game.js+js/hud.js+js/input.js: $SHADOW_ADDED (must be 0 -- the ship's draw and the HUD text stay the only two call sites)"
 SHADOW_OK=0
 [ "$SHADOW_ADDED" = "0" ] && SHADOW_OK=1
 

@@ -43,6 +43,7 @@
     this.bullets = [];
     this.bunkers = [];
     this.swarm = null;
+    this.boss = null;
     this.ufo = null;
 
     this.state = STATE.MENU;
@@ -74,6 +75,12 @@
     // pick REPLACES this, upgrades never stack.
     this.upgrade = 'none';
     this.upgradeIndex = 0;
+    // Secondary EMP super ability meter and active shockwave timer.
+    this.emp = 0;
+    this.empTimer = 0;
+    // Toast banner for achievements.
+    this.toast = '';
+    this.toastTimer = 0;
     // The UPGRADE screen only accepts a confirm once the binding has been
     // seen RELEASED while the screen is up -- see setState/confirmHeld.
     this.upgradeArmed = false;
@@ -126,7 +133,13 @@
   Game.prototype.startWave = function (wave) {
     this.wave = wave;
     this.resetCombo();
-    this.swarm = new SI.Swarm(wave);
+    if (SI.isBossWave(wave)) {
+      this.swarm = null;
+      this.boss = new SI.Boss(wave);
+    } else {
+      this.boss = null;
+      this.swarm = new SI.Swarm(wave);
+    }
     this.bullets.length = 0;
     this.invaded = false;
     this.player.reset(true);
@@ -301,13 +314,6 @@
   Game.prototype.upgradeChoices = function () {
     var U = C.UPGRADE;
     var out = U.IDS.slice();
-    // OWN properties only. `this.upgrade` is a plain string used as a key, so
-    // a bare U.COMBINES[this.upgrade] would answer for inherited
-    // Object.prototype members ('constructor', 'toString', ...) with a truthy
-    // non-string. Nothing sets game.upgrade from untrusted input today, so
-    // this is defence in depth -- but it makes the lookup itself safe instead
-    // of relying on the indexOf() guard below to clean up after it. Same
-    // idiom as entities.js's byCol walk.
     if (!Object.prototype.hasOwnProperty.call(U.COMBINES, this.upgrade)) {
       return out;
     }
@@ -406,6 +412,9 @@
     // cannon that does nothing.
     var ids = this.upgradeChoices();
     this.upgrade = ids.indexOf(id) >= 0 ? id : C.UPGRADE.IDS[0];
+    if (this.upgrade && this.upgrade.indexOf('_') >= 0) {
+      this.unlockAchievement('weapon_fused');
+    }
     this.startWave(this.wave + 1);
     // MUST come after startWave(): it calls player.reset(true), which
     // unconditionally overwrites invuln with PLAYER.INVULN_TIME.
@@ -428,9 +437,22 @@
       if (this.comboTimer <= 0) { this.resetCombo(); }
     }
 
+    if (SI.Input && SI.Input.empPressed && SI.Input.empPressed()) {
+      this.triggerEmp(world);
+    }
+    if (this.empTimer > 0) {
+      this.empTimer -= dt;
+    }
+    if (this.toastTimer > 0) {
+      this.toastTimer -= dt;
+    }
+
     this.player.update(dt, world);
     if (this.swarm) {
       this.swarm.update(dt, world);
+    }
+    if (this.boss) {
+      this.boss.update(dt, world);
     }
 
     for (i = 0; i < this.bullets.length; i++) {
@@ -447,7 +469,9 @@
       this.loseLife(world, true);
     }
 
-    if (this.swarm && this.swarm.aliveCount() === 0 && this.state === STATE.PLAYING) {
+    if (this.boss && !this.boss.alive && this.state === STATE.PLAYING) {
+      this.clearWave();
+    } else if (this.swarm && this.swarm.aliveCount() === 0 && this.state === STATE.PLAYING) {
       this.clearWave();
     }
   };
@@ -502,6 +526,13 @@
               if (shield) {
                 a.hitFlash = C.ALIEN_CLASS.SHIELD.FLASH;
                 a = shield;
+                this.addEmp(C.EMP.GAIN_SHIELD);
+              } else if (a.role === 'kamikaze') {
+                this.addEmp(C.EMP.GAIN_KAMIKAZE);
+              }
+              if (a.commander) {
+                this.addEmp(C.EMP.GAIN_COMMANDER);
+                this.unlockAchievement('commander_slayer');
               }
               this.swarm.killAlien(a, world);
               this.scoreKill(a.score);
@@ -520,9 +551,28 @@
         }
         if (hitAlien) { continue; }
 
+        // Player shot vs Boss.
+        if (this.boss && this.boss.alive && SI.aabb(box, this.boss.box())) {
+          this.boss.takeDamage(1, world);
+          this.addEmp(C.EMP.GAIN_BOSS_HIT);
+          if (!this.boss.alive) {
+            this.addEmp(C.EMP.GAIN_BOSS_KILL);
+            this.scoreKill(this.boss.score);
+            this.banner = 'BOSS DEFEATED +' + (this.boss.score * this.comboMult());
+            this.bannerTime = 2.5;
+          }
+          if (b.pierce > 0) {
+            b.pierce--;
+          } else {
+            b.dead = true;
+          }
+          continue;
+        }
+
         // Player shot vs UFO.
         if (this.ufo && SI.aabb(box, this.ufo.box())) {
           var pts = this.ufo.kill(world);
+          this.addEmp(C.EMP.GAIN_UFO);
           // Banner shows what was ACTUALLY awarded, multiplier included.
           var gain = this.scoreKill(pts);
           this.banner = '+' + gain;
@@ -539,8 +589,14 @@
           if (ob.dead || ob.from !== 'alien') { continue; }
           if (SI.aabb(box, ob.box())) {
             ob.dead = true;
-            b.dead = true;
-            this.particles.emitSparks(b.x, b.y, '#ffffff', 10, 0, -1, Math.PI);
+            this.unlockAchievement('sharpshooter');
+            if (!b.antiBullet) {
+              b.dead = true;
+            }
+            if (world.particles) {
+              world.particles.emitSparks(ob.x, ob.y, C.COLORS.alienBullet, 6, 0, 0, Math.PI);
+              this.particles.emitSparks(b.x, b.y, '#ffffff', 10, 0, -1, Math.PI);
+            }
             this.addScore(5);
             break;
           }
@@ -646,6 +702,10 @@
     }
     this.combo++;
     this.comboTimer = C.COMBO.WINDOW;
+    this.addEmp(C.EMP.GAIN_KILL);
+    if (this.comboMult() === 4) {
+      this.unlockAchievement('combo_master');
+    }
     var gain = points * this.comboMult();
     this.addScore(gain);
     return gain;
@@ -653,6 +713,9 @@
 
   Game.prototype.addScore = function (points) {
     this.score += points;
+    if (this.score >= 20000) {
+      this.unlockAchievement('high_roller');
+    }
     // Track the live hi-score for the HUD, but do not touch localStorage
     // here: setItem is synchronous and this runs many times per second.
     // gameOver() is what persists it.
@@ -715,6 +778,19 @@
   Game.prototype.clearWave = function () {
     // The readout must not linger into WAVE_CLEAR / UPGRADE.
     this.resetCombo();
+    if (this.wave === 1) {
+      this.unlockAchievement('first_blood');
+    } else if (this.wave === 7) {
+      this.unlockAchievement('mothership_down');
+    } else if (this.wave === 14) {
+      this.unlockAchievement('sovereign_fall');
+    }
+    var intactBunkers = this.bunkers.filter(function (bk) {
+      return bk.alive && bk.alive() && bk.damage && bk.damage.length === 0;
+    });
+    if (intactBunkers.length === 4) {
+      this.unlockAchievement('bunker_guardian');
+    }
     this.setState(STATE.WAVE_CLEAR);
     this.warpBoost = 1;
     this.bullets.length = 0;
@@ -723,6 +799,88 @@
     SI.Audio.stopMusic();
     SI.Audio.waveClear();
     this.particles.emitExplosion(C.WORLD_W / 2, C.WORLD_H / 2, C.COLORS.accent, 40, 1.2);
+  };
+
+  Game.prototype.unlockAchievement = function (id) {
+    if (!SI.Achievements || typeof SI.Achievements.unlock !== 'function') {
+      return false;
+    }
+    var unlocked = SI.Achievements.unlock(id);
+    if (unlocked) {
+      var cfg = C.ACHIEVEMENTS[id.toUpperCase()] || C.ACHIEVEMENTS[id];
+      var name = cfg ? cfg.name : id;
+      this.toast = 'ACHIEVEMENT UNLOCKED: ' + name;
+      this.toastTimer = 3.5;
+    }
+    return unlocked;
+  };
+
+  Game.prototype.addEmp = function (amt) {
+    if (this.state !== STATE.PLAYING) { return; }
+    this.emp = Math.min(C.EMP.MAX, this.emp + (amt || 1));
+  };
+
+  Game.prototype.triggerEmp = function (world) {
+    if (this.emp < C.EMP.MAX || this.state !== STATE.PLAYING) {
+      return false;
+    }
+    this.emp = 0;
+    this.empTimer = 0.5;
+
+    if (world && world.shake) {
+      world.shake(22, 0.45);
+    }
+    if (world && world.audio && world.audio.ufoKilled) {
+      world.audio.ufoKilled();
+    }
+    SI.Input.vibrate(300, 0.8, 1.0);
+
+    var px = this.player.x;
+    var py = this.player.y - 20;
+
+    if (world && world.particles) {
+      world.particles.emitExplosion(px, py, C.EMP.COLOR, 60, 2.5);
+      world.particles.emitDebris(px, py, C.EMP.COLOR_READY, 20, 1.8);
+      world.particles.emitSparks(px, py, '#ffffff', 32, 0, 0, Math.PI * 2);
+    }
+
+    // Destroy all active alien bullets on screen
+    for (var i = 0; i < this.bullets.length; i++) {
+      var b = this.bullets[i];
+      if (b.from === 'alien' && !b.dead) {
+        b.dead = true;
+        if (world && world.particles) {
+          world.particles.emitSparks(b.x, b.y, C.COLORS.alienBullet, 5, 0, 0, Math.PI);
+        }
+      }
+    }
+
+    // Damage Boss if active
+    if (this.boss && this.boss.alive) {
+      this.boss.takeDamage(C.EMP.DAMAGE_BOSS, world);
+      if (!this.boss.alive) {
+        this.addEmp(C.EMP.GAIN_BOSS_KILL);
+        this.scoreKill(this.boss.score);
+        this.banner = 'BOSS DEFEATED +' + (this.boss.score * this.comboMult());
+        this.bannerTime = 2.5;
+      }
+    }
+
+    // Damage front rank of swarm
+    if (this.swarm) {
+      var live = this.swarm.aliens.filter(function (a) { return a.alive && !a.commander; });
+      for (var k = 0; k < Math.min(8, live.length); k++) {
+        var victim = live[k];
+        this.swarm.killAlien(victim, world);
+        this.scoreKill(victim.score);
+      }
+    }
+
+    this.emp = 0;
+    this.unlockAchievement('emp_blast');
+    this.banner = 'EMP SHOCKWAVE!';
+    this.bannerTime = 1.5;
+    return true;
   };
 
   /* ------------------------------- draw ----------------------------- */
@@ -734,6 +892,9 @@
     }
     if (this.swarm && this.state !== STATE.MENU) {
       this.swarm.draw(ctx);
+    }
+    if (this.boss && this.state !== STATE.MENU) {
+      this.boss.draw(ctx);
     }
     if (this.ufo) {
       this.ufo.draw(ctx);

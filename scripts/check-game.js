@@ -213,13 +213,17 @@ function makeInput(worldW, worldH) {
     moveAxis: () => state.axis,
     firing: () => state.fire,
     firePressed: () => state.firePress,
+    empPressed: () => !!state.emp,
     pausePressed: () => state.pause,
     mutePressed: () => state.mute,
     confirmPressed: () => state.confirm,
+    cardPressed: (idx) => false,
+    vibrate: () => {},
     pointer: () => state.pointerState,
     reset() {
       state.axis = 0;
       state.fire = false;
+      state.emp = false;
       state.keys = Object.create(null);
       state.pointerState.active = false;
       state.pointerState.firing = false;
@@ -3884,6 +3888,253 @@ scenario('34. wave frequency and animation speed scale smoothly with higher wave
     const gapW10 = withSeed(SEED, () => sw10.nextFormationGap());
     check('wave 10 formation gap is strictly half of wave 2 gap under identical seed',
       Math.abs(gapW10 - gapW2 * 0.5) < 1e-6, `w2=${gapW2} w10=${gapW10}`);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* BOSS ENCOUNTERS (scenarios 35-38).
+ * Milestone boss encounters at wave 7 (VANGUARD MOTHERSHIP) and wave 14
+ * (DREADNOUGHT SOVEREIGN). Multi-phase boss mechanics with dedicated HUD
+ * boss health bar, twin/burst cannons, and zero-RNG initialization. */
+scenario('35. Boss instantiation, milestone wave detection and dimensions', () => {
+  withSeed(3501, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+
+    check('isBossWave returns false for waves 1-6',
+      [1, 2, 3, 4, 5, 6].every((w) => !env.SI.isBossWave(w)));
+    check('isBossWave returns true for milestone waves 7 and 14',
+      env.SI.isBossWave(7) && env.SI.isBossWave(14));
+
+    const g7 = startedGame(env, 7);
+    check('wave 7 spawns boss and no standard swarm',
+      g7.boss !== null && g7.swarm === null);
+    check('wave 7 boss is VANGUARD MOTHERSHIP with 35 HP',
+      g7.boss.name === 'VANGUARD MOTHERSHIP' && g7.boss.maxHp === 35 && g7.boss.hp === 35);
+    check('wave 7 boss score value is 1000', g7.boss.score === 1000);
+    check('wave 7 boss box centered in world',
+      g7.boss.box().x === (C.WORLD_W - g7.boss.w) / 2 && g7.boss.box().w === C.BOSS.W);
+
+    const g14 = startedGame(env, 14);
+    check('wave 14 boss is DREADNOUGHT SOVEREIGN with 70 HP',
+      g14.boss.name === 'DREADNOUGHT SOVEREIGN' && g14.boss.maxHp === 70 && g14.boss.score === 2500);
+  });
+});
+
+scenario('36. Boss damage resolution, hitFlash and pierce laser interaction', () => {
+  withSeed(3601, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const game = startedGame(env, 7);
+    const boss = game.boss;
+
+    check('boss starts at full hp and no hitFlash', boss.hp === 35 && boss.hitFlash === 0);
+
+    /* Direct player bullet hit */
+    game.bullets.push(new env.SI.Bullet(boss.x, boss.y, -C.BULLET.PLAYER_SPEED, 'player', '#fff'));
+    tick(env, game);
+
+    check('boss takes damage from player shot', boss.hp === 34);
+    check('boss triggers hitFlash on damage', boss.hitFlash > 0);
+    check('regular player bullet is consumed upon hitting boss', alivePlayerBullets(game).length === 0);
+
+    /* Piercing laser hit */
+    const laser = new env.SI.Bullet(boss.x, boss.y, -C.BULLET.PLAYER_SPEED, 'player', '#5ffbf1');
+    laser.pierce = 2;
+    game.bullets.push(laser);
+    tick(env, game);
+
+    check('boss takes damage from piercing laser', boss.hp === 33);
+    check('piercing laser decrements pierce counter and remains alive',
+      laser.pierce === 1 && !laser.dead);
+  });
+});
+
+scenario('37. Boss phase transition to Phase 2 (ENRAGED) at <= 50% HP', () => {
+  withSeed(3701, () => {
+    const env = loadGame(JS_DIR);
+    const game = startedGame(env, 7);
+    const boss = game.boss;
+
+    check('boss starts in Phase 1', boss.phase === 1);
+
+    /* Damage boss down to exactly 50% HP */
+    boss.hp = Math.floor(boss.maxHp * 0.5);
+    tick(env, game);
+
+    check('boss transitions to Phase 2 at 50% HP', boss.phase === 2);
+
+    /* In Phase 2, firing spawns a 3-way burst barrage */
+    boss.fireTimer = 0.01;
+    game.bullets.length = 0;
+    tick(env, game);
+
+    const alienShots = game.bullets.filter((b) => !b.dead && b.from === 'alien');
+    check('Phase 2 fires 3-way burst barrage (3 alien bullets)', alienShots.length === 3);
+    check('left and right burst bullets carry horizontal velocity',
+      alienShots.some((b) => b.vx < 0) && alienShots.some((b) => b.vx > 0));
+  });
+});
+
+scenario('38. Boss defeat awards score, triggers wave clear, and HUD renders health bar', () => {
+  withSeed(3801, () => {
+    const env = loadGame(JS_DIR);
+    const game = startedGame(env, 7);
+    const boss = game.boss;
+
+    check('HUD draws boss bar without exception', () => {
+      const hud = new env.SI.HUDStub();
+      env.SI.drawHud(hud.ctx, game);
+      return true;
+    });
+
+    const initScore = game.score;
+    /* Reduce boss HP to 1 and land fatal blow */
+    boss.hp = 1;
+    game.bullets.push(new env.SI.Bullet(boss.x, boss.y, -env.SI.CONFIG.BULLET.PLAYER_SPEED, 'player', '#fff'));
+    tick(env, game);
+
+    check('boss alive flag becomes false on defeat', !boss.alive);
+    check('score increases by boss score value (1000 pts)', game.score === initScore + 1000);
+    check('game transitions to WAVE_CLEAR state on boss defeat',
+      game.state === env.SI.STATE.WAVE_CLEAR);
+    check('defeat banner is populated',
+      game.banner.indexOf('BOSS DEFEATED') >= 0);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* GAMEPAD & RUMBLE (scenario 39).
+ * Gamepad polling, moveAxis analog/D-pad parsing, and vibration trigger. */
+scenario('39. Gamepad input abstraction and haptic vibration', () => {
+  withSeed(3901, () => {
+    const env = loadGame(JS_DIR);
+    const mockInput = env.SI.Input;
+
+    check('mock Input exports gamepad semantic functions',
+      typeof mockInput.empPressed === 'function' && typeof mockInput.vibrate === 'function');
+    check('moveAxis returns 0 when no keys/pads are active', mockInput.moveAxis() === 0);
+    check('empPressed returns false by default', mockInput.empPressed() === false);
+
+    /* Test real js/input.js implementation */
+    const realWin = { SI: { CONFIG: env.SI.CONFIG }, window: {} };
+    realWin.window = realWin;
+    const inputCode = fs.readFileSync(path.join(JS_DIR, 'input.js'), 'utf8');
+    const inputFactory = new Function('window', 'document', 'localStorage', inputCode);
+    inputFactory(realWin, {}, {});
+
+    const realInput = realWin.SI.Input;
+    check('real Input exports empPressed, vibrate and cardPressed',
+      typeof realInput.empPressed === 'function' &&
+      typeof realInput.vibrate === 'function' &&
+      typeof realInput.cardPressed === 'function');
+
+    check('real moveAxis returns 0 by default', realInput.moveAxis() === 0);
+    check('real empPressed returns false by default', realInput.empPressed() === false);
+
+    /* Vibration call executes without throwing */
+    let vibOk = false;
+    try {
+      realInput.vibrate(100, 0.5, 0.8);
+      vibOk = true;
+    } catch (e) { vibOk = false; }
+    check('vibrate() executes safely without throwing', vibOk);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* SECONDARY EMP SUPER BOMB (scenario 40).
+ * Charge accumulation, full 100% threshold, shockwave bullet clearing and damage. */
+scenario('40. Secondary EMP Bomb charge accumulation, activation and bullet clearance', () => {
+  withSeed(4001, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const game = startedGame(env, 2);
+
+    check('EMP starts at initial 0 charge', game.emp === 0);
+
+    /* Cannot trigger below 100% charge */
+    const prematureTrigger = game.triggerEmp(game.world);
+    check('EMP trigger fails when charge < 100%', prematureTrigger === false);
+
+    /* Charge accumulation */
+    game.addEmp(50);
+    check('addEmp increases charge to 50%', game.emp === 50);
+
+    game.addEmp(70);
+    check('addEmp clamps charge at MAX 100%', game.emp === C.EMP.MAX);
+
+    /* Spawn incoming alien bullets and trigger EMP */
+    game.bullets.push(new env.SI.Bullet(400, 300, 200, 'alien', '#ff5bb0'));
+    game.bullets.push(new env.SI.Bullet(500, 350, 200, 'alien', '#ff5bb0'));
+    check('alien bullets are active before EMP',
+      game.bullets.filter((b) => !b.dead && b.from === 'alien').length === 2);
+
+    const triggered = game.triggerEmp(game.world);
+    check('triggerEmp succeeds when fully charged (100%)', triggered === true);
+    check('triggerEmp resets charge back to 0', game.emp === 0);
+    check('triggerEmp arms empTimer shockwave animation', game.empTimer > 0);
+    check('triggerEmp clears all active alien bullets on screen',
+      game.bullets.filter((b) => !b.dead && b.from === 'alien').length === 0);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* RETRO ACHIEVEMENTS SYSTEM (scenario 41).
+ * Achievement unlocking, count tracking, and persistent state verification. */
+scenario('41. Retro Achievements unlocking, counting and persistence', () => {
+  withSeed(4101, () => {
+    const env = loadGame(JS_DIR);
+    const Ach = env.SI.Achievements;
+
+    check('SI.Achievements exists and exports methods',
+      typeof Ach.load === 'function' && typeof Ach.unlock === 'function' && typeof Ach.count === 'function');
+
+    Ach.reset();
+    check('reset clears all achievements to 0', Ach.count() === 0);
+    check('first_blood is locked initially', Ach.isUnlocked('first_blood') === false);
+
+    const unlocked = Ach.unlock('first_blood');
+    check('unlocking first_blood returns true', unlocked === true);
+    check('first_blood is now unlocked', Ach.isUnlocked('first_blood') === true);
+    check('unlocked count is now 1', Ach.count() === 1);
+
+    const duplicateUnlock = Ach.unlock('first_blood');
+    check('unlocking already unlocked achievement returns false (idempotent)', duplicateUnlock === false);
+    check('unlocked count remains 1', Ach.count() === 1);
+
+    /* Test game hook */
+    const game = startedGame(env, 1);
+    game.unlockAchievement('combo_master');
+    check('game.unlockAchievement unlocks combo_master', Ach.isUnlocked('combo_master') === true);
+    check('game toast is populated with achievement notification', game.toast.indexOf('COMBO') >= 0);
+    check('toast timer is set', game.toastTimer > 0);
+  });
+});
+
+/* --------------------------------------------------------------------- */
+/* HUD PRESENTATION OF EMP & ACHIEVEMENTS (scenario 42).
+ * HUD rendering with EMP meter, toast banner, and achievement badge counter. */
+scenario('42. HUD presentation of EMP meter and Achievement badges', () => {
+  withSeed(4201, () => {
+    const env = loadGame(JS_DIR);
+    const game = startedGame(env, 2);
+    game.addEmp(100);
+    game.toast = 'ACHIEVEMENT UNLOCKED: TEST';
+    game.toastTimer = 3.0;
+
+    check('HUD draws playing state with full EMP meter without exception', () => {
+      const hud = new env.SI.HUDStub();
+      env.SI.drawHud(hud.ctx, game);
+      return true;
+    });
+
+    game.setState(env.SI.STATE.MENU);
+    check('HUD draws menu title with achievement counter without exception', () => {
+      const hud = new env.SI.HUDStub();
+      env.SI.drawHud(hud.ctx, game);
+      return true;
+    });
   });
 });
 

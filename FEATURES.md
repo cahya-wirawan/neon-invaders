@@ -510,3 +510,73 @@ restructure of `Player.prototype.fire` in `js/entities.js`, and the
   head start, which is a different feature (a modifier that stacks on top of a
   cannon) and would need the "exactly one upgrade, it replaces" rule that
   `game.upgrade` being a single string encodes to be rethought first.
+
+## Boss Encounters
+
+Milestone multi-phase boss encounters (`CONFIG.BOSS`, `SI.Boss` in `js/entities.js`,
+`isBossWave` in `js/core.js`, HUD health bar in `js/hud.js`, collision and state
+flow in `js/game.js`).
+
+- **[shipped]** **Milestone Boss Waves (Wave 7 & 14)**:
+  - Replaces the 11×5 grid swarm on milestone waves with a single massive
+    alien capital ship.
+  - **Wave 7**: **VANGUARD MOTHERSHIP** (35 HP, 1000 pts score award, 95 u/s speed,
+    twin plasma cannons).
+  - **Wave 14**: **DREADNOUGHT SOVEREIGN** (70 HP, 2500 pts score award, 135 u/s speed,
+    dense 3-way burst barrage).
+- **[shipped]** **Multi-Phase Combat**:
+  - **Phase 1 (HP > 50%)**: Steady lateral sweep, twin wing cannons firing synchronized
+    plasma bolts down the lanes.
+  - **Phase 2 (HP <= 50% / ENRAGED)**: Red hull glow, +35% movement velocity, 3-way
+    fanned plasma burst volleys, and 35% faster firing cadence.
+- **[shipped]** **HUD Boss Health Bar**:
+  - Dedicated retro health bar positioned cleanly below the separator bar (`drawBossBar`
+    in `js/hud.js`).
+  - Real-time HP ratio fill (green -> amber -> red) with live `[PHASE 1]` / `[ENRAGED]`
+    status indicator.
+- **[shipped]** **Zero-Regression Invariants**:
+  - Waves 1–6 (and all standard swarm waves) remain completely bit-identical.
+  - Wave 1 golden checksum digest is 100% unchanged.
+  - Zero new `shadowBlur` call sites (draws use pre-warmed cached gradient glow sprites).
+  - Anti-cheat compliance: boss kill score divided by the multi-second time to defeat
+    stays far below the server's 800 pts/s ceiling.
+
+## Native Gamepad & Haptic Rumble (v1.6.0)
+
+- **[shipped]** **Standard Gamepad API Polling**:
+  - `SI.Input` reads `navigator.getGamepads()` every frame in `update()`.
+  - Analog left stick with standard deadzone ($0.15$), D-pad directional buttons ($12$ & $13$).
+  - Full button mappings: Face buttons (A/Cross for Fire/Confirm, B/Circle/LT for EMP), Shoulder buttons (LB/RB for upgrade card selection), and Menu (Start/Options for Pause).
+- **[shipped]** **Dual-Motor Haptic Vibration Feedback**:
+  - `SI.Input.vibrate(durationMs, weakMagnitude, strongMagnitude)` triggers gamepad `vibrationActuator` (`dual-rumble`) with fallback to mobile `navigator.vibrate`.
+  - Seamless rumble triggers on EMP Super Bomb detonation, boss phase transitions, player destruction, and achievement unlocks.
+
+## Secondary EMP Super Bomb Ability (v1.6.0)
+
+- **[shipped]** **Secondary EMP Charge Gauge (0–100%)**:
+  - Charges incrementally through active gameplay: standard alien kills ($+2\%$), commander kills ($+15\%$), shield redirects ($+8\%$), kamikaze kills ($+6\%$), flying saucers ($+20\%$), boss hits ($+1.5\%$), and boss defeats ($+35\%$).
+  - Meter rendered on bottom-left HUD overlay with ready state animation and prompt (`EMP READY [X / LT]`).
+- **[shipped]** **Shockwave Screen Clearance & Enemy Damage**:
+  - Triggered via `KeyX`, `Shift`, or Gamepad `LT`/`B`/`Y`.
+  - Instantly destroys all incoming alien projectiles on screen.
+  - Deals $12$ direct damage to milestone Boss flagships and eliminates the vanguard rank of the alien swarm.
+  - Triggers camera screen-shake and dual-motor haptic rumble.
+
+## Retro Achievements System (v1.6.0)
+
+- **[shipped]** **10 Offline Persistent Achievements** (`CONFIG.ACHIEVEMENTS`, `SI.Achievements`):
+  - 1. **FIRST CONTACT** (`first_blood`): Clear Wave 1.
+  - 2. **COMBO KING** (`combo_master`): Reach COMBO x4 multiplier.
+  - 3. **DECAPITATION** (`commander_slayer`): Defeat a Swarm Commander.
+  - 4. **TITAN SLAYER** (`mothership_down`): Defeat Vanguard Mothership (Wave 7).
+  - 5. **APEX PREDATOR** (`sovereign_fall`): Defeat Dreadnought Sovereign (Wave 14).
+  - 6. **OVERCLOCKED** (`emp_blast`): Unleash full EMP Super Bomb.
+  - 7. **FUSION MASTER** (`weapon_fused`): Equip any fused Weapon Combo.
+  - 8. **DEADEYE** (`sharpshooter`): Intercept and shoot down an enemy projectile.
+  - 9. **IRON BASTION** (`bunker_guardian`): Clear a wave with all 4 bunkers intact.
+  - 10. **SCORE LEGEND** (`high_roller`): Achieve 20,000+ points in a single run.
+- **[shipped]** **In-Game Toast Notifications & Showcase**:
+  - Smooth animated banner notification slides into view upon unlocking an achievement.
+  - Title Screen displays total unlocked achievements count badge strip.
+  - Offline-first persistence via `localStorage` (degrades gracefully if storage is disabled).
+

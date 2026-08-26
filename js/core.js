@@ -7,7 +7,7 @@
     // scripts/verify.sh to cross-check package.json's version stays in
     // sync. Bump the MINOR number (1.3.0 -> 1.4.0) in both places together
     // for every new feature; patch/major are unused by this policy.
-    VERSION: '1.4.0',
+    VERSION: '1.6.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -290,7 +290,75 @@
       // commander and alien-class palettes use, against every upgrade colour
       // and the plain bullet white.
       pierceBounce: '#b6ff4d',
+      spreadBounce: '#ffaa40',
+      spreadShield: '#38ef7d',
       alienRows: ['#ff6ad5', '#c774f7', '#8a7bff', '#5ad2ff', '#63ffc9']
+    },
+
+    // Milestone Boss Encounters. Replaces the 11x5 swarm on milestone waves
+    // (waves 5, 10, 15...). Boss has multi-phase mechanics, animated twin/burst
+    // cannons, hitFlash, and dedicated HUD boss health bar.
+    BOSS: {
+      WAVES: [7, 14],
+      W: 130,
+      H: 52,
+      Y: 155,
+      MARGIN: 80,
+      CONFIGS: {
+        7: {
+          name: 'VANGUARD MOTHERSHIP',
+          hp: 35,
+          score: 1000,
+          speed: 105,
+          fireRate: 0.95,
+          bulletSpeed: 330,
+          color: '#ff2d55',
+          coreColor: '#ffd166'
+        },
+        14: {
+          name: 'DREADNOUGHT SOVEREIGN',
+          hp: 70,
+          score: 2500,
+          speed: 135,
+          fireRate: 0.70,
+          bulletSpeed: 380,
+          color: '#ff007f',
+          coreColor: '#5ffbf1'
+        }
+      }
+    },
+
+    // Secondary EMP Super Bomb ability. Fills from 0 to 100% via kills,
+    // combos, commanders, UFOs and boss combat. Unleashed via KeyX / Shift /
+    // Gamepad LT/B/Y. Clears enemy bullets, damages enemies, triggers haptic
+    // rumble and shockwave ring.
+    EMP: {
+      MAX: 100,
+      INITIAL: 0,
+      GAIN_KILL: 2.0,
+      GAIN_COMMANDER: 15.0,
+      GAIN_SHIELD: 8.0,
+      GAIN_KAMIKAZE: 6.0,
+      GAIN_UFO: 20.0,
+      GAIN_BOSS_HIT: 1.5,
+      GAIN_BOSS_KILL: 35.0,
+      DAMAGE_BOSS: 12,
+      COLOR: '#5ffbf1',
+      COLOR_READY: '#ffd166'
+    },
+
+    // Persistent offline achievements (saved in localStorage).
+    ACHIEVEMENTS: {
+      FIRST_BLOOD: { id: 'first_blood', name: 'FIRST CONTACT', desc: 'Clear Wave 1', icon: '1', color: '#00f5d4' },
+      COMBO_MASTER: { id: 'combo_master', name: 'COMBO KING', desc: 'Reach COMBO x4 multiplier', icon: 'x4', color: '#ff2a6d' },
+      COMMANDER_SLAYER: { id: 'commander_slayer', name: 'DECAPITATION', desc: 'Defeat a Swarm Commander', icon: '★', color: '#ffd166' },
+      MOTHERSHIP_DOWN: { id: 'mothership_down', name: 'TITAN SLAYER', desc: 'Defeat Vanguard Mothership', icon: 'M', color: '#ff2d55' },
+      SOVEREIGN_FALL: { id: 'sovereign_fall', name: 'APEX PREDATOR', desc: 'Defeat Dreadnought Sovereign', icon: 'Ω', color: '#5ffbf1' },
+      EMP_BLAST: { id: 'emp_blast', name: 'OVERCLOCKED', desc: 'Unleash full EMP Super Bomb', icon: '⚡', color: '#5ffbf1' },
+      WEAPON_FUSED: { id: 'weapon_fused', name: 'FUSION MASTER', desc: 'Equip any fused Weapon Combo', icon: '⚛', color: '#a8ff78' },
+      SHARPSHOOTER: { id: 'sharpshooter', name: 'DEADEYE', desc: 'Destroy an enemy projectile', icon: '⌖', color: '#38ef7d' },
+      BUNKER_GUARDIAN: { id: 'bunker_guardian', name: 'IRON BASTION', desc: 'Clear wave with 4 bunkers intact', icon: '🛡', color: '#05d9e8' },
+      HIGH_ROLLER: { id: 'high_roller', name: 'SCORE LEGEND', desc: 'Achieve 20,000+ points', icon: '👑', color: '#ffd166' }
     }
   };
 
@@ -413,8 +481,83 @@
     return s;
   }
 
+  function isBossWave(wave) {
+    return wave === 7 || wave === 14 || (wave > 14 && wave % 7 === 0);
+  }
+
+  function getCombinedUpgrade(current, candidate) {
+    if (!current || !candidate) { return null; }
+    var key = current + '+' + candidate;
+    return CONFIG.UPGRADE.COMBINED_MAP[key] || null;
+  }
+
+  var ACHIEVEMENTS_KEY = 'neon-invaders-achievements';
+  var unlockedAchievements = null;
+
+  function loadAchievements() {
+    if (unlockedAchievements) { return unlockedAchievements; }
+    unlockedAchievements = {};
+    if (typeof localStorage !== 'undefined') {
+      try {
+        var raw = localStorage.getItem(ACHIEVEMENTS_KEY);
+        if (raw) {
+          unlockedAchievements = JSON.parse(raw) || {};
+        }
+      } catch (e) {
+        unlockedAchievements = {};
+      }
+    }
+    return unlockedAchievements;
+  }
+
+  function saveAchievements() {
+    if (typeof localStorage !== 'undefined' && unlockedAchievements) {
+      try {
+        localStorage.setItem(ACHIEVEMENTS_KEY, JSON.stringify(unlockedAchievements));
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  function isAchievementUnlocked(id) {
+    var map = loadAchievements();
+    return !!map[id];
+  }
+
+  function unlockAchievement(id) {
+    var map = loadAchievements();
+    if (map[id]) { return false; }
+    map[id] = { unlockedAt: new Date().toISOString() };
+    saveAchievements();
+    return true;
+  }
+
+  function getUnlockedCount() {
+    var map = loadAchievements();
+    return Object.keys(map).length;
+  }
+
+  function resetAchievements() {
+    unlockedAchievements = {};
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem(ACHIEVEMENTS_KEY);
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  SI.Achievements = {
+    load: loadAchievements,
+    save: saveAchievements,
+    isUnlocked: isAchievementUnlocked,
+    unlock: unlockAchievement,
+    count: getUnlockedCount,
+    reset: resetAchievements
+  };
+
   SI.CONFIG = CONFIG;
   SI.waveConfig = waveConfig;
+  SI.isBossWave = isBossWave;
+  SI.getCombinedUpgrade = getCombinedUpgrade;
   SI.clamp = clamp;
   SI.lerp = lerp;
   SI.smoothstep = smoothstep;
