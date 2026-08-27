@@ -51,8 +51,10 @@ multiplier, the alien classes, or anything they reach — `js/core.js`,
 ```
 node scripts/check-game.js    # formations + upgrades + commander
                               # personalities + kill-streak multiplier +
-                              # alien classes + weapon combinations,
-                              # headless, 31 scenarios
+                              # alien classes + weapon combinations +
+                              # boss encounters + gamepad/EMP/achievements +
+                              # phase aliens + CRT visual modes + Wave 21 Hive Nexus,
+                              # headless, 46 scenarios (538 checks)
 ```
 
 or just open `index.html` directly (`file://` works too, since scripts are
@@ -134,11 +136,10 @@ late waves stay hard without becoming unfair.
 cannon-refit screen, and `applyUpgrade()` — not `WAVE_CLEAR` — is what calls
 `startWave()`. Exactly one upgrade is active at a time and a new pick replaces
 the old one. The card list comes from `Game.upgradeChoices()`, not from
-`CONFIG.UPGRADE.IDS` directly: when the active cannon is one half of the one
-shipped **weapon combination** (`UPGRADE.COMBINED_ID`, pierce + bounce fused
-onto a single bullet), the *complementary* card is substituted for the combine
-card in that card's own slot. It is a substitution, never a fifth card —
-five cards do not fit `WORLD_W` — so the list is always four long and every
+`CONFIG.UPGRADE.IDS` directly: when the active cannon is one half of an active
+**weapon combination** (`UPGRADE.COMBINED_IDS`: `pierce_bounce` and `spread_bounce` "Prism Scatter"),
+the *complementary* card is substituted for the combine card in that card's own slot.
+It is a substitution, never a fifth card — five cards do not fit `WORLD_W` — so the list is always four long and every
 card rect, digit binding and arrow wrap is unchanged. Because fire and confirm
 share Space/Z/tap, the pick needs *two*
 gates before it will accept a confirm: the binding must be seen released after
@@ -148,44 +149,27 @@ locks in card 0. `PAUSED` remembers where it came from (`pausedFrom`) and
 restores the frozen `stateTimer`, because on the upgrade screen that timer *is*
 the `PICK_TIMEOUT` auto-select countdown.
 
-**Formations: grid anchor vs. offset (`entities.js`).** From
-`FORMATION.FROM_WAVE` up, the swarm periodically choreographs a wedge or a
-column dive. Every alien carries a grid anchor (`gx`/`gy`), a formation offset
-(`fx`/`fy`) and the effective position (`x`/`y`) that everything else draws,
-shoots and collides against; effective = anchor + offset × eased `k`. Only the
-anchor is moved by the classic march, and edge bounce, descent and the invasion
-floor are all decided from `gridBounds()`, never from the displaced positions —
-which is what makes it impossible for choreography to advance or delay an
-invasion. With no formation running, `k` is 0 and `x`/`y` are exactly `gx`/`gy`,
-so classic play is bit-identical (proven by `check-game.js`'s golden checksum).
+**Formations & Alien Classes (`entities.js`).** From `FORMATION.FROM_WAVE` up,
+the swarm periodically choreographs tactical formations (Wedge, Dive, Pincer, Inverted Wedge, Sweep).
+Every alien carries a grid anchor (`gx`/`gy`), a formation offset (`fx`/`fy`) and the effective position (`x`/`y`).
+Alien classes (`shield` on row 2, `kamikaze` on row 4, `phase` on row 1) are deterministically
+assigned from their wave gates (`CONFIG.ALIEN_CLASS`) without drawing extra RNG.
+Phase aliens cycle between solid active and intangible cloaked states with a high-frequency flicker tell.
 One commander per wave from `COMMANDER.FROM_WAVE` up choreographs the swarm:
 kill it and formations are cancelled and disabled for the rest of the wave.
-That commander wears one of `COMMANDER.PERSONALITIES` — picked from the wave
-number, not drawn — which modulates the existing hooks only: which formation
-kinds it cycles through, the gap between formations, the alien fire delay, and
-the simultaneous-bullet cap (clamped to `COMMANDER.MAX_ALIEN_BULLETS`, the
-`WAVES` table's own ceiling, so a personality can't outrank the wave-10 cap
-above). Everything reads it through `Swarm.activePersonality()`, which returns
-null as soon as the commander dies, so no personality needs death-path code of
-its own. Waves below `COMMANDER.FROM_WAVE` have no personality at all, which is
-why the wave-1 golden checksum stays pinned; from there up a personality does
-intentionally change how many RNG draws a wave consumes, so don't read
-stream-invariance into commanded waves.
+That commander wears one of `COMMANDER.PERSONALITIES` (AGGRESSOR, TACTICIAN, BARRAGE).
 
-**Audio (`audio.js`).** One `AudioContext`, created lazily inside the first
-user-gesture handler (`SI.Input.onFirstGesture`, wired up in `main.js`) —
-browsers block autoplay without a gesture. SFX are oscillator/noise voices
-with gain envelopes; music is a bass + arpeggio + drum loop scheduled with a
-25ms lookahead timer against `ctx.currentTime`, not driven directly off the
-rAF loop. On tab visibility change, `main.js` calls `SI.Audio.unlock()` to
-recover a possibly-suspended context — it never creates a new one outside a
-gesture.
+**Milestone Boss Encounters (`entities.js`, `game.js`, `hud.js`).** On milestone
+waves (`isBossWave`: 7, 14, 21), the grid swarm is replaced by a massive capital ship
+(Wave 7 Vanguard Mothership, Wave 14 Dreadnought Sovereign, Wave 21 Hive Nexus).
+Bosses feature multi-phase combat escalations, distinct barrage patterns, and a dedicated HUD health bar.
 
-**Rendering tricks (`fx.js`, `particles.js`).** Glow/bloom is faked cheaply:
+**Rendering tricks & CRT Modes (`fx.js`, `particles.js`).** Glow/bloom is faked cheaply:
 gradient sprites are rendered once into offscreen canvases at startup and
 blitted with `globalCompositeOperation = 'lighter'`; the expensive
 `shadowBlur` is reserved for HUD text and the player ship only, never used
-per-particle. The particle system is a fixed-size pool (cap 1200) — don't
+per-particle. `fx.js` provides a 3-stage CRT visual filter (`OFF`, `SCANLINES`, `PHOSPHOR`)
+toggled via `KeyC` and persisted to `localStorage`. The particle system is a fixed-size pool (cap 1200) — don't
 replace it with unbounded array growth.
 
 ## Gauntlet Loop (multi-agent review)
