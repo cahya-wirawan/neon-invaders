@@ -638,33 +638,23 @@
       var swarmAliens = this.swarm.aliens;
       for (i = 0; i < swarmAliens.length; i++) {
         var al = swarmAliens[i];
-        // A diving kamikaze is exempt: it is aimed at the SHIP, and letting
+        // A diving kamikaze or swooper is exempt: it is aimed at the SHIP, and letting
         // it also scrape every bunker it passes through would turn one
         // dodgeable rammer into a guaranteed loss of cover.
-        if (!al.alive || al.dive || al.y + al.h / 2 < C.BUNKER.Y - 4) { continue; }
+        if (!al.alive || al.dive || al.swoop || al.y + al.h / 2 < C.BUNKER.Y - 4) { continue; }
         for (j = 0; j < this.bunkers.length; j++) {
           if (this.bunkers[j].crushBelow(al.box())) {
             this.particles.emitSparks(al.x, al.y + al.h / 2, C.COLORS.bunker, 4, 0, 1, 1.2);
           }
         }
       }
-      // KAMIKAZE CONTACT -- the only alien-vs-player test in the game. It
-      // exists solely because a diving kamikaze leaves the region
-      // FORMATION.MAX_Y keeps every other alien out of; the marching swarm
-      // still trips the invasion floor (SWARM.FLOOR_Y) long before it could
-      // overlap the ship, so nothing else needs one. The condition is
-      // derived from the SAME three tests the alien-bullet branch above
-      // uses: player alive, invulnerability lapsed, boxes overlap. It reads
-      // the EFFECTIVE box, never gx/gy, and it never WRITES gx/gy, so it
-      // cannot displace the grid onInvasion() is decided from. It DOES kill
-      // an alien, and one fewer alien changes Swarm.currentSpeed()'s pacing
-      // and gridBounds()'s extent just like any other kill -- ordinary
-      // difficulty-curve behaviour, not a special power of this branch.
-      // No scoreKill(): ramming the ship is not a kill the player made.
+      // KAMIKAZE & EAGLE SWOOP CONTACT -- alien-vs-player tests in the game.
+      // A diving kamikaze or swooping eagle leaves the region FORMATION.MAX_Y keeps
+      // every other alien out of. If it contacts the player ship, it costs a life.
       if (this.player.alive && this.player.invuln <= 0) {
         for (i = 0; i < swarmAliens.length; i++) {
           var kz = swarmAliens[i];
-          if (!kz.alive || !kz.dive) { continue; }
+          if (!kz.alive || (!kz.dive && !kz.swoop)) { continue; }
           if (SI.aabb(kz.box(), this.player.box())) {
             this.swarm.killAlien(kz, world);   // BEFORE loseLife(): it dies either way
             this.loseLife(world, false);

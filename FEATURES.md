@@ -614,3 +614,19 @@ flow in `js/game.js`).
   - **Phase 3 (< 30% HP / OVERLOAD CRISIS)**: +45% speed, crimson hull glow, and 5-way desperate radial spreads.
   - Dedicated HUD health bar supporting `[PHASE 1]`, `[ENRAGED]`, and `[OVERLOAD]` status banners.
 
+## Intelligent Frenzy & Predatory Eagle Swoops (v1.8.0)
+
+- **[shipped]** **Late-Wave Swarm Intelligence (`CONFIG.FRENZY`)**:
+  - Activates on Wave 2+ whenever the swarm thins down to 5 or fewer surviving aliens (`THRESHOLD: 5`).
+  - Wave 1 remains 100% classic Space Invaders behavior and retains its bit-identical golden checksum.
+- **[shipped]** **Dynamic 2D Sinusoidal Vertical Undulation**:
+  - Remaining survivors break out of 1D horizontal marching into fluid vertical wave weaving (`WAVE_AMP: 18px`, `WAVE_FREQ: 3.4`).
+  - Grid anchors (`gx`/`gy`) remain untouched to keep invasion floors and edge bounds mathematically honest.
+- **[shipped]** **Predatory Eagle Swoop Attacks**:
+  - Periodically, a surviving alien launches an aggressive hunting swoop dive aimed at the player ship.
+  - **Phase 1 (Hunting Dive)**: Curving lateral arc toward `playerX` with scarlet engine thruster flare, firing a high-speed aimed pulse bolt at dive apex.
+  - **Phase 2 (Banking Loop & Recovery)**: Smooth climbing recovery arc that brings the predator back to its grid formation slot.
+  - Direct player collision destroys the diver and costs the player a life if not invulnerable.
+- **[shipped]** **Aimed Leading Fire**:
+  - In frenzy mode, shooter selection intelligently targets the occupied column closest to the player ($70\%$ aim bias).
+

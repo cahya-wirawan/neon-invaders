@@ -53,8 +53,9 @@ node scripts/check-game.js    # formations + upgrades + commander
                               # personalities + kill-streak multiplier +
                               # alien classes + weapon combinations +
                               # boss encounters + gamepad/EMP/achievements +
-                              # phase aliens + CRT visual modes + Wave 21 Hive Nexus,
-                              # headless, 46 scenarios (538 checks)
+                              # phase aliens + CRT visual modes + Wave 21 Hive Nexus +
+                              # Intelligent Frenzy & Eagle Swoops,
+                              # headless, 47 scenarios (553 checks)
 ```
 
 or just open `index.html` directly (`file://` works too, since scripts are
@@ -158,6 +159,13 @@ Phase aliens cycle between solid active and intangible cloaked states with a hig
 One commander per wave from `COMMANDER.FROM_WAVE` up choreographs the swarm:
 kill it and formations are cancelled and disabled for the rest of the wave.
 That commander wears one of `COMMANDER.PERSONALITIES` (AGGRESSOR, TACTICIAN, BARRAGE).
+
+**Intelligent Frenzy & Eagle Swoops (`CONFIG.FRENZY`, `entities.js`).** On Wave 2+,
+when the swarm is reduced to 5 or fewer survivors, Frenzy mode activates. The survivors
+break out of rigid 1D marching into fluid 2D sinusoidal vertical wave weaving, periodically
+launch predatory curved eagle swoop dives toward the player with aimed apex bolts, and
+target the player's column with leading fire. Grid anchors remain untouched, keeping invasion
+floors and edge bounds mathematically honest.
 
 **Milestone Boss Encounters (`entities.js`, `game.js`, `hud.js`).** On milestone
 waves (`isBossWave`: 7, 14, 21), the grid swarm is replaced by a massive capital ship

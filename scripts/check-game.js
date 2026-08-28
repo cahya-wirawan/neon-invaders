@@ -4357,6 +4357,149 @@ scenario('46. Wave 21 Hive Nexus boss encounters, multi-phase scaling and defeat
   });
 });
 
+/* --------------------------------------------------------------------- */
+/* INTELLIGENT FRENZY & EAGLE SWOOP ATTACKS (scenario 47).
+ * Frenzy mode on Wave 2+ when <= 5 aliens left: vertical sine weaving,
+ * predatory eagle swoops toward player with aimed apex fire, and intelligent
+ * targeted shooting. */
+scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wave >= 2, alive <= 5)', () => {
+  withSeed(4701, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const Fz = C.FRENZY;
+
+    check('FRENZY config is defined with FROM_WAVE=2 and THRESHOLD=5',
+      Fz && Fz.FROM_WAVE === 2 && Fz.THRESHOLD === 5);
+
+    /* (a) Wave 1: Frenzy is completely inactive even with <= 5 aliens */
+    const g1 = startedGame(env, 1);
+    const sw1 = g1.swarm;
+    // Kill all but 3 aliens on wave 1
+    for (let i = 3; i < sw1.aliens.length; i++) {
+      sw1.aliens[i].alive = false;
+    }
+    check('(a) Wave 1 has 3 alive aliens', sw1.aliveCount() === 3);
+    const y0_before = sw1.aliens[0].y;
+    tick(env, g1);
+    check('(a) Wave 1 has no frenzy vertical sine weaving', sw1.aliens[0].y === sw1.aliens[0].gy);
+    check('(a) Wave 1 has no eagle swooper', !sw1.aliens[0].swoop && !sw1.aliens[1].swoop && !sw1.aliens[2].swoop);
+
+    /* (b) Wave 2+: Frenzy activates when alive <= 5 */
+    const g2 = startedGame(env, 2);
+    const sw2 = g2.swarm;
+    // Reduce swarm to 4 aliens
+    for (let i = 4; i < sw2.aliens.length; i++) {
+      sw2.aliens[i].alive = false;
+    }
+    check('(b) Wave 2 swarm thinned to 4 aliens', sw2.aliveCount() === 4);
+
+    let observedWeave = false;
+    for (let t = 0; t < 20; t++) {
+      tick(env, g2);
+      const a = sw2.aliens[0];
+      if (a.alive && Math.abs(a.y - a.gy) > 0.5) {
+        observedWeave = true;
+      }
+    }
+    check('(b) Wave 2 survivors dynamically weave vertically (up/down)', observedWeave);
+
+    /* (c) Eagle Swoop Attack Execution */
+    const g3 = startedGame(env, 2);
+    const sw3 = g3.swarm;
+    for (let i = 3; i < sw3.aliens.length; i++) {
+      sw3.aliens[i].alive = false;
+    }
+    sw3.eagleSwoopTimer = 0; // Trigger immediate eagle swoop
+    g3.player.x = 480;
+    tick(env, g3);
+
+    const eagle = sw3.aliens.filter((a) => a.alive && a.swoop)[0];
+    check('(c) An alien launches a predatory eagle swoop', !!eagle);
+    if (eagle) {
+      check('(c) Eagle swoop has targetX set to player X', Math.abs(eagle.swoop.targetX - 480) < 1e-3);
+      check('(c) Eagle start coordinates match initial position',
+        Math.abs(eagle.swoop.startX - eagle.gx) < 15 && Math.abs(eagle.swoop.startY - eagle.gy) < 15);
+
+      let firedApex = false;
+      let bankedUpward = false;
+      let returnedToAnchor = false;
+
+      for (let t = 0; t < 150; t++) {
+        tick(env, g3);
+        if (eagle.alive && eagle.swoop) {
+          if (eagle.swoop.fired) {
+            firedApex = true;
+          }
+          if (eagle.swoop.t / eagle.swoop.duration > 0.6) {
+            bankedUpward = true;
+          }
+        } else if (eagle.alive && !eagle.swoop) {
+          returnedToAnchor = true;
+          break;
+        }
+      }
+
+      check('(c) Eagle fired aimed shot at apex of dive', firedApex);
+      check('(c) Eagle banked upward in climbing recovery arc', bankedUpward);
+      check('(c) Eagle smoothly completed swoop loop and returned to anchor', returnedToAnchor);
+    }
+
+    /* (d) Eagle swoop contact with player ship */
+    const g4 = startedGame(env, 2);
+    const sw4 = g4.swarm;
+    for (let i = 2; i < sw4.aliens.length; i++) {
+      sw4.aliens[i].alive = false;
+    }
+    const victim = sw4.aliens[0];
+    victim.swoop = {
+      t: 0.5,
+      duration: 2.0,
+      startX: 480,
+      startY: 200,
+      targetX: 480,
+      targetY: 648,
+      bankX: 0,
+      fired: true
+    };
+    victim.x = 480;
+    victim.y = 648; // Positioned directly over player ship
+    g4.player.x = 480;
+    g4.player.invuln = 0;
+    const livesPre = g4.lives;
+    g4.collide(g4.world);
+
+    check('(d) Swooping alien colliding with player costs a life', g4.lives === livesPre - 1);
+    check('(d) Swooping alien is destroyed on contact', !victim.alive);
+
+    /* (e) Intelligent shooter selection in frenzy mode */
+    const g5 = startedGame(env, 2);
+    const sw5 = g5.swarm;
+    for (let i = 0; i < sw5.aliens.length; i++) {
+      sw5.aliens[i].alive = false;
+    }
+    // Revive one alien on left (col 1, x ~ 158) and one on right (col 9, x ~ 654)
+    sw5.aliens[1].alive = true;
+    sw5.aliens[1].x = 158;
+    sw5.aliens[1].y = 200;
+    sw5.aliens[9].alive = true;
+    sw5.aliens[9].x = 654;
+    sw5.aliens[9].y = 200;
+
+    // Player positioned at x = 160 (right next to col 1 alien)
+    g5.player.x = 160;
+    g5.world.playerX = 160;
+    let col1Count = 0;
+    for (let sample = 0; sample < 100; sample++) {
+      const shooter = sw5.pickShooter(g5.world);
+      if (shooter === sw5.aliens[1]) {
+        col1Count++;
+      }
+    }
+    check('(e) Frenzy shooter selection intelligently prioritizes closest column to player',
+      col1Count >= 60, `col1Count=${col1Count}/100`);
+  });
+});
+
 if (baselineDir) {
   try { fs.rmSync(baselineDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
 }

@@ -7,7 +7,7 @@
     // scripts/verify.sh to cross-check package.json's version stays in
     // sync. Bump the MINOR number (1.3.0 -> 1.4.0) in both places together
     // for every new feature; patch/major are unused by this policy.
-    VERSION: '1.7.0',
+    VERSION: '1.8.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -235,6 +235,22 @@
         PHASE_TIME: 1.5,
         FLICKER_SPEED: 16
       }
+    },
+
+    // Intelligent Frenzy & Predatory Eagle Swoop Attacks.
+    // When few aliens remain (THRESHOLD or fewer) on Wave 2+, the survivors
+    // become highly intelligent and aggressive: they undulate up and down
+    // dynamically and periodically launch predatory eagle swoop attacks.
+    FRENZY: {
+      FROM_WAVE: 2,       // Wave 1 stays 100% classic Space Invaders
+      THRESHOLD: 5,       // Activates when aliveCount <= 5 aliens
+      WAVE_AMP: 18,       // Vertical sinusoidal up/down weave amplitude (pixels)
+      WAVE_FREQ: 3.4,     // Vertical weave frequency
+      SWOOP_SPEED: 280,   // Eagle swoop dive speed
+      SWOOP_MIN_GAP: 3.5, // Seconds between eagle swoop attacks
+      SWOOP_MAX_GAP: 6.0,
+      SWOOP_DURATION: 2.2,// Duration of full eagle swoop loop
+      AIM_BIAS: 0.70      // Probability shooter prioritizes column closest to playerX
     },
 
     COLORS: {

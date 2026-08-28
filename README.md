@@ -65,8 +65,9 @@ A pick made in the very first instant the screen appears is ignored — release 
 mashing fire through the wave-clear screen can't blow past the choice
 unread; left alone for 12 seconds it picks the highlighted card for you.
 
-## Special Abilities & Features (v1.7.0)
+## Special Abilities & Features (v1.8.0)
 
+- **Intelligent Frenzy & Predatory Eagle Swoops**: When the alien swarm drops to 5 or fewer survivors on Wave 2+, aliens enter Frenzy mode, dynamically weaving up and down in 2D sinusoidal waves, launching hunting eagle swoop dive attacks with aimed apex bolts, and targeting the player ship with leading fire.
 - **Prism Scatter Fused Weapon**: Combines `spread` + `bounce` upgrades into a 3-way ricocheting volley where all projectiles bounce off side walls up to 2 times.
 - **Phase / Cloaking Alien Class**: Specialist cloaked aliens (Wave 6+) that cycle between active solid state and intangible phased states with high-frequency sine flicker tells.
 - **CRT Scanline & Phosphor Bloom Modes**: Real-time switchable visual post-processing (`OFF`, `SCANLINES`, `PHOSPHOR`) toggled with `C` key or via Pause Menu.

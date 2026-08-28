@@ -397,6 +397,7 @@
     this.role = null;
     this.dive = null;
     this.diveTimer = 0;
+    this.swoop = null;
     this.phaseTimer = 0;
     this.phased = false;
     this.w = C.SWARM.ALIEN_W;
@@ -426,7 +427,8 @@
     // crest colour is the personality's tell; the BODY keeps the shared
     // commander colour so the unit still reads as "the commander" first.
     if (this.commander) {
-      var haloCrest = (this.personality && this.personality.color) || C.COLORS.commander;
+      var haloCrest = (this.personality && this.personality.color) ?
+        this.personality.color : C.COLORS.commander;
       SI.FX.drawGlow(ctx, SI.FX.glow(haloCrest), this.x, this.y + bob, this.w * 3.1, 0.5);
     }
     // Class tells, same technique: a second additive halo in the class
@@ -441,6 +443,9 @@
       var flicker = Math.sin(this.phaseTimer * (C.ALIEN_CLASS.PHASE.FLICKER_SPEED || 16));
       SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.phaseAlien), this.x, this.y + bob,
         this.phased ? this.w * 2.0 : this.w * 2.6, this.phased ? 0.35 + 0.15 * flicker : 0.5);
+    }
+    if (this.swoop) {
+      SI.FX.drawGlow(ctx, SI.FX.glow('#ff3366'), this.x, this.y + bob, this.w * 3.2, 0.75);
     }
     // A shield that just ATE a hit flares for SHIELD.FLASH seconds. hitFlash
     // is an existing per-alien timer already ticked down in Swarm.update.
@@ -610,7 +615,11 @@
       if (this.shield) { SI.FX.glow(C.COLORS.shieldAlien); }
       if (this.kamikaze) { SI.FX.glow(C.COLORS.kamikaze); }
       if (this.phaseAlien) { SI.FX.glow(C.COLORS.phaseAlien); }
+      if (wave >= (C.FRENZY ? C.FRENZY.FROM_WAVE : 2)) { SI.FX.glow('#ff3366'); }
     }
+
+    this.frenzyTimer = 0;
+    this.eagleSwoopTimer = (C.FRENZY ? C.FRENZY.SWOOP_MIN_GAP : 3.5);
 
     // Applied after the commander block so the timer's own draw (above)
     // keeps its original position in the random stream; this only rescales
@@ -687,6 +696,104 @@
     }
   };
 
+  // EAGLE SWOOP ATTACK.
+  // In Frenzy mode (Wave 2+, aliveCount <= 5), the surviving aliens become
+  // intelligent predators: they weave vertically and periodically launch
+  // a swooping dive attack toward the player's position, firing an aimed
+  // shot at the apex before banking upward in a loop back to the swarm.
+  // Like kamikaze dives, swoops do not displace grid anchors (gx/gy).
+  Swarm.prototype.updateEagleSwoop = function (dt, world) {
+    var Fz = C.FRENZY;
+    if (!Fz || this.wave < Fz.FROM_WAVE || this.aliveCount() > Fz.THRESHOLD) {
+      return;
+    }
+
+    var i, a;
+    var activeSwooper = false;
+    for (i = 0; i < this.aliens.length; i++) {
+      a = this.aliens[i];
+      if (a.alive && a.swoop) {
+        activeSwooper = true;
+        var sw = a.swoop;
+        sw.t += dt;
+        var p = sw.t / sw.duration;
+        if (p < 0.55) {
+          // Phase 1: Predatory eagle swoop toward player target
+          var u = p / 0.55;
+          a.y = sw.startY + (sw.targetY - sw.startY) * Math.sin(u * Math.PI / 2);
+          a.x = sw.startX + (sw.targetX - sw.startX) * u + sw.bankX * Math.sin(u * Math.PI);
+          // Fire aimed pulse bolt near apex of dive
+          if (u >= 0.70 && !sw.fired) {
+            sw.fired = true;
+            if (world && world.spawnBullet) {
+              world.spawnBullet(new Bullet(
+                a.x,
+                a.y + a.h / 2 + 4,
+                this.bulletSpeed * 1.15,
+                'alien',
+                '#ff3366'
+              ));
+              if (world.particles) {
+                world.particles.emitSparks(a.x, a.y + a.h / 2, '#ff3366', 8, 0, 1, 0.8);
+              }
+            }
+          }
+        } else if (p < 1.0) {
+          // Phase 2: Banking upward loop / climb back to formation slot
+          var v = (p - 0.55) / 0.45;
+          a.y = sw.targetY + (a.gy - sw.targetY) * Math.sin(v * Math.PI / 2);
+          a.x = sw.targetX + (a.gx - sw.targetX) * v - sw.bankX * 0.45 * Math.sin(v * Math.PI);
+        } else {
+          // Swoop complete: safely dock back onto grid anchor
+          a.swoop = null;
+          a.x = a.gx;
+          a.y = a.gy;
+        }
+
+        if (a.swoop) {
+          a.x = SI.clamp(a.x, C.FORMATION.EDGE_PAD, C.WORLD_W - C.FORMATION.EDGE_PAD);
+          if (world && world.particles) {
+            world.particles.emitTrail(a.x, a.y - a.h / 2, '#ff3366', 8, 0.15);
+          }
+        }
+      }
+    }
+
+    // Launch a new eagle swoop periodically if none is active
+    if (!activeSwooper) {
+      this.eagleSwoopTimer -= dt;
+      if (this.eagleSwoopTimer <= 0) {
+        this.eagleSwoopTimer = SI.rand(Fz.SWOOP_MIN_GAP, Fz.SWOOP_MAX_GAP);
+        var candidates = [];
+        for (i = 0; i < this.aliens.length; i++) {
+          a = this.aliens[i];
+          if (a.alive && !a.dive && !a.swoop) {
+            candidates.push(a);
+          }
+        }
+        if (candidates.length > 0) {
+          var eagle = SI.pick(candidates);
+          var playerX = (world && typeof world.playerX === 'number') ? world.playerX : C.WORLD_W / 2;
+          var bankDir = (eagle.col % 2 === 0 ? 1 : -1);
+          var bankOffset = bankDir * SI.rand(60, 110);
+          eagle.swoop = {
+            t: 0,
+            duration: Fz.SWOOP_DURATION || 2.2,
+            startX: eagle.x,
+            startY: eagle.y,
+            targetX: playerX,
+            targetY: 570,
+            bankX: bankOffset,
+            fired: false
+          };
+          if (world && world.particles) {
+            world.particles.emitSparks(eagle.x, eagle.y, '#ff3366', 14, 0, 1, Math.PI);
+          }
+        }
+      }
+    }
+  };
+
   Swarm.prototype.aliveCount = function () {
     var n = 0;
     for (var i = 0; i < this.aliens.length; i++) {
@@ -705,7 +812,7 @@
     var minX = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
-      if (!a.alive || a.dive) { continue; }
+      if (!a.alive || a.dive || a.swoop) { continue; }
       if (a.x - a.w / 2 < minX) { minX = a.x - a.w / 2; }
       if (a.x + a.w / 2 > maxX) { maxX = a.x + a.w / 2; }
       if (a.y + a.h / 2 > maxY) { maxY = a.y + a.h / 2; }
@@ -793,13 +900,31 @@
       }
     }
 
+    var Fz = C.FRENZY;
+    var isFrenzy = Fz && (this.wave >= Fz.FROM_WAVE) && (alive <= Fz.THRESHOLD);
+    if (isFrenzy) {
+      this.frenzyTimer += dt;
+    }
+
     // Writes the effective x/y for this tick. With no formation running
     // it is a plain `x = gx; y = gy`.
     this.updateFormation(dt, world);
+
+    // If frenzy is active, survivors dynamically weave up and down
+    if (isFrenzy) {
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (!a.alive || a.dive || a.swoop) { continue; }
+        var waveOffset = Math.sin(this.frenzyTimer * Fz.WAVE_FREQ + a.col * 0.9) * Fz.WAVE_AMP;
+        a.y = Math.min(a.gy + waveOffset, (C.FORMATION && C.FORMATION.MAX_Y) || 560);
+      }
+    }
+
     // Runs AFTER applyFormation() has written everyone else's effective
-    // position, because a committed diver owns its x/y outright and must
+    // position, because a committed diver or swooper owns its x/y outright and must
     // have the last word on them.
     this.updateDive(dt, world);
+    this.updateEagleSwoop(dt, world);
 
     // Aliens shoot: timer + probability, from the lowest alien in a
     // random occupied column so nobody shoots through a friend.
@@ -821,7 +946,7 @@
         cap = Math.min(cap + p.extraBullets, C.COMMANDER.MAX_ALIEN_BULLETS);
       }
       if (world.alienBulletCount() < cap && SI.chance(0.86)) {
-        var shooter = this.pickShooter();
+        var shooter = this.pickShooter(world);
         if (shooter) {
           world.spawnBullet(new Bullet(
             shooter.x,
@@ -849,9 +974,9 @@
   Swarm.prototype.snapToGrid = function () {
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
-      // A committed kamikaze is not part of the grid any more: it owns its
-      // own absolute x/y and must not be yanked back onto its anchor.
-      if (a.dive) { continue; }
+      // A committed kamikaze or swooper is not part of the grid any more:
+      // it owns its own absolute x/y and must not be yanked back onto its anchor.
+      if (a.dive || a.swoop) { continue; }
       a.fx = 0;
       a.fy = 0;
       a.x = a.gx;
@@ -920,12 +1045,12 @@
         kind = pool.length ? pool[this.formationCount % pool.length] : 'wedge';
       }
     }
-    // A committed diver is never a formation participant: applyFormation()
+    // A committed diver or swooper is never a formation participant: applyFormation()
     // and snapToGrid() both skip it, so writing fx/fy on it would only leave
     // stale offsets on an object nothing reads -- a landmine for any future
     // "abort the dive and rejoin the formation" path.
     for (i = 0; i < this.aliens.length; i++) {
-      if (this.aliens[i].dive) { continue; }
+      if (this.aliens[i].dive || this.aliens[i].swoop) { continue; }
       this.aliens[i].fx = 0;
       this.aliens[i].fy = 0;
     }
@@ -936,11 +1061,11 @@
       var cols = [];
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        // Same guard on the candidate columns: a diver is not eligible, and
+        // Same guard on the candidate columns: a diver/swooper is not eligible, and
         // counting it could hand the whole formation a column whose only
         // "member" has left the grid -- a full ease-in/hold/ease-out cycle
         // spent displacing nothing.
-        if (a.alive && !a.dive && cols.indexOf(a.col) < 0) { cols.push(a.col); }
+        if (a.alive && !a.dive && !a.swoop && cols.indexOf(a.col) < 0) { cols.push(a.col); }
       }
       if (!cols.length) { return null; }
       col = SI.pick(cols);
@@ -950,7 +1075,7 @@
         world.playerX : C.WORLD_W / 2;
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive || a.col !== col) { continue; }
+        if (!a.alive || a.dive || a.swoop || a.col !== col) { continue; }
         a.fy = F.DIVE_DEPTH;
         a.fx = targetX - a.gx;
       }
@@ -958,7 +1083,7 @@
       // Outer wings plunge forward and pinch inward toward center
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive) { continue; }
+        if (!a.alive || a.dive || a.swoop) { continue; }
         var dp = Math.abs(a.col - m);
         a.fy = m > 0 ? F.PINCER_DEPTH * (dp / m) : 0;
         a.fx = -(a.col - m) * F.PINCER_PINCH;
@@ -967,7 +1092,7 @@
       // Inverted Chevron: outer wings advance forward, center stays back
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive) { continue; }
+        if (!a.alive || a.dive || a.swoop) { continue; }
         var di = Math.abs(a.col - m);
         a.fy = m > 0 ? F.INVERTED_WEDGE_DEPTH * (di / m) : 0;
         a.fx = (a.col - m) * F.WEDGE_PINCH;
@@ -978,7 +1103,7 @@
       var reverse = (this.formationCount % 2 !== 0);
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive) { continue; }
+        if (!a.alive || a.dive || a.swoop) { continue; }
         var frac = maxCol > 0 ? (reverse ? (maxCol - a.col) / maxCol : a.col / maxCol) : 0;
         a.fy = F.SWEEP_DEPTH * frac;
         a.fx = 0;
@@ -987,7 +1112,7 @@
       // V-shape: apex at the centre column, pinched inwards.
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive) { continue; }
+        if (!a.alive || a.dive || a.swoop) { continue; }
         var d = Math.abs(a.col - m);
         a.fy = m > 0 ? F.WEDGE_DEPTH * (1 - d / m) : F.WEDGE_DEPTH;
         a.fx = -(a.col - m) * F.WEDGE_PINCH;
@@ -1052,7 +1177,7 @@
     if (!f) {
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive) { continue; }
+        if (!a.alive || a.dive || a.swoop) { continue; }
         a.x = a.gx;
         a.y = a.gy;
       }
@@ -1061,7 +1186,7 @@
 
     for (i = 0; i < this.aliens.length; i++) {
       a = this.aliens[i];
-      if (!a.alive || a.dive) { continue; }
+      if (!a.alive || a.dive || a.swoop) { continue; }
       ox = a.fx * f.k;
       oy = a.fy * f.k;
       ex = a.gx + ox;
@@ -1079,14 +1204,12 @@
     }
   };
 
-  Swarm.prototype.pickShooter = function () {
+  Swarm.prototype.pickShooter = function (world) {
     var byCol = {};
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
-      // A committed rammer is out of the firing line: it is usually the
-      // lowest alien in its column, so leaving it eligible would let it hog
-      // the shooter role all the way down.
-      if (!a.alive || a.dive) { continue; }
+      // A committed rammer or swooper is out of the firing line:
+      if (!a.alive || a.dive || a.swoop) { continue; }
       var cur = byCol[a.col];
       if (!cur || a.y > cur.y) {
         byCol[a.col] = a;
@@ -1098,7 +1221,17 @@
         list.push(byCol[k]);
       }
     }
-    return list.length ? SI.pick(list) : null;
+    if (!list.length) { return null; }
+
+    var Fz = C.FRENZY;
+    if (Fz && this.wave >= Fz.FROM_WAVE && this.aliveCount() <= Fz.THRESHOLD &&
+        world && typeof world.playerX === 'number' && SI.chance(Fz.AIM_BIAS || 0.7)) {
+      list.sort(function (a, b) {
+        return Math.abs(a.x - world.playerX) - Math.abs(b.x - world.playerX);
+      });
+      return list[0];
+    }
+    return SI.pick(list);
   };
 
   Swarm.prototype.killAlien = function (alien, world) {
