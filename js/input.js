@@ -322,6 +322,13 @@
     }
   }
 
+  function bossRushPressed() {
+    if (pressed.KeyB) {
+      return true;
+    }
+    return gamepadJustPressed(3);
+  }
+
   function pointerState() {
     return pointer;
   }
@@ -340,6 +347,7 @@
     pausePressed: pausePressed,
     mutePressed: mutePressed,
     crtPressed: crtPressed,
+    bossRushPressed: bossRushPressed,
     confirmPressed: confirmPressed,
     cardPressed: cardPressed,
     vibrate: vibrate,

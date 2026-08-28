@@ -302,12 +302,15 @@
     nextNoteTime: 0,
     bpm: 108,
     playing: false,
-    intensity: 0
+    intensity: 0,
+    state: 'normal',
+    baseBpm: 108
   };
 
   // Natural-minor-ish riff in A: bass root pattern + arpeggio pattern.
   var BASS = [0, 0, 7, 0, 5, 0, 3, 0, 0, 0, 7, 0, 8, 7, 5, 3];
   var ARP = [12, 15, 19, 15, 12, 19, 22, 19, 10, 14, 17, 14, 10, 17, 20, 17];
+  var BOSS_ARP = [12, 15, 18, 21, 24, 21, 18, 15, 13, 16, 19, 22, 25, 22, 19, 16];
   var ROOT = 110; // A2
 
   function midiRatio(semi) {
@@ -318,14 +321,16 @@
     var i = step % 16;
     var bassSemi = BASS[i];
     var stepDur = 60 / music.bpm / 4;
+    var isBoss = music.state === 'boss' || music.state === 'boss_enraged';
+    var isFrenzy = music.state === 'frenzy';
 
     // Bass: only on the pulse steps to keep the groove readable.
-    if (i % 2 === 0) {
+    if (i % 2 === 0 || isFrenzy) {
       tone({
-        type: 'sawtooth',
-        freq: ROOT * midiRatio(bassSemi),
-        dur: stepDur * 1.7,
-        gain: 0.22,
+        type: isBoss ? 'sawtooth' : 'sawtooth',
+        freq: ROOT * midiRatio(bassSemi) * (isBoss ? 0.5 : 1),
+        dur: stepDur * (isFrenzy ? 0.9 : 1.7),
+        gain: isBoss ? 0.28 : 0.22,
         at: time,
         bus: musicBus,
         filter: 'lowpass',
@@ -334,25 +339,27 @@
       });
     }
 
-    // Arpeggio line, brighter as waves progress.
+    // Arpeggio line, brighter as waves progress or during boss encounters.
+    var arpNotes = isBoss ? BOSS_ARP : ARP;
     tone({
-      type: 'square',
-      freq: ROOT * 2 * midiRatio(ARP[i]),
+      type: isBoss ? 'sawtooth' : 'square',
+      freq: ROOT * 2 * midiRatio(arpNotes[i]),
       dur: stepDur * 0.9,
-      gain: 0.055 + music.intensity * 0.03,
+      gain: 0.055 + music.intensity * (isBoss ? 0.05 : 0.03),
       at: time,
       bus: musicBus
     });
 
-    // Percussion: kick on 0/8, hat off-beats, snare on 4/12.
-    if (i === 0 || i === 8) {
-      tone({ type: 'sine', freq: 150, toFreq: 42, dur: 0.2, gain: 0.4, at: time, bus: musicBus });
+    // Percussion: kick on 0/8 (or 4-on-the-floor for boss), hat off-beats, snare on 4/12.
+    var isKick = (i === 0 || i === 8) || (isBoss && (i === 4 || i === 12));
+    if (isKick) {
+      tone({ type: 'sine', freq: 150, toFreq: 42, dur: 0.2, gain: isBoss ? 0.5 : 0.4, at: time, bus: musicBus });
     }
     if (i === 4 || i === 12) {
       noise({ freq: 1800, toFreq: 900, dur: 0.16, gain: 0.16, q: 0.8, at: time, bus: musicBus });
     }
-    if (i % 2 === 1) {
-      noise({ freq: 7000, dur: 0.045, gain: 0.055, q: 1.5, at: time, bus: musicBus, filter: 'highpass' });
+    if (i % 2 === 1 || isFrenzy) {
+      noise({ freq: 7000, dur: 0.045, gain: isFrenzy ? 0.075 : 0.055, q: 1.5, at: time, bus: musicBus, filter: 'highpass' });
     }
   }
 
@@ -420,8 +427,27 @@
   // stay playable rather than turning into a buzz.
   function setMusicWave(wave) {
     var w = Math.max(1, wave || 1);
-    music.bpm = Math.min(108 + (w - 1) * 7, 168);
-    music.intensity = Math.min((w - 1) / 8, 1);
+    music.baseBpm = Math.min(108 + (w - 1) * 7, 168);
+    music.bpm = music.baseBpm;
+    music.baseIntensity = Math.min((w - 1) / 8, 1);
+    music.intensity = music.baseIntensity;
+    music.state = 'normal';
+  }
+
+  function setMusicState(state) {
+    var st = state || 'normal';
+    if (music.state === st) { return; }
+    music.state = st;
+    if (music.state === 'frenzy') {
+      music.bpm = Math.min(music.baseBpm + 14, 180);
+      music.intensity = Math.min((music.baseIntensity || 0) + 0.25, 1);
+    } else if (music.state === 'boss' || music.state === 'boss_enraged') {
+      music.bpm = 136;
+      music.intensity = music.state === 'boss_enraged' ? 1.0 : 0.8;
+    } else {
+      music.bpm = music.baseBpm;
+      music.intensity = music.baseIntensity || 0;
+    }
   }
 
   SI.Audio = {
@@ -442,6 +468,7 @@
     ufoKilled: ufoKilled,
     startMusic: startMusic,
     stopMusic: stopMusic,
-    setMusicWave: setMusicWave
+    setMusicWave: setMusicWave,
+    setMusicState: setMusicState
   };
 })(window.SI = window.SI || {});

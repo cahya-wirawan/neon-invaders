@@ -7,7 +7,7 @@
     // scripts/verify.sh to cross-check package.json's version stays in
     // sync. Bump the MINOR number (1.3.0 -> 1.4.0) in both places together
     // for every new feature; patch/major are unused by this policy.
-    VERSION: '1.8.0',
+    VERSION: '1.9.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -165,8 +165,7 @@
       ]
     },
 
-    // Between-wave cannon upgrade. Exactly one is active at a time: a new
-    // pick REPLACES the previous one, it never stacks.
+    // Upgrades offered between waves. Exactly ONE upgrade is active at a time.
     UPGRADE: {
       IDS: ['spread', 'pierce', 'bounce', 'shield'],
       // The shipped WEAPON COMBINATIONS. Deliberately NOT in IDS: IDS is
@@ -176,10 +175,10 @@
       // 5 * CARD.W + 4 * CARD.GAP = 5 * 196 + 4 * 18 = 1052 > WORLD_W (960).
       // See js/hud.js's CARD table and upgradeCardRect().
       COMBINED_ID: 'pierce_bounce',
-      COMBINED_IDS: ['pierce_bounce', 'spread_bounce'],
+      COMBINED_IDS: ['pierce_bounce', 'spread_bounce', 'spread_pierce'],
       COMBINES: {
-        pierce: { bounce: 'pierce_bounce' },
-        spread: { bounce: 'spread_bounce' },
+        pierce: { bounce: 'pierce_bounce', spread: 'spread_pierce' },
+        spread: { bounce: 'spread_bounce', pierce: 'spread_pierce' },
         bounce: { pierce: 'pierce_bounce', spread: 'spread_bounce' }
       },
       PICK_TIMEOUT: 12,   // auto-confirm so an idle session never hangs
@@ -203,8 +202,7 @@
     // Kill-streak score multiplier. Consecutive kills raise a multiplier that
     // scales what the NEXT kill pays; it lapses if you stop killing, and drops
     // outright if you are hit or the wave ends. Pure arithmetic on the existing
-    // addScore() path: no new entity, no timer of its own beyond one float, and
-    // not a single Math.random() draw.
+    // score pipeline -- draws ZERO extra RNG.
     COMBO: {
       FROM_WAVE: 2,
       WINDOW: 2.6,   // seconds since the last kill before the streak lapses
@@ -212,8 +210,8 @@
       MAX: 4         // ceiling: x4
     },
 
-    // Distinct alien classes. Exactly one SHIELD, one KAMIKAZE, and one PHASE
-    // per wave from their own FROM_WAVE gates up, and WHICH alien carries each
+    // Distinct alien classes. Exactly one SHIELD, one KAMIKAZE, one PHASE, and
+    // one SPLITTER per wave from their own FROM_WAVE gates up, and WHICH alien carries each
     // is WAVE-DERIVED arithmetic -- (wave - FROM_WAVE) % SWARM.COLS.
     ALIEN_CLASS: {
       SHIELD: {
@@ -234,6 +232,12 @@
         ACTIVE_TIME: 2.8,
         PHASE_TIME: 1.5,
         FLICKER_SPEED: 16
+      },
+      SPLITTER: {
+        FROM_WAVE: 8,
+        ROW: 3,          // lower-middle row
+        SCORE: 20,
+        MINI_SCORE: 15
       }
     },
 
@@ -267,15 +271,21 @@
       warn: '#ffd166',
       bunker: '#54ffa8',
       ufo: '#ffb0f7',
+      saboteurUfo: '#d680ff',
       commander: '#ffe066',
       // Class tells.
       shieldAlien: '#3d5bff',
       kamikaze: '#ff4d00',
       phaseAlien: '#d066ff',
+      splitter: '#ffaa00',
       // Fused weapon tells.
       pierceBounce: '#b6ff4d',
       spreadBounce: '#ffaa40',
+      spreadPierce: '#bf55ec',
       spreadShield: '#38ef7d',
+      bossHp: '#ff3366',
+      bossShield: '#5ffbf1',
+      bossWarn: '#ffe600',
       alienRows: ['#ff6ad5', '#c774f7', '#8a7bff', '#5ad2ff', '#63ffc9']
     },
 

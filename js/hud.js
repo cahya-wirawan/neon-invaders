@@ -51,6 +51,11 @@
       blurb: '3-way spread volley,\nall shots ricochet.',
       color: '#ffaa40'
     },
+    spread_pierce: {
+      name: 'SINGULARITY BEAM',
+      blurb: '3-way piercing volley,\nheavy laser core.',
+      color: '#bf55ec'
+    },
     spread_shield: {
       name: 'AEGIS SCATTER',
       blurb: '3-way energy cone,\ndestroys alien bullets.',
@@ -270,8 +275,15 @@
     });
 
     var blink = 0.55 + 0.45 * Math.sin(t * 4);
-    G(ctx, 'PRESS  SPACE  /  ENTER  /  TAP  TO  START', C.WORLD_W / 2, 440, {
+    G(ctx, 'PRESS  SPACE  /  ENTER  /  TAP  TO  START', C.WORLD_W / 2, 430, {
       font: font(22), color: '#9df3ff', blur: 18, align: 'center', alpha: blink
+    });
+
+    var rawRushPb = localStorage.getItem('neon_invaders_boss_rush_pb');
+    var parsedRushPb = parseFloat(rawRushPb);
+    var rushText = (isFinite(parsedRushPb) && parsedRushPb > 0) ? ' (RECORD: ' + parsedRushPb.toFixed(2) + 's)' : '';
+    G(ctx, '[B] BOSS RUSH MODE' + rushText, C.WORLD_W / 2, 468, {
+      font: font(17, 800), color: '#ff3366', glow: '#ff2d55', blur: 14, align: 'center', alpha: 0.95
     });
 
     var lines = [
@@ -280,17 +292,17 @@
       'Defeat boss flagships at Wave 7, 14 & 21. Discover weapon fusions.'
     ];
     for (var i = 0; i < lines.length; i++) {
-      G(ctx, lines[i], C.WORLD_W / 2, 520 + i * 34, {
-        font: font(16, 600), color: '#8fb6d8', blur: 6, align: 'center', alpha: 0.9
+      G(ctx, lines[i], C.WORLD_W / 2, 524 + i * 32, {
+        font: font(15, 600), color: '#8fb6d8', blur: 6, align: 'center', alpha: 0.9
       });
     }
 
     var achCount = SI.Achievements ? SI.Achievements.count() : 0;
-    G(ctx, 'ACHIEVEMENTS: ' + achCount + ' / 10 UNLOCKED', C.WORLD_W / 2, 640, {
+    G(ctx, 'ACHIEVEMENTS: ' + achCount + ' / 10 UNLOCKED', C.WORLD_W / 2, 638, {
       font: font(14, 700), color: '#00f5d4', blur: 8, align: 'center', alpha: 0.9
     });
 
-    G(ctx, 'HI-SCORE  ' + SI.formatScore(game.hi), C.WORLD_W / 2, 672, {
+    G(ctx, 'HI-SCORE  ' + SI.formatScore(game.hi), C.WORLD_W / 2, 668, {
       font: font(17, 700), color: '#ffd166', blur: 12, align: 'center', alpha: 0.9
     });
 
@@ -383,6 +395,18 @@
       ctx.globalAlpha = 0.5;
       ctx.fillRect(-20, -24, 3, 48);
       ctx.fillRect(17, -24, 3, 48);
+    } else if (id === 'spread_pierce') {
+      // 3 angled laser beams with heavy piercing center core
+      var spAngles = [-0.34, 0, 0.34];
+      for (i = 0; i < spAngles.length; i++) {
+        ctx.save();
+        ctx.rotate(spAngles[i]);
+        ctx.fillRect(i === 1 ? -3.5 : -2, -24, i === 1 ? 7 : 4, 48);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 0.6;
+      ctx.fillRect(-14, -6, 28, 4);
+      ctx.fillRect(-14, 8, 28, 4);
     } else if (id === 'spread_shield') {
       // 3 spread lines plus an aegis shield chevron
       var ssAngles = [-0.32, 0, 0.32];
@@ -510,16 +534,25 @@
   function drawGameOver(ctx, game) {
     var G = SI.FX.glowText;
     dim(ctx, Math.min(0.6, game.stateTimer * 0.6));
-    G(ctx, 'GAME  OVER', C.WORLD_W / 2, C.WORLD_H / 2 - 40, {
-      font: font(74, 900), color: '#ffd3e4', glow: '#ff3d7f', blur: 34, align: 'center'
+    var title = game.isBossRush ? (game.bossRushWon ? 'BOSS RUSH VICTORY!' : 'BOSS RUSH FAILED') : 'GAME  OVER';
+    var glowColor = game.bossRushWon ? '#38ef7d' : '#ff3d7f';
+    G(ctx, title, C.WORLD_W / 2, C.WORLD_H / 2 - 40, {
+      font: font(game.isBossRush ? 54 : 74, 900), color: '#ffd3e4', glow: glowColor, blur: 34, align: 'center'
     });
-    G(ctx, 'SCORE  ' + SI.formatScore(game.score) + '     WAVE  ' + game.wave,
-      C.WORLD_W / 2, C.WORLD_H / 2 + 20, {
-        font: font(26, 700), color: '#eafcff', blur: 18, align: 'center'
-      });
-    // Strictly beating the record, not merely matching it. `game.hi` moves
-    // with the live score, so compare against the record this run started on.
-    if (game.score > game.baseHi && game.score > 0) {
+
+    if (game.isBossRush) {
+      G(ctx, 'TIME: ' + (game.bossRushTime || 0).toFixed(2) + 's     SCORE: ' + SI.formatScore(game.score),
+        C.WORLD_W / 2, C.WORLD_H / 2 + 20, {
+          font: font(24, 700), color: '#eafcff', blur: 18, align: 'center'
+        });
+    } else {
+      G(ctx, 'SCORE  ' + SI.formatScore(game.score) + '     WAVE  ' + game.wave,
+        C.WORLD_W / 2, C.WORLD_H / 2 + 20, {
+          font: font(26, 700), color: '#eafcff', blur: 18, align: 'center'
+        });
+    }
+
+    if (!game.isBossRush && game.score > game.baseHi && game.score > 0) {
       G(ctx, 'NEW  HI-SCORE!', C.WORLD_W / 2, C.WORLD_H / 2 + 66, {
         font: font(22, 800), color: '#ffd166', glow: C.COLORS.warn, blur: 20, align: 'center',
         alpha: 0.6 + 0.4 * Math.sin(game.time * 6)

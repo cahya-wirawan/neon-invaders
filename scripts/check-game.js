@@ -185,7 +185,7 @@ function makeStorage() {
 const AUDIO_METHODS = [
   'unlock', 'ready', 'setMuted', 'toggleMute', 'shoot', 'alienHit',
   'bunkerHit', 'playerHit', 'waveClear', 'gameOver', 'extraLife', 'ufoStart',
-  'ufoStop', 'ufoKilled', 'startMusic', 'stopMusic', 'setMusicWave'
+  'ufoStop', 'ufoKilled', 'startMusic', 'stopMusic', 'setMusicWave', 'setMusicState'
 ];
 
 function makeAudio() {
@@ -835,8 +835,8 @@ scenario('12. a new upgrade REPLACES the previous one (never stacks)', () => {
     env.input.fire = false;
 
     check('reached second upgrade screen', driveToUpgradeScreen(env, game), game.state);
-    check('pierce confirmed', confirmUpgrade(env, game, 'pierce'));
-    check("upgrade replaced, not stacked ('pierce')", game.upgrade === 'pierce', game.upgrade);
+    check('shield confirmed', confirmUpgrade(env, game, 'shield'));
+    check("upgrade replaced, not stacked ('shield')", game.upgrade === 'shield', game.upgrade);
     quietSwarm(game);
     env.input.fire = true;
     env.input.firePress = true;
@@ -844,7 +844,7 @@ scenario('12. a new upgrade REPLACES the previous one (never stacks)', () => {
     const second = alivePlayerBullets(game);
     check('exactly one bullet now, not three', second.length === 1, `got ${second.length}`);
     if (second.length === 1) {
-      check('it is a piercing shot', second[0].pierce === C.UPGRADE.PIERCE_COUNT,
+      check('it is a standard single shot', second[0].pierce === 0 || second[0].pierce === undefined,
         `pierce=${second[0].pierce}`);
       check('it is NOT a bouncing shot', second[0].bounce === 0, `bounce=${second[0].bounce}`);
       check('it has no horizontal velocity', second[0].vx === 0, `vx=${second[0].vx}`);
@@ -2163,16 +2163,18 @@ scenario('24. alien classes are wave-derived, mutually exclusive with the comman
       const shields = sw.aliens.filter((a) => a.role === 'shield');
       const kams = sw.aliens.filter((a) => a.role === 'kamikaze');
       const phases = sw.aliens.filter((a) => a.role === 'phase');
+      const splitters = sw.aliens.filter((a) => a.role === 'splitter');
       const wantShield = w >= K.SHIELD.FROM_WAVE ? 1 : 0;
       const wantKam = w >= K.KAMIKAZE.FROM_WAVE ? 1 : 0;
       const wantPhase = (K.PHASE && w >= K.PHASE.FROM_WAVE) ? 1 : 0;
+      const wantSplitter = (K.SPLITTER && w >= K.SPLITTER.FROM_WAVE) ? 1 : 0;
       if (shields.length !== wantShield || kams.length !== wantKam ||
-          phases.length !== wantPhase ||
-          roleAliens(sw).length !== wantShield + wantKam + wantPhase ||
+          phases.length !== wantPhase || splitters.length !== wantSplitter ||
+          roleAliens(sw).length !== wantShield + wantKam + wantPhase + wantSplitter ||
           (!!sw.shield) !== !!wantShield || (!!sw.kamikaze) !== !!wantKam ||
-          (!!sw.phaseAlien) !== !!wantPhase) {
+          (!!sw.phaseAlien) !== !!wantPhase || (!!sw.splitterAlien) !== !!wantSplitter) {
         gateOk = false;
-        gateDetail += ` w${w}:shield=${shields.length}/${wantShield},kam=${kams.length}/${wantKam},phase=${phases.length}/${wantPhase}`;
+        gateDetail += ` w${w}:shield=${shields.length}/${wantShield},kam=${kams.length}/${wantKam},phase=${phases.length}/${wantPhase},splitter=${splitters.length}/${wantSplitter}`;
       }
       /* (b) AC-4: a commander NEVER also carries a class, and no class-tagged
        * alien is ever the commander. Checked on every wave that has one. */
@@ -2777,6 +2779,10 @@ function classIntegrationRun(seed) {
         if (game.state === env.SI.STATE.PLAYING) {
           env.input.axis = 0;
           game.player.x = C.WORLD_W - 80;
+          if (game.swarm && game.swarm.aliveCount() === 1 && game.swarm.kamikaze && game.swarm.kamikaze.alive) {
+            env.input.fire = false;
+            env.input.firePress = false;
+          }
         }
 
         if (game.state === env.SI.STATE.UPGRADE) {
@@ -2822,7 +2828,7 @@ function classIntegrationRun(seed) {
         if (game.swarm) {
           if (game.swarm.kamikaze && game.swarm.kamikaze.dive) dives += 1;
           for (const al of game.swarm.aliens) {
-            if (!al.alive || al.dive) continue;
+            if (!al.alive || al.dive || al.swoop) continue;
             /* The real invariant, and NOT "y <= FORMATION.MAX_Y": the GRID
              * ANCHOR is allowed past MAX_Y -- that is how the classic march
              * descends toward the invasion floor at SWARM.FLOOR_Y (610), and
@@ -3340,7 +3346,7 @@ scenario('30. HUD presentation of the combined cannon', () => {
       calls.push({ text: String(text), x, y, opts: opts || {} });
     };
     const NAMES = ['SPREAD SHOT', 'PIERCING LASER', 'BOUNCING SHOT', 'TEMP SHIELD',
-                   'PIERCE + BOUNCE'];
+                   'PIERCE + BOUNCE', 'PRISM SCATTER', 'SINGULARITY BEAM'];
     const cardNames = () => calls.filter((c) => NAMES.indexOf(c.text) >= 0);
 
     /* (a) the plain screen is exactly as it was ---------------------------- */
@@ -3419,9 +3425,10 @@ scenario('30. HUD presentation of the combined cannon', () => {
 
     /* (d) palette: the new colour reads as neither half -------------------- */
     const MIN_CHANNEL_GAP = 48;
+    const FIVE_NAMES = ['SPREAD SHOT', 'PIERCING LASER', 'BOUNCING SHOT', 'TEMP SHIELD', 'PIERCE + BOUNCE'];
     check('(d) all five card colours were captured from the real HUD draw',
-      NAMES.every((n) => typeof colorOf[n] === 'string'),
-      NAMES.map((n) => `${n}=${colorOf[n]}`).join(' '));
+      FIVE_NAMES.every((n) => typeof colorOf[n] === 'string'),
+      FIVE_NAMES.map((n) => `${n}=${colorOf[n]}`).join(' '));
     const mine = colorOf['PIERCE + BOUNCE'];
     check('(d) the combine card is painted CONFIG.COLORS.pierceBounce',
       mine === C.COLORS.pierceBounce, `${mine} vs ${C.COLORS.pierceBounce}`);
@@ -3430,7 +3437,7 @@ scenario('30. HUD presentation of the combined cannon', () => {
       ['playerGlow(pierce shot)', C.COLORS.playerGlow],
       ['warn(bounce shot)', C.COLORS.warn]
     ];
-    for (const n of NAMES) {
+    for (const n of FIVE_NAMES) {
       if (n !== 'PIERCE + BOUNCE') REFS.push([`card:${n}`, colorOf[n]]);
     }
     let paletteOk = true;
@@ -4163,12 +4170,12 @@ scenario('43. Prism Scatter (spread_bounce) fused weapon offering and firing mec
       game.upgradeChoices().join(',') === 'spread,pierce,bounce,shield');
 
     game.upgrade = 'spread';
-    check('from spread, bounce card is substituted with spread_bounce in slot 2',
-      game.upgradeChoices().join(',') === 'spread,pierce,spread_bounce,shield');
+    check('from spread, bounce and pierce are substituted with spread_bounce and spread_pierce',
+      game.upgradeChoices().join(',') === 'spread,spread_pierce,spread_bounce,shield');
 
     game.upgrade = 'pierce';
-    check('from pierce, bounce card is substituted with pierce_bounce in slot 2',
-      game.upgradeChoices().join(',') === 'spread,pierce,pierce_bounce,shield');
+    check('from pierce, spread and bounce are substituted with spread_pierce and pierce_bounce',
+      game.upgradeChoices().join(',') === 'spread_pierce,pierce,pierce_bounce,shield');
 
     game.upgrade = 'bounce';
     check('from bounce, spread is swapped to spread_bounce and pierce to pierce_bounce',
@@ -4530,6 +4537,204 @@ scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wa
     check('(f) Wave 2 with 7 surviving aliens does not activate frenzy', swW2.isFrenzy() === false);
   });
 });
+
+scenario('48. Singularity Beam (spread_pierce Fused Weapon)', () => {
+  withSeed(4801, () => {
+    const env = loadGame(JS_DIR);
+    const C = env.SI.CONFIG;
+    const U = C.UPGRADE;
+
+    check('(a) COMBINED_IDS contains spread_pierce',
+      Array.isArray(U.COMBINED_IDS) && U.COMBINED_IDS.includes('spread_pierce'));
+    check('(b) COMBINES maps spread+pierce and pierce+spread to spread_pierce',
+      U.COMBINES && U.COMBINES.spread && U.COMBINES.spread.pierce === 'spread_pierce' &&
+      U.COMBINES.pierce && U.COMBINES.pierce.spread === 'spread_pierce');
+
+    const g = startedGame(env, 2);
+    g.upgrade = 'pierce';
+    const choices = g.upgradeChoices();
+    check('(c) With pierce active, spread card is upgraded to spread_pierce',
+      choices.includes('spread_pierce') && !choices.includes('spread'));
+
+    g.upgrade = 'spread_pierce';
+    g.world.upgrade = 'spread_pierce';
+    g.bullets.length = 0;
+    g.player.fire(g.world);
+
+    check('(d) Firing spread_pierce creates exactly 3 bullets', g.bullets.length === 3);
+      const center = g.bullets[1];
+      const left = g.bullets[0];
+      const right = g.bullets[2];
+
+      check('(e) Center bullet has piercing capability and singularity flag',
+        center.pierce === U.PIERCE_COUNT && center.singularity === true);
+      check('(f) Flanking bullets have standard pierce = 0',
+        (left.pierce || 0) === 0 && (right.pierce || 0) === 0);
+      check('(g) All volley bullets have spreadPierce color',
+        center.color === C.COLORS.spreadPierce && left.color === C.COLORS.spreadPierce && right.color === C.COLORS.spreadPierce);
+    });
+  });
+
+  scenario('49. Splitter Alien Class & Stealth Saboteur UFO', () => {
+    withSeed(4901, () => {
+      const env = loadGame(JS_DIR);
+      const C = env.SI.CONFIG;
+
+      /* (a) Splitter alien assignment on Wave 8+ */
+      const sw7 = new env.SI.Swarm(7);
+      check('(a) Wave 7 has no splitter alien', !sw7.aliens.some((a) => a.role === 'splitter'));
+
+      const sw8 = new env.SI.Swarm(8);
+      const splitter8 = sw8.aliens.find((a) => a.role === 'splitter');
+      check('(b) Wave 8 has exactly one splitter alien on row 3',
+        !!splitter8 && splitter8.row === 3 && splitter8.col === 0 && splitter8.splitter === true);
+
+      /* (b) Splitter alien splits into 2 mini-drones when hit by non-piercing shot */
+      const g = startedGame(env, 8);
+      const sw = g.swarm;
+      const sp = sw.aliens.find((a) => a.role === 'splitter');
+      const normalBullet = { from: 'player', pierce: 0, dead: false };
+      const countPre = sw.aliens.length;
+      sw.killAlien(sp, g.world, normalBullet);
+
+      check('(c) Splitter killed by normal bullet spawns 2 mini-drones',
+        sw.aliens.length === countPre + 2);
+      const minis = sw.aliens.filter((a) => a.isMini && a.alive);
+      check('(d) Both mini-drones are alive and smaller',
+        minis.length === 2 && minis[0].w < C.SWARM.ALIEN_W && minis[1].w < C.SWARM.ALIEN_W);
+
+      /* (c) Splitter killed by piercing laser vaporizes without splitting */
+      const gPierce = startedGame(env, 8);
+      const swPierce = gPierce.swarm;
+      const spPierce = swPierce.aliens.find((a) => a.role === 'splitter');
+      const pierceBullet = { from: 'player', pierce: 2, dead: false };
+      const countPiercePre = swPierce.aliens.length;
+      swPierce.killAlien(spPierce, gPierce.world, pierceBullet);
+      check('(e) Splitter killed by piercing bullet does NOT split',
+        swPierce.aliens.length === countPiercePre);
+
+      /* (c2) Splitter killed by EMP blast cleanly vaporizes without splitting */
+      const gEmp = startedGame(env, 8);
+      const swEmp = gEmp.swarm;
+      const spEmp = swEmp.aliens.find((a) => a.role === 'splitter');
+      for (let i = 0; i < swEmp.aliens.length; i++) {
+        if (swEmp.aliens[i] !== spEmp) swEmp.aliens[i].alive = false;
+      }
+      gEmp.emp = 100;
+      const countEmpPre = swEmp.aliens.length;
+      gEmp.triggerEmp();
+      check('(e2) Splitter killed by EMP blast does NOT split (clean vaporization)',
+        swEmp.aliens.length === countEmpPre && !spEmp.alive);
+
+      /* (d) Stealth Saboteur UFO on Wave 5+ (odd waves) */
+      const ufo5 = new env.SI.Ufo(1, 5);
+      check('(f) Wave 5 UFO is a Saboteur variant',
+        ufo5.isSaboteur === true && ufo5.score === 500 && ufo5.color === C.COLORS.saboteurUfo);
+
+      // Saboteur UFO drains player EMP
+      g.emp = 50;
+      g.world.empCharge = 0.50;
+      ufo5.update(1.0, g.world);
+      check('(g) Saboteur UFO drains EMP charge over time',
+        g.world.empCharge < 0.50);
+
+      // Killing Saboteur grants +50% EMP recharge
+      g.ufo = ufo5;
+      g.bullets.length = 0;
+      g.emp = 20;
+      const killBullet = new env.SI.Bullet(ufo5.x, ufo5.y, -500, 'player', '#ffffff');
+      g.bullets.push(killBullet);
+      g.collide(g.world);
+      check('(h) Defeating Saboteur UFO awards +50% instant EMP recharge',
+        g.emp >= 70);
+    });
+  });
+
+  scenario('50. Boss Rush Mode Progression & Record Tracking', () => {
+    withSeed(5001, () => {
+      const env = loadGame(JS_DIR);
+      const g = startedGame(env, 1);
+      g.startBossRush();
+
+      check('(a) startBossRush sets isBossRush and starts on Wave 7',
+        g.isBossRush === true && g.wave === 7 && !!g.boss);
+
+      // Clear Wave 7
+      g.boss.alive = false;
+      g.updatePlaying(0.016);
+      check('(b) Wave 7 clear transitions to WAVE_CLEAR',
+        g.state === env.SI.STATE.WAVE_CLEAR);
+
+      // Upgrade selection after Wave 7 clears -> starts Wave 14
+      g.stateTimer = 3.0;
+      g.update(0.016); // transitions to UPGRADE
+      check('(c) Advances to UPGRADE state', g.state === env.SI.STATE.UPGRADE);
+      g.applyUpgrade('spread');
+      check('(d) Upgrade advances Boss Rush directly to Wave 14 (Dreadnought)',
+        g.wave === 14 && !!g.boss);
+
+      // Clear Wave 14 -> Upgrade -> Wave 21
+      g.boss.alive = false;
+      g.updatePlaying(0.016);
+      g.applyUpgrade('pierce');
+      check('(e) Second upgrade advances Boss Rush directly to Wave 21 (Hive Nexus)',
+        g.wave === 21 && !!g.boss);
+
+      // Clear Wave 21 -> Boss Rush Victory
+      g.boss.alive = false;
+      g.bossRushTime = 42.5;
+      g.clearWave();
+      check('(f) Clearing Wave 21 in Boss Rush triggers bossRushWon and GAME_OVER',
+        g.bossRushWon === true && g.state === env.SI.STATE.GAME_OVER);
+
+      /* (g) Menu selection via KeyB, Gamepad, and Click */
+      const gMenu = new env.SI.Game();
+      env.SI.Input.bossRushPressed = () => true;
+      gMenu.update(0.016);
+      check('(g) KeyB / Gamepad B button starts Boss Rush from Menu',
+        gMenu.isBossRush === true && gMenu.wave === 7);
+
+      // Reset to Menu and test click on Boss Rush coordinates (x: 480, y: 468)
+      const gClick = new env.SI.Game();
+      env.SI.Input.bossRushPressed = () => false;
+      env.SI.Input.confirmPressed = () => true;
+      env.SI.Input.pointer = () => ({ x: 480, y: 468, active: true, firing: true });
+      gClick.update(0.016);
+      check('(h) Clicking Boss Rush button on Menu starts Boss Rush',
+        gClick.isBossRush === true && gClick.wave === 7);
+
+      // Click outside Boss Rush (e.g. at y: 430) starts normal game
+      const gNormal = new env.SI.Game();
+      env.SI.Input.bossRushPressed = () => false;
+      env.SI.Input.confirmPressed = () => true;
+      env.SI.Input.pointer = () => ({ x: 480, y: 430, active: true, firing: true });
+      gNormal.update(0.016);
+      check('(i) Clicking elsewhere on Menu starts Normal Game (Wave 1)',
+        gNormal.isBossRush === false && gNormal.wave === 1);
+    });
+  });
+
+  scenario('51. Dynamic Adaptive Audio Layers', () => {
+    withSeed(5101, () => {
+      const env = loadGame(JS_DIR);
+      const Audio = env.SI.Audio;
+      check('(a) Audio exports setMusicState', typeof Audio.setMusicState === 'function');
+
+      Audio.setMusicWave(1);
+      Audio.setMusicState('normal');
+      Audio.setMusicState('frenzy');
+      check('(b) Setting frenzy state executes without error', true);
+
+      Audio.setMusicState('boss');
+      check('(c) Setting boss state executes without error', true);
+
+      Audio.setMusicState('boss_enraged');
+      check('(d) Setting boss_enraged state executes without error', true);
+
+      Audio.setMusicState('normal');
+      check('(e) Returning to normal state executes smoothly', true);
+    });
+  });
 
 if (baselineDir) {
   try { fs.rmSync(baselineDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }

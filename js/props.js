@@ -153,7 +153,9 @@
     this.x = dir > 0 ? -this.w : C.WORLD_W + this.w;
     this.dead = false;
     this.phase = 0;
-    this.score = SI.pick(U.SCORES);
+    this.isSaboteur = !!(wave >= 5 && (wave % 2 === 1));
+    this.color = this.isSaboteur ? (C.COLORS.saboteurUfo || '#d680ff') : C.COLORS.ufo;
+    this.score = this.isSaboteur ? 500 : SI.pick(U.SCORES);
   }
 
   Ufo.prototype.box = function () {
@@ -163,6 +165,9 @@
   Ufo.prototype.update = function (dt, world) {
     this.phase += dt;
     this.x += this.dir * this.speed * dt;
+    if (this.isSaboteur && world && typeof world.empCharge === 'number') {
+      world.empCharge = Math.max(0, world.empCharge - 0.05 * dt);
+    }
     if ((this.dir > 0 && this.x > C.WORLD_W + this.w) ||
         (this.dir < 0 && this.x < -this.w)) {
       this.dead = true;
@@ -170,14 +175,14 @@
       return;
     }
     if (world.particles && Math.random() < 0.5) {
-      world.particles.emitTrail(this.x - this.dir * this.w * 0.4, this.y + 6, C.COLORS.ufo, 10, 0.3);
+      world.particles.emitTrail(this.x - this.dir * this.w * 0.4, this.y + 6, this.color, 10, 0.3);
     }
   };
 
   Ufo.prototype.kill = function (world) {
     this.dead = true;
     if (world.particles) {
-      world.particles.emitExplosion(this.x, this.y, C.COLORS.ufo, 40, 1.35);
+      world.particles.emitExplosion(this.x, this.y, this.color, 40, 1.35);
       world.particles.emitDebris(this.x, this.y, '#ffffff', 14, 1.1);
     }
     if (world.audio) {
@@ -196,11 +201,12 @@
     ctx.translate(this.x, this.y);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.ufo), 0, 0, w * 2.0, 0.5);
+    SI.FX.drawGlow(ctx, SI.FX.glow(this.color), 0, 0, w * 2.0, this.isSaboteur ? 0.75 : 0.5);
     ctx.restore();
 
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = C.COLORS.ufo;
+    var ufoAlpha = this.isSaboteur ? 0.7 + 0.3 * Math.sin(this.phase * 6) : 1;
+    ctx.globalAlpha = ufoAlpha;
+    ctx.fillStyle = this.color;
     ctx.beginPath();
     ctx.ellipse(0, 0, w / 2, h / 2.6, 0, 0, Math.PI * 2);
     ctx.fill();

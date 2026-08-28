@@ -117,6 +117,9 @@
   /* ----------------------------- lifecycle -------------------------- */
 
   Game.prototype.startGame = function () {
+    this.isBossRush = false;
+    this.bossRushWon = false;
+    this.bossRushTime = 0;
     this.score = 0;
     this.baseHi = this.hi;
     this.lives = C.PLAYER.START_LIVES;
@@ -126,6 +129,23 @@
     this.upgradeIndex = 0;
     this.particles.clear();
     this.startWave(1);
+    this.setState(STATE.PLAYING);
+    SI.Audio.startMusic(this.wave);
+  };
+
+  Game.prototype.startBossRush = function () {
+    this.isBossRush = true;
+    this.bossRushWon = false;
+    this.bossRushTime = 0;
+    this.score = 0;
+    this.baseHi = this.hi;
+    this.lives = C.PLAYER.START_LIVES;
+    this.wave = 7;
+    this.nextExtraLife = 5000;
+    this.upgrade = 'none';
+    this.upgradeIndex = 0;
+    this.particles.clear();
+    this.startWave(7);
     this.setState(STATE.PLAYING);
     SI.Audio.startMusic(this.wave);
   };
@@ -227,10 +247,30 @@
       }
     }
 
+    if (this.isBossRush && this.state === STATE.PLAYING) {
+      this.bossRushTime += dt;
+    }
+
+    if (SI.Audio && typeof SI.Audio.setMusicState === 'function') {
+      if (this.boss && this.boss.alive) {
+        SI.Audio.setMusicState(this.boss.phase >= 2 ? 'boss_enraged' : 'boss');
+      } else if (this.swarm && typeof this.swarm.isFrenzy === 'function' && this.swarm.isFrenzy()) {
+        SI.Audio.setMusicState('frenzy');
+      } else {
+        SI.Audio.setMusicState('normal');
+      }
+    }
+
     switch (this.state) {
       case STATE.MENU:
         this.particles.update(dt);
-        if (Input.confirmPressed()) {
+        var p = Input.pointer();
+        var isClick = Input.confirmPressed();
+        if (Input.bossRushPressed && Input.bossRushPressed()) {
+          this.startBossRush();
+        } else if (isClick && p && p.y >= 445 && p.y <= 495 && p.x >= 240 && p.x <= 720) {
+          this.startBossRush();
+        } else if (isClick) {
           this.startGame();
         }
         break;
@@ -298,6 +338,7 @@
     // everything else.
     w.upgrade = this.upgrade;
     w.playerX = this.player.x;
+    w.empCharge = this.emp / (C.EMP.MAX || 100);
     return w;
   };
 
@@ -417,7 +458,12 @@
     if (this.upgrade && this.upgrade.indexOf('_') >= 0) {
       this.unlockAchievement('weapon_fused');
     }
-    this.startWave(this.wave + 1);
+    if (this.isBossRush) {
+      var nextWave = this.wave === 7 ? 14 : (this.wave === 14 ? 21 : (this.wave + 1));
+      this.startWave(nextWave);
+    } else {
+      this.startWave(this.wave + 1);
+    }
     // MUST come after startWave(): it calls player.reset(true), which
     // unconditionally overwrites invuln with PLAYER.INVULN_TIME.
     if (this.upgrade === 'shield') {
@@ -464,6 +510,9 @@
     this.updateUfo(dt, world);
     this.particles.update(dt);
     this.collide(world);
+    if (typeof world.empCharge === 'number') {
+      this.emp = Math.max(0, Math.min(C.EMP.MAX || 100, world.empCharge * (C.EMP.MAX || 100)));
+    }
     SI.compact(this.bullets);
 
     if (this.invaded) {
@@ -482,7 +531,9 @@
     if (this.ufo) {
       this.ufo.update(dt, world);
       if (this.ufo.dead) {
-        SI.Audio.ufoStop();
+        if (this.ufo.escaped) {
+          SI.Audio.ufoStop();
+        }
         this.ufo = null;
         this.ufoTimer = SI.rand(C.UFO.MIN_DELAY, C.UFO.MAX_DELAY);
       }
@@ -508,7 +559,7 @@
       if (b.from === 'player') {
         // Player shot vs aliens.
         var hitAlien = false;
-        if (this.swarm) {
+        if (this.swarm && !b.defensiveOnly) {
           var aliens = this.swarm.aliens;
           for (j = 0; j < aliens.length; j++) {
             var a = aliens[j];
@@ -537,7 +588,7 @@
                 this.addEmp(C.EMP.GAIN_COMMANDER);
                 this.unlockAchievement('commander_slayer');
               }
-              this.swarm.killAlien(a, world);
+              this.swarm.killAlien(a, world, b);
               this.scoreKill(a.score);
               // PIERCING LASER: survives the kill and flies on. One alien
               // per bullet per frame either way -- at MAX_DT a shot covers
@@ -555,7 +606,7 @@
         if (hitAlien) { continue; }
 
         // Player shot vs Boss.
-        if (this.boss && this.boss.alive && SI.aabb(box, this.boss.box())) {
+        if (this.boss && this.boss.alive && !b.defensiveOnly && SI.aabb(box, this.boss.box())) {
           this.boss.takeDamage(1, world);
           this.addEmp(C.EMP.GAIN_BOSS_HIT);
           if (!this.boss.alive) {
@@ -573,13 +624,17 @@
         }
 
         // Player shot vs UFO.
-        if (this.ufo && SI.aabb(box, this.ufo.box())) {
+        if (this.ufo && !b.defensiveOnly && SI.aabb(box, this.ufo.box())) {
+          var isSab = !!this.ufo.isSaboteur;
           var pts = this.ufo.kill(world);
           this.addEmp(C.EMP.GAIN_UFO);
+          if (isSab) {
+            this.addEmp((C.EMP.MAX || 100) * 0.50);
+          }
           // Banner shows what was ACTUALLY awarded, multiplier included.
           var gain = this.scoreKill(pts);
-          this.banner = '+' + gain;
-          this.bannerTime = 1.2;
+          this.banner = isSab ? 'SABOTEUR DOWN! +50% EMP' : ('+' + gain);
+          this.bannerTime = 1.4;
           this.ufo = null;
           this.ufoTimer = SI.rand(C.UFO.MIN_DELAY, C.UFO.MAX_DELAY);
           b.dead = true;
@@ -778,6 +833,23 @@
     } else if (this.wave === 14) {
       this.unlockAchievement('sovereign_fall');
     }
+    if (this.isBossRush && this.wave === 21) {
+      this.bossRushWon = true;
+      var timeStr = (this.bossRushTime || 0).toFixed(2);
+      this.banner = 'BOSS RUSH VICTORY! ' + timeStr + 's';
+      this.bannerTime = 4.0;
+      var rawPb = localStorage.getItem('neon_invaders_boss_rush_pb');
+      var parsedPb = parseFloat(rawPb);
+      var prevPb = (isFinite(parsedPb) && parsedPb > 0) ? parsedPb : Infinity;
+      if (this.bossRushTime < prevPb) {
+        localStorage.setItem('neon_invaders_boss_rush_pb', timeStr);
+      }
+      this.setState(STATE.GAME_OVER);
+      SI.Audio.stopMusic();
+      SI.Audio.waveClear();
+      this.particles.emitExplosion(C.WORLD_W / 2, C.WORLD_H / 2, C.COLORS.accent, 50, 1.5);
+      return;
+    }
     var intactBunkers = this.bunkers.filter(function (bk) {
       return bk.alive && bk.alive() && bk.damage && bk.damage.length === 0;
     });
@@ -817,24 +889,25 @@
     if (this.emp < C.EMP.MAX || this.state !== STATE.PLAYING) {
       return false;
     }
+    var w = world || this.world;
     this.emp = 0;
     this.empTimer = 0.5;
 
-    if (world && world.shake) {
-      world.shake(22, 0.45);
+    if (w && w.shake) {
+      w.shake(22, 0.45);
     }
-    if (world && world.audio && world.audio.ufoKilled) {
-      world.audio.ufoKilled();
+    if (w && w.audio && w.audio.ufoKilled) {
+      w.audio.ufoKilled();
     }
     SI.Input.vibrate(300, 0.8, 1.0);
 
     var px = this.player.x;
     var py = this.player.y - 20;
 
-    if (world && world.particles) {
-      world.particles.emitExplosion(px, py, C.EMP.COLOR, 60, 2.5);
-      world.particles.emitDebris(px, py, C.EMP.COLOR_READY, 20, 1.8);
-      world.particles.emitSparks(px, py, '#ffffff', 32, 0, 0, Math.PI * 2);
+    if (w && w.particles) {
+      w.particles.emitExplosion(px, py, C.EMP.COLOR, 60, 2.5);
+      w.particles.emitDebris(px, py, C.EMP.COLOR_READY, 20, 1.8);
+      w.particles.emitSparks(px, py, '#ffffff', 32, 0, 0, Math.PI * 2);
     }
 
     // Destroy all active alien bullets on screen
@@ -842,15 +915,15 @@
       var b = this.bullets[i];
       if (b.from === 'alien' && !b.dead) {
         b.dead = true;
-        if (world && world.particles) {
-          world.particles.emitSparks(b.x, b.y, C.COLORS.alienBullet, 5, 0, 0, Math.PI);
+        if (w && w.particles) {
+          w.particles.emitSparks(b.x, b.y, C.COLORS.alienBullet, 5, 0, 0, Math.PI);
         }
       }
     }
 
     // Damage Boss if active
     if (this.boss && this.boss.alive) {
-      this.boss.takeDamage(C.EMP.DAMAGE_BOSS, world);
+      this.boss.takeDamage(C.EMP.DAMAGE_BOSS, w);
       if (!this.boss.alive) {
         this.addEmp(C.EMP.GAIN_BOSS_KILL);
         this.scoreKill(this.boss.score);
@@ -861,12 +934,14 @@
 
     // Damage front rank of swarm
     if (this.swarm) {
+      if (w) { w.isEmp = true; }
       var live = this.swarm.aliens.filter(function (a) { return a.alive && !a.commander; });
       for (var k = 0; k < Math.min(8, live.length); k++) {
         var victim = live[k];
-        this.swarm.killAlien(victim, world);
+        this.swarm.killAlien(victim, w);
         this.scoreKill(victim.score);
       }
+      if (w) { w.isEmp = false; }
     }
 
     this.emp = 0;

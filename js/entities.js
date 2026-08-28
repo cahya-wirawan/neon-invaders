@@ -86,6 +86,9 @@
   Bullet.prototype.draw = function (ctx) {
     var sprite = SI.FX.glow(this.color);
     SI.FX.drawGlow(ctx, sprite, this.x, this.y, this.h * 2.4, 0.85);
+    if (this.singularity) {
+      SI.FX.drawGlow(ctx, SI.FX.glow('#ffffff'), this.x, this.y, this.h * 3.0, 0.95);
+    }
     ctx.globalAlpha = 1;
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(this.x - this.w / 2, this.y - this.h / 2, this.w, this.h);
@@ -158,6 +161,26 @@
         world.spawnBullet(b);
       }
       this.bounceSide = -this.bounceSide;
+      return;
+    }
+
+    if (up === 'spread_pierce') {
+      var spAngles = [-U.SPREAD_ANGLE, 0, U.SPREAD_ANGLE];
+      for (i = 0; i < spAngles.length; i++) {
+        ang = spAngles[i];
+        b = new Bullet(bx, by, -speed * Math.cos(ang), 'player', C.COLORS.spreadPierce);
+        b.vx = speed * Math.sin(ang);
+        if (i === 1) {
+          b.pierce = U.PIERCE_COUNT;
+          b.singularity = true;
+        } else {
+          // Flanking ion streams clear incoming enemy bullets and provide wide defensive coverage
+          // without claiming alien kills, ensuring the total kill ceiling per trigger pull strictly
+          // equals 1 + PIERCE_COUNT (3) = BEST_ALIENS_PER_SHOT in server/src/anticheat.js.
+          b.defensiveOnly = true;
+        }
+        world.spawnBullet(b);
+      }
       return;
     }
 
@@ -400,6 +423,8 @@
     this.swoop = null;
     this.phaseTimer = 0;
     this.phased = false;
+    this.splitter = false;
+    this.isMini = false;
     this.w = C.SWARM.ALIEN_W;
     this.h = C.SWARM.ALIEN_H;
     this.hitFlash = 0;
@@ -443,6 +468,8 @@
       var flicker = Math.sin(this.phaseTimer * (C.ALIEN_CLASS.PHASE.FLICKER_SPEED || 16));
       SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.phaseAlien), this.x, this.y + bob,
         this.phased ? this.w * 2.0 : this.w * 2.6, this.phased ? 0.35 + 0.15 * flicker : 0.5);
+    } else if (this.role === 'splitter') {
+      SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.splitter || '#ffaa00'), this.x, this.y + bob, this.w * 2.6, 0.55);
     }
     if (this.swoop) {
       SI.FX.drawGlow(ctx, SI.FX.glow('#ff3366'), this.x, this.y + bob, this.w * 3.2, 0.75);
@@ -609,12 +636,20 @@
         this.phaseAlien.phased = false;
       }
     }
+    if (K.SPLITTER && wave >= K.SPLITTER.FROM_WAVE) {
+      this.splitterAlien = this.assignRole(
+        'splitter', K.SPLITTER.ROW, (wave - K.SPLITTER.FROM_WAVE) % S.COLS);
+      if (this.splitterAlien) {
+        this.splitterAlien.splitter = true;
+      }
+    }
     // PRE-WARM the class glow sprites, and only on the waves that will
     // actually draw them.
     if (SI.FX && SI.FX.glow) {
       if (this.shield) { SI.FX.glow(C.COLORS.shieldAlien); }
       if (this.kamikaze) { SI.FX.glow(C.COLORS.kamikaze); }
       if (this.phaseAlien) { SI.FX.glow(C.COLORS.phaseAlien); }
+      if (this.splitterAlien) { SI.FX.glow(C.COLORS.splitter || '#ffaa00'); }
       if (wave >= (C.FRENZY ? C.FRENZY.FROM_WAVE : 2)) { SI.FX.glow('#ff3366'); }
     }
 
@@ -635,7 +670,11 @@
     var a = this.aliens[row * C.SWARM.COLS + col];
     if (!a || a.commander || a.role) { return null; }
     a.role = role;
-    a.color = role === 'shield' ? C.COLORS.shieldAlien : (role === 'kamikaze' ? C.COLORS.kamikaze : C.COLORS.phaseAlien);
+    a.color = role === 'shield' ? C.COLORS.shieldAlien
+      : role === 'kamikaze' ? C.COLORS.kamikaze
+      : role === 'phase' ? C.COLORS.phaseAlien
+      : role === 'splitter' ? (C.COLORS.splitter || '#ffaa00')
+      : a.color;
     return a;
   };
 
@@ -780,7 +819,7 @@
         var candidates = [];
         for (i = 0; i < this.aliens.length; i++) {
           a = this.aliens[i];
-          if (a.alive && !a.dive && !a.swoop) {
+          if (a.alive && !a.dive && !a.swoop && a.role !== 'kamikaze') {
             candidates.push(a);
           }
         }
@@ -1247,17 +1286,45 @@
     return SI.pick(list);
   };
 
-  Swarm.prototype.killAlien = function (alien, world) {
+  Swarm.prototype.killAlien = function (alien, world, lethalBullet) {
     alien.alive = false;
-    if (world.particles) {
+    if (world && world.particles) {
       world.particles.emitExplosion(alien.x, alien.y, alien.color, 24, 1);
       world.particles.emitDebris(alien.x, alien.y, alien.color, 8, 0.9);
     }
-    if (world.audio) {
+    if (world && world.audio) {
       world.audio.alienHit();
     }
-    if (world.shake) {
+    if (world && world.shake) {
       world.shake(5, 0.16);
+    }
+
+    // Splitter alien mechanics: when killed by a standard non-piercing shot without EMP,
+    // it splits into two agile mini-drones.
+    if (alien.role === 'splitter' && !alien.isMini && (!lethalBullet || lethalBullet.pierce <= 0) && (!world || !world.isEmp)) {
+      var sc = C.ALIEN_CLASS.SPLITTER ? C.ALIEN_CLASS.SPLITTER.MINI_SCORE : 15;
+      var m1 = new Alien(alien.row, alien.col, alien.type, sc);
+      var m2 = new Alien(alien.row, alien.col, alien.type, sc);
+      m1.isMini = true;
+      m2.isMini = true;
+      m1.w = C.SWARM.ALIEN_W * 0.6;
+      m1.h = C.SWARM.ALIEN_H * 0.6;
+      m2.w = C.SWARM.ALIEN_W * 0.6;
+      m2.h = C.SWARM.ALIEN_H * 0.6;
+      m1.color = C.COLORS.splitter || '#ffaa00';
+      m2.color = C.COLORS.splitter || '#ffaa00';
+      m1.gx = alien.gx - 14;
+      m1.gy = alien.gy + 8;
+      m1.x = alien.x - 14;
+      m1.y = alien.y + 8;
+      m2.gx = alien.gx + 14;
+      m2.gy = alien.gy + 8;
+      m2.x = alien.x + 14;
+      m2.y = alien.y + 8;
+      this.aliens.push(m1, m2);
+      if (world && world.particles) {
+        world.particles.emitSparks(alien.x, alien.y, C.COLORS.splitter || '#ffaa00', 14, 0, 1, Math.PI);
+      }
     }
 
     // Commander down: the swarm loses its choreographer. Any formation in
