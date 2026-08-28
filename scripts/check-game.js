@@ -4505,6 +4505,8 @@ scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wa
     const swW4 = new env.SI.Swarm(4);
     const swW5 = new env.SI.Swarm(5);
     const swW6 = new env.SI.Swarm(6);
+    const swW16 = new env.SI.Swarm(16);
+    const swW20 = new env.SI.Swarm(20);
 
     check('(f) Wave 1 frenzy threshold is 0 (inactive)', swW1.frenzyThreshold() === 0);
     check('(f) Wave 2 frenzy threshold is 5 (base after 1 completed wave)', swW2.frenzyThreshold() === 5);
@@ -4512,6 +4514,8 @@ scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wa
     check('(f) Wave 4 frenzy threshold is 7 (+2 for 3 completed waves)', swW4.frenzyThreshold() === 7);
     check('(f) Wave 5 frenzy threshold is 8 (+3 for 4 completed waves)', swW5.frenzyThreshold() === 8);
     check('(f) Wave 6 frenzy threshold is 9 (+4 for 5 completed waves)', swW6.frenzyThreshold() === 9);
+    check('(f) Wave 16 frenzy threshold is 19 (5 + 14 completed waves)', swW16.frenzyThreshold() === 19);
+    check('(f) Wave 20 frenzy threshold is 23 (5 + 18 completed waves)', swW20.frenzyThreshold() === 23);
 
     // On Wave 4 (threshold 7), 7 surviving aliens triggers frenzy
     for (let i = 7; i < swW4.aliens.length; i++) {

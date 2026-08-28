@@ -248,7 +248,6 @@
       BASE_THRESHOLD: 5,  // Base survival threshold on Wave 2 (1 completed wave)
       THRESHOLD: 5,       // Legacy alias for base threshold
       SCALE_PER_WAVE: 1,  // Threshold increases by +1 for every completed wave
-      MAX_THRESHOLD: 18,  // Upper safety clamp
       WAVE_AMP: 18,       // Vertical sinusoidal up/down weave amplitude (pixels)
       WAVE_FREQ: 3.4,     // Vertical weave frequency
       SWOOP_SPEED: 280,   // Eagle swoop dive speed

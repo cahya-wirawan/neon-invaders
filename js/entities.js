@@ -706,11 +706,7 @@
     if (!Fz || this.wave < Fz.FROM_WAVE) { return 0; }
     var base = Fz.BASE_THRESHOLD || Fz.THRESHOLD || 5;
     var scale = Fz.SCALE_PER_WAVE !== undefined ? Fz.SCALE_PER_WAVE : 1;
-    var thresh = base + (this.wave - Fz.FROM_WAVE) * scale;
-    if (Fz.MAX_THRESHOLD) {
-      thresh = Math.min(thresh, Fz.MAX_THRESHOLD);
-    }
-    return thresh;
+    return base + (this.wave - Fz.FROM_WAVE) * scale;
   };
 
   Swarm.prototype.isFrenzy = function () {
