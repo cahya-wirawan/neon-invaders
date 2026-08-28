@@ -161,7 +161,8 @@ kill it and formations are cancelled and disabled for the rest of the wave.
 That commander wears one of `COMMANDER.PERSONALITIES` (AGGRESSOR, TACTICIAN, BARRAGE).
 
 **Intelligent Frenzy & Eagle Swoops (`CONFIG.FRENZY`, `entities.js`).** On Wave 2+,
-when the swarm is reduced to 5 or fewer survivors, Frenzy mode activates. The survivors
+when the swarm drops to the survival threshold (scaling by +1 surviving alien per completed wave:
+5 on Wave 2, 6 on Wave 3, 7 on Wave 4, etc.), Frenzy mode activates. The survivors
 break out of rigid 1D marching into fluid 2D sinusoidal vertical wave weaving, periodically
 launch predatory curved eagle swoop dives toward the player with aimed apex bolts, and
 target the player's column with leading fire. Grid anchors remain untouched, keeping invasion

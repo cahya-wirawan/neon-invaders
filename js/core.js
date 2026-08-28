@@ -238,12 +238,17 @@
     },
 
     // Intelligent Frenzy & Predatory Eagle Swoop Attacks.
-    // When few aliens remain (THRESHOLD or fewer) on Wave 2+, the survivors
-    // become highly intelligent and aggressive: they undulate up and down
-    // dynamically and periodically launch predatory eagle swoop attacks.
+    // When few aliens remain on Wave 2+, the survivors become highly
+    // intelligent and aggressive: they undulate up and down dynamically,
+    // fire with predictive aim, and launch predatory eagle swoop attacks.
+    // The activation threshold starts at 5 surviving aliens on Wave 2 (after
+    // 1 completed wave) and increases by +1 for every completed wave.
     FRENZY: {
       FROM_WAVE: 2,       // Wave 1 stays 100% classic Space Invaders
-      THRESHOLD: 5,       // Activates when aliveCount <= 5 aliens
+      BASE_THRESHOLD: 5,  // Base survival threshold on Wave 2 (1 completed wave)
+      THRESHOLD: 5,       // Legacy alias for base threshold
+      SCALE_PER_WAVE: 1,  // Threshold increases by +1 for every completed wave
+      MAX_THRESHOLD: 18,  // Upper safety clamp
       WAVE_AMP: 18,       // Vertical sinusoidal up/down weave amplitude (pixels)
       WAVE_FREQ: 3.4,     // Vertical weave frequency
       SWOOP_SPEED: 280,   // Eagle swoop dive speed

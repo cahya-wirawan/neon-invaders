@@ -67,7 +67,7 @@ unread; left alone for 12 seconds it picks the highlighted card for you.
 
 ## Special Abilities & Features (v1.8.0)
 
-- **Intelligent Frenzy & Predatory Eagle Swoops**: When the alien swarm drops to 5 or fewer survivors on Wave 2+, aliens enter Frenzy mode, dynamically weaving up and down in 2D sinusoidal waves, launching hunting eagle swoop dive attacks with aimed apex bolts, and targeting the player ship with leading fire.
+- **Intelligent Frenzy & Predatory Eagle Swoops**: When surviving aliens drop to the survival threshold on Wave 2+ (scaling by +1 alien per completed wave: 5 on Wave 2, 6 on Wave 3, 7 on Wave 4, etc.), aliens enter Frenzy mode, dynamically weaving up and down in 2D sinusoidal waves, launching hunting eagle swoop dive attacks with aimed apex bolts, and targeting the player ship with leading fire.
 - **Prism Scatter Fused Weapon**: Combines `spread` + `bounce` upgrades into a 3-way ricocheting volley where all projectiles bounce off side walls up to 2 times.
 - **Phase / Cloaking Alien Class**: Specialist cloaked aliens (Wave 6+) that cycle between active solid state and intangible phased states with high-frequency sine flicker tells.
 - **CRT Scanline & Phosphor Bloom Modes**: Real-time switchable visual post-processing (`OFF`, `SCANLINES`, `PHOSPHOR`) toggled with `C` key or via Pause Menu.

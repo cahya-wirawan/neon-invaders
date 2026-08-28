@@ -4497,6 +4497,33 @@ scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wa
     }
     check('(e) Frenzy shooter selection intelligently prioritizes closest column to player',
       col1Count >= 60, `col1Count=${col1Count}/100`);
+
+    /* (f) Progressive threshold scaling (+1 per completed wave) */
+    const swW1 = new env.SI.Swarm(1);
+    const swW2 = new env.SI.Swarm(2);
+    const swW3 = new env.SI.Swarm(3);
+    const swW4 = new env.SI.Swarm(4);
+    const swW5 = new env.SI.Swarm(5);
+    const swW6 = new env.SI.Swarm(6);
+
+    check('(f) Wave 1 frenzy threshold is 0 (inactive)', swW1.frenzyThreshold() === 0);
+    check('(f) Wave 2 frenzy threshold is 5 (base after 1 completed wave)', swW2.frenzyThreshold() === 5);
+    check('(f) Wave 3 frenzy threshold is 6 (+1 for 2 completed waves)', swW3.frenzyThreshold() === 6);
+    check('(f) Wave 4 frenzy threshold is 7 (+2 for 3 completed waves)', swW4.frenzyThreshold() === 7);
+    check('(f) Wave 5 frenzy threshold is 8 (+3 for 4 completed waves)', swW5.frenzyThreshold() === 8);
+    check('(f) Wave 6 frenzy threshold is 9 (+4 for 5 completed waves)', swW6.frenzyThreshold() === 9);
+
+    // On Wave 4 (threshold 7), 7 surviving aliens triggers frenzy
+    for (let i = 7; i < swW4.aliens.length; i++) {
+      swW4.aliens[i].alive = false;
+    }
+    check('(f) Wave 4 with 7 surviving aliens activates frenzy', swW4.isFrenzy() === true);
+
+    // On Wave 2 (threshold 5), 7 surviving aliens does NOT trigger frenzy
+    for (let i = 7; i < swW2.aliens.length; i++) {
+      swW2.aliens[i].alive = false;
+    }
+    check('(f) Wave 2 with 7 surviving aliens does not activate frenzy', swW2.isFrenzy() === false);
   });
 });
 

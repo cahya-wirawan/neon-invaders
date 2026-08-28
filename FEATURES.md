@@ -616,8 +616,9 @@ flow in `js/game.js`).
 
 ## Intelligent Frenzy & Predatory Eagle Swoops (v1.8.0)
 
-- **[shipped]** **Late-Wave Swarm Intelligence (`CONFIG.FRENZY`)**:
-  - Activates on Wave 2+ whenever the swarm thins down to 5 or fewer surviving aliens (`THRESHOLD: 5`).
+- **[shipped]** **Late-Wave Swarm Intelligence & Progressive Scaling (`CONFIG.FRENZY`)**:
+  - Activates on Wave 2+ whenever the swarm thins down to the survival threshold (`frenzyThreshold()`).
+  - **Progressive Wave Scaling**: The survival alien activation gate begins at 5 aliens on Wave 2 (after 1 completed wave) and increases by **+1 surviving alien for every completed wave** (Wave 2: 5, Wave 3: 6, Wave 4: 7, Wave 5: 8, Wave 6: 9, etc., capped at 18).
   - Wave 1 remains 100% classic Space Invaders behavior and retains its bit-identical golden checksum.
 - **[shipped]** **Dynamic 2D Sinusoidal Vertical Undulation**:
   - Remaining survivors break out of 1D horizontal marching into fluid vertical wave weaving (`WAVE_AMP: 18px`, `WAVE_FREQ: 3.4`).

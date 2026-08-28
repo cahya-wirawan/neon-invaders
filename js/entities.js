@@ -696,15 +696,32 @@
     }
   };
 
-  // EAGLE SWOOP ATTACK.
-  // In Frenzy mode (Wave 2+, aliveCount <= 5), the surviving aliens become
-  // intelligent predators: they weave vertically and periodically launch
-  // a swooping dive attack toward the player's position, firing an aimed
-  // shot at the apex before banking upward in a loop back to the swarm.
+  // In Frenzy mode (Wave 2+, survival threshold scaling by +1 per completed wave),
+  // the surviving aliens become intelligent predators: they weave vertically and
+  // periodically launch a swooping dive attack toward the player's position, firing
+  // an aimed shot at the apex before banking upward in a loop back to the swarm.
   // Like kamikaze dives, swoops do not displace grid anchors (gx/gy).
+  Swarm.prototype.frenzyThreshold = function () {
+    var Fz = C.FRENZY;
+    if (!Fz || this.wave < Fz.FROM_WAVE) { return 0; }
+    var base = Fz.BASE_THRESHOLD || Fz.THRESHOLD || 5;
+    var scale = Fz.SCALE_PER_WAVE !== undefined ? Fz.SCALE_PER_WAVE : 1;
+    var thresh = base + (this.wave - Fz.FROM_WAVE) * scale;
+    if (Fz.MAX_THRESHOLD) {
+      thresh = Math.min(thresh, Fz.MAX_THRESHOLD);
+    }
+    return thresh;
+  };
+
+  Swarm.prototype.isFrenzy = function () {
+    var Fz = C.FRENZY;
+    if (!Fz || this.wave < Fz.FROM_WAVE) { return false; }
+    return this.aliveCount() <= this.frenzyThreshold();
+  };
+
   Swarm.prototype.updateEagleSwoop = function (dt, world) {
     var Fz = C.FRENZY;
-    if (!Fz || this.wave < Fz.FROM_WAVE || this.aliveCount() > Fz.THRESHOLD) {
+    if (!this.isFrenzy()) {
       return;
     }
 
@@ -901,7 +918,7 @@
     }
 
     var Fz = C.FRENZY;
-    var isFrenzy = Fz && (this.wave >= Fz.FROM_WAVE) && (alive <= Fz.THRESHOLD);
+    var isFrenzy = this.isFrenzy();
     if (isFrenzy) {
       this.frenzyTimer += dt;
     }
@@ -1224,7 +1241,7 @@
     if (!list.length) { return null; }
 
     var Fz = C.FRENZY;
-    if (Fz && this.wave >= Fz.FROM_WAVE && this.aliveCount() <= Fz.THRESHOLD &&
+    if (this.isFrenzy() &&
         world && typeof world.playerX === 'number' && SI.chance(Fz.AIM_BIAS || 0.7)) {
       list.sort(function (a, b) {
         return Math.abs(a.x - world.playerX) - Math.abs(b.x - world.playerX);
