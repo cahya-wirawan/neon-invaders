@@ -421,6 +421,7 @@
     this.dive = null;
     this.diveTimer = 0;
     this.swoop = null;
+    this.soar = null;
     this.phaseTimer = 0;
     this.phased = false;
     this.splitter = false;
@@ -751,17 +752,84 @@
   Swarm.prototype.isFrenzy = function () {
     var Fz = C.FRENZY;
     if (!Fz || this.wave < Fz.FROM_WAVE) { return false; }
-    return this.aliveCount() <= this.frenzyThreshold();
+    var count = this.aliveCount();
+    return count > 0 && count <= this.frenzyThreshold();
+  };
+
+  Swarm.prototype.updateSoaring = function (dt, world) {
+    var Fz = C.FRENZY;
+    var minX = (Fz && Fz.SOAR_MIN_X) || 40;
+    var maxX = (Fz && Fz.SOAR_MAX_X) || 920;
+    var minY = (Fz && Fz.SOAR_MIN_Y) || 100;
+    var maxY = (Fz && Fz.SOAR_MAX_Y) || 450;
+    var speed = (Fz && Fz.SOAR_SPEED) || 140;
+
+    for (var i = 0; i < this.aliens.length; i++) {
+      var a = this.aliens[i];
+      if (!a.alive || a.dive || a.swoop) { continue; }
+
+      if (!a.soar) {
+        var initHeading = ((a.col % 2 === 0 ? 0 : Math.PI) + (a.row * 0.6)) % (Math.PI * 2);
+        a.soar = {
+          heading: initHeading,
+          turnTimer: 0.4 + (i * 0.25) % 1.2,
+          turnRate: ((i % 2 === 0) ? 1.4 : -1.4)
+        };
+      }
+
+      var s = a.soar;
+      s.turnTimer -= dt;
+      if (s.turnTimer <= 0) {
+        s.turnTimer = SI.rand(0.6, 2.0);
+        s.turnRate = SI.rand(-2.4, 2.4);
+      }
+
+      s.heading += s.turnRate * dt;
+      s.heading = Math.atan2(Math.sin(s.heading), Math.cos(s.heading));
+
+      // Predictive boundary avoidance & reflection steering
+      var padX = 60, padY = 40;
+      if (a.x < minX + padX && Math.cos(s.heading) < 0) {
+        s.heading = SI.lerp(s.heading, 0, Math.min(1, dt * 8));
+      } else if (a.x > maxX - padX && Math.cos(s.heading) > 0) {
+        s.heading = SI.lerp(s.heading, Math.PI, Math.min(1, dt * 8));
+      }
+      if (a.y < minY + padY && Math.sin(s.heading) < 0) {
+        s.heading = SI.lerp(s.heading, Math.PI / 2, Math.min(1, dt * 8));
+      } else if (a.y > maxY - padY && Math.sin(s.heading) > 0) {
+        s.heading = SI.lerp(s.heading, -Math.PI / 2, Math.min(1, dt * 8));
+      }
+
+      a.x += Math.cos(s.heading) * speed * dt;
+      a.y += Math.sin(s.heading) * speed * dt;
+
+      // Hard boundary reflection if margin is breached
+      if (a.x <= minX) {
+        a.x = minX;
+        s.heading = Math.atan2(Math.sin(s.heading), Math.abs(Math.cos(s.heading)));
+      } else if (a.x >= maxX) {
+        a.x = maxX;
+        s.heading = Math.atan2(Math.sin(s.heading), -Math.abs(Math.cos(s.heading)));
+      }
+      if (a.y <= minY) {
+        a.y = minY;
+        s.heading = Math.atan2(Math.abs(Math.sin(s.heading)), Math.cos(s.heading));
+      } else if (a.y >= maxY) {
+        a.y = maxY;
+        s.heading = Math.atan2(-Math.abs(Math.sin(s.heading)), Math.cos(s.heading));
+      }
+
+      if (world && world.particles && SI.chance(0.25)) {
+        world.particles.emitTrail(a.x, a.y - a.h / 2, '#ff3366', 6, 0.12);
+      }
+    }
   };
 
   Swarm.prototype.updateEagleSwoop = function (dt, world) {
     var Fz = C.FRENZY;
-    if (!this.isFrenzy()) {
-      return;
-    }
-
     var i, a;
     var activeSwooper = false;
+
     for (i = 0; i < this.aliens.length; i++) {
       a = this.aliens[i];
       if (a.alive && a.swoop) {
@@ -777,29 +845,35 @@
           // Fire aimed pulse bolt near apex of dive
           if (u >= 0.70 && !sw.fired) {
             sw.fired = true;
-            if (world && world.spawnBullet) {
-              world.spawnBullet(new Bullet(
+            var maxBul = this.maxBullets || C.COMMANDER.MAX_ALIEN_BULLETS || 6;
+            if (world && world.spawnBullet && (!world.alienBulletCount || world.alienBulletCount() < maxBul)) {
+              var aimVx = (world && typeof world.playerX === 'number') ? SI.clamp((world.playerX - a.x) * 1.5, -120, 120) : 0;
+              var b = new Bullet(
                 a.x,
                 a.y + a.h / 2 + 4,
                 this.bulletSpeed * 1.15,
                 'alien',
                 '#ff3366'
-              ));
+              );
+              b.vx = aimVx;
+              world.spawnBullet(b);
               if (world.particles) {
                 world.particles.emitSparks(a.x, a.y + a.h / 2, '#ff3366', 8, 0, 1, 0.8);
               }
             }
           }
         } else if (p < 1.0) {
-          // Phase 2: Banking upward loop / climb back to formation slot
+          // Phase 2: Banking upward loop / climb back to soaring altitude
           var v = (p - 0.55) / 0.45;
-          a.y = sw.targetY + (a.gy - sw.targetY) * Math.sin(v * Math.PI / 2);
-          a.x = sw.targetX + (a.gx - sw.targetX) * v - sw.bankX * 0.45 * Math.sin(v * Math.PI);
+          var recoveryY = SI.clamp(sw.startY, (Fz && Fz.SOAR_MIN_Y) || 100, (Fz && Fz.SOAR_MAX_Y) || 450);
+          a.y = sw.targetY + (recoveryY - sw.targetY) * Math.sin(v * Math.PI / 2);
+          a.x = sw.targetX + (sw.startX - sw.targetX) * v - sw.bankX * 0.45 * Math.sin(v * Math.PI);
         } else {
-          // Swoop complete: safely dock back onto grid anchor
+          // Swoop complete: seamlessly continue independent soaring flight
           a.swoop = null;
-          a.x = a.gx;
-          a.y = a.gy;
+          if (a.soar) {
+            a.soar.heading = SI.rand(-Math.PI, Math.PI);
+          }
         }
 
         if (a.swoop) {
@@ -809,6 +883,10 @@
           }
         }
       }
+    }
+
+    if (!this.isFrenzy()) {
+      return;
     }
 
     // Launch a new eagle swoop periodically if none is active
@@ -826,6 +904,7 @@
         if (candidates.length > 0) {
           var eagle = SI.pick(candidates);
           var playerX = (world && typeof world.playerX === 'number') ? world.playerX : C.WORLD_W / 2;
+          var playerY = (C.PLAYER && C.PLAYER.Y) ? C.PLAYER.Y : 648;
           var bankDir = (eagle.col % 2 === 0 ? 1 : -1);
           var bankOffset = bankDir * SI.rand(60, 110);
           eagle.swoop = {
@@ -834,7 +913,7 @@
             startX: eagle.x,
             startY: eagle.y,
             targetX: playerX,
-            targetY: 570,
+            targetY: playerY,
             bankX: bankOffset,
             fired: false
           };
@@ -962,13 +1041,14 @@
     // it is a plain `x = gx; y = gy`.
     this.updateFormation(dt, world);
 
-    // If frenzy is active, survivors dynamically weave up and down
+    // If frenzy is active, survivors decouple and soar independently
     if (isFrenzy) {
+      this.updateSoaring(dt, world);
+    } else {
       for (i = 0; i < this.aliens.length; i++) {
-        a = this.aliens[i];
-        if (!a.alive || a.dive || a.swoop) { continue; }
-        var waveOffset = Math.sin(this.frenzyTimer * Fz.WAVE_FREQ + a.col * 0.9) * Fz.WAVE_AMP;
-        a.y = Math.min(a.gy + waveOffset, (C.FORMATION && C.FORMATION.MAX_Y) || 560);
+        if (this.aliens[i].soar) {
+          this.aliens[i].soar = null;
+        }
       }
     }
 
@@ -1014,7 +1094,7 @@
       }
     }
 
-    if (this.gridBounds().maxY >= C.SWARM.FLOOR_Y && world.onInvasion) {
+    if (!this.isFrenzy() && this.gridBounds().maxY >= C.SWARM.FLOOR_Y && world.onInvasion) {
       world.onInvasion();
     }
   };
@@ -1026,9 +1106,8 @@
   Swarm.prototype.snapToGrid = function () {
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
-      // A committed kamikaze or swooper is not part of the grid any more:
-      // it owns its own absolute x/y and must not be yanked back onto its anchor.
-      if (a.dive || a.swoop) { continue; }
+      // A committed kamikaze, swooper, or independent soaring alien is not part of the grid:
+      if (a.dive || a.swoop || (this.isFrenzy() && a.soar)) { continue; }
       a.fx = 0;
       a.fy = 0;
       a.x = a.gx;
@@ -1207,7 +1286,7 @@
       } else {
         f.k = 1 - SI.smoothstep(f.t / easeOut);
       }
-    } else if (this.formationsEnabled) {
+    } else if (this.formationsEnabled && !this.isFrenzy()) {
       this.formationTimer -= dt;
       if (this.formationTimer <= 0) {
         if (this.aliveCount() >= F.MIN_ALIVE) {
@@ -1229,7 +1308,7 @@
     if (!f) {
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive || a.swoop) { continue; }
+        if (!a.alive || a.dive || a.swoop || (this.isFrenzy() && a.soar)) { continue; }
         a.x = a.gx;
         a.y = a.gy;
       }
@@ -1238,7 +1317,7 @@
 
     for (i = 0; i < this.aliens.length; i++) {
       a = this.aliens[i];
-      if (!a.alive || a.dive || a.swoop) { continue; }
+      if (!a.alive || a.dive || a.swoop || (this.isFrenzy() && a.soar)) { continue; }
       ox = a.fx * f.k;
       oy = a.fy * f.k;
       ex = a.gx + ox;
@@ -1257,9 +1336,29 @@
   };
 
   Swarm.prototype.pickShooter = function (world) {
+    var i, a;
+    var Fz = C.FRENZY;
+    if (this.isFrenzy()) {
+      var frenzyList = [];
+      for (i = 0; i < this.aliens.length; i++) {
+        a = this.aliens[i];
+        if (a.alive && !a.dive && !a.swoop) {
+          frenzyList.push(a);
+        }
+      }
+      if (!frenzyList.length) { return null; }
+      if (world && typeof world.playerX === 'number' && SI.chance(Fz.AIM_BIAS || 0.7)) {
+        frenzyList.sort(function (x, y) {
+          return Math.abs(x.x - world.playerX) - Math.abs(y.x - world.playerX);
+        });
+        return frenzyList[0];
+      }
+      return SI.pick(frenzyList);
+    }
+
     var byCol = {};
-    for (var i = 0; i < this.aliens.length; i++) {
-      var a = this.aliens[i];
+    for (i = 0; i < this.aliens.length; i++) {
+      a = this.aliens[i];
       // A committed rammer or swooper is out of the firing line:
       if (!a.alive || a.dive || a.swoop) { continue; }
       var cur = byCol[a.col];
@@ -1274,20 +1373,13 @@
       }
     }
     if (!list.length) { return null; }
-
-    var Fz = C.FRENZY;
-    if (this.isFrenzy() &&
-        world && typeof world.playerX === 'number' && SI.chance(Fz.AIM_BIAS || 0.7)) {
-      list.sort(function (a, b) {
-        return Math.abs(a.x - world.playerX) - Math.abs(b.x - world.playerX);
-      });
-      return list[0];
-    }
     return SI.pick(list);
   };
 
   Swarm.prototype.killAlien = function (alien, world, lethalBullet) {
     alien.alive = false;
+    alien.soar = null;
+    alien.swoop = null;
     if (world && world.particles) {
       world.particles.emitExplosion(alien.x, alien.y, alien.color, 24, 1);
       world.particles.emitDebris(alien.x, alien.y, alien.color, 8, 0.9);

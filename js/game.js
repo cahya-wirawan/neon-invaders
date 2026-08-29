@@ -709,8 +709,8 @@
       if (this.player.alive && this.player.invuln <= 0) {
         for (i = 0; i < swarmAliens.length; i++) {
           var kz = swarmAliens[i];
-          if (!kz.alive || (!kz.dive && !kz.swoop)) { continue; }
-          if (SI.aabb(kz.box(), this.player.box())) {
+          if (!kz.alive) { continue; }
+          if ((kz.dive || kz.swoop || (this.swarm.isFrenzy() && kz.soar)) && SI.aabb(kz.box(), this.player.box())) {
             this.swarm.killAlien(kz, world);   // BEFORE loseLife(): it dies either way
             this.loseLife(world, false);
             break;                             // at most one contact per frame

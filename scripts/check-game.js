@@ -4400,15 +4400,44 @@ scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wa
     }
     check('(b) Wave 2 swarm thinned to 4 aliens', sw2.aliveCount() === 4);
 
-    let observedWeave = false;
-    for (let t = 0; t < 20; t++) {
+    let observedSoaring = false;
+    let boundedCoordinates = true;
+    let sustainedDisplacement = false;
+    let pairwiseDivergence = false;
+
+    const aliveInit = sw2.aliens.filter((a) => a.alive);
+    const a0 = aliveInit[0];
+    const a1 = aliveInit[1];
+    const initDist = Math.hypot(a0.x - a1.x, a0.y - a1.y);
+
+    for (let t = 0; t < 60; t++) {
       tick(env, g2);
-      const a = sw2.aliens[0];
-      if (a.alive && Math.abs(a.y - a.gy) > 0.5) {
-        observedWeave = true;
+      if (a0.alive && a0.soar) {
+        observedSoaring = true;
+      }
+      // Check that displacement from grid anchors accumulates across frames (> 15px)
+      if (a0.alive && Math.hypot(a0.x - a0.gx, a0.y - a0.gy) > 15) {
+        sustainedDisplacement = true;
+      }
+      if (a0.alive && a1.alive) {
+        const curDist = Math.hypot(a0.x - a1.x, a0.y - a1.y);
+        if (Math.abs(curDist - initDist) > 10) {
+          pairwiseDivergence = true;
+        }
+      }
+      for (let k = 0; k < aliveInit.length; k++) {
+        const al = aliveInit[k];
+        if (al.alive) {
+          if (al.x < 35 || al.x > 925 || al.y < 95 || al.y > 455) {
+            boundedCoordinates = false;
+          }
+        }
       }
     }
-    check('(b) Wave 2 survivors dynamically weave vertically (up/down)', observedWeave);
+    check('(b) Wave 2 survivors fly independently in soaring mode', observedSoaring);
+    check('(b) Independent soaring flight accumulates sustained displacement without grid snapping', sustainedDisplacement);
+    check('(b) Soaring aliens display pairwise trajectory divergence (no lockstep)', pairwiseDivergence);
+    check('(b) Independent soaring flight stays strictly within arena bounds', boundedCoordinates);
 
     /* (c) Eagle Swoop Attack Execution */
     const g3 = startedGame(env, 2);
@@ -4424,16 +4453,21 @@ scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wa
     check('(c) An alien launches a predatory eagle swoop', !!eagle);
     if (eagle) {
       check('(c) Eagle swoop has targetX set to player X', Math.abs(eagle.swoop.targetX - 480) < 1e-3);
+      check('(c) Eagle swoop has targetY reaching player ship line', eagle.swoop.targetY >= 640);
       check('(c) Eagle start coordinates match initial position',
-        Math.abs(eagle.swoop.startX - eagle.gx) < 15 && Math.abs(eagle.swoop.startY - eagle.gy) < 15);
+        Math.abs(eagle.swoop.startX - eagle.x) < 25 && Math.abs(eagle.swoop.startY - eagle.y) < 25);
 
       let firedApex = false;
       let bankedUpward = false;
-      let returnedToAnchor = false;
+      let resumedSoaring = false;
+      let diveDepthReached = false;
 
       for (let t = 0; t < 150; t++) {
         tick(env, g3);
         if (eagle.alive && eagle.swoop) {
+          if (eagle.y >= 580) {
+            diveDepthReached = true;
+          }
           if (eagle.swoop.fired) {
             firedApex = true;
           }
@@ -4441,14 +4475,15 @@ scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wa
             bankedUpward = true;
           }
         } else if (eagle.alive && !eagle.swoop) {
-          returnedToAnchor = true;
+          resumedSoaring = true;
           break;
         }
       }
 
+      check('(c) Eagle dive depth reaches combat threatening altitude (Y >= 580)', diveDepthReached);
       check('(c) Eagle fired aimed shot at apex of dive', firedApex);
       check('(c) Eagle banked upward in climbing recovery arc', bankedUpward);
-      check('(c) Eagle smoothly completed swoop loop and returned to anchor', returnedToAnchor);
+      check('(c) Eagle smoothly completed swoop loop and resumed independent soaring', resumedSoaring);
     }
 
     /* (d) Eagle swoop contact with player ship */
@@ -4535,6 +4570,21 @@ scenario('47. Intelligent Frenzy vertical weaving and Predatory Eagle Swoops (Wa
       swW2.aliens[i].alive = false;
     }
     check('(f) Wave 2 with 7 surviving aliens does not activate frenzy', swW2.isFrenzy() === false);
+
+    /* (g) Eliminating all soaring frenzy aliens triggers clean WAVE_CLEAR */
+    const g6 = startedGame(env, 2);
+    const sw6 = g6.swarm;
+    for (let i = 1; i < sw6.aliens.length; i++) {
+      sw6.aliens[i].alive = false;
+    }
+    check('(g) Wave 2 with 1 surviving alien is in frenzy', sw6.isFrenzy() === true);
+    tick(env, g6);
+    // Destroy the final soaring alien
+    sw6.killAlien(sw6.aliens[0], g6.world);
+    check('(g) Eliminating final alien results in 0 alive', sw6.aliveCount() === 0);
+    check('(g) isFrenzy is false when 0 aliens remain', sw6.isFrenzy() === false);
+    g6.update(1 / 60);
+    check('(g) Game transitions cleanly to WAVE_CLEAR state', g6.state === env.SI.STATE.WAVE_CLEAR);
   });
 });
 

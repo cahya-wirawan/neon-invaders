@@ -243,8 +243,10 @@
 
     // Intelligent Frenzy & Predatory Eagle Swoop Attacks.
     // When few aliens remain on Wave 2+, the survivors become highly
-    // intelligent and aggressive: they undulate up and down dynamically,
-    // fire with predictive aim, and launch predatory eagle swoop attacks.
+    // intelligent and aggressive: they break out of grid formation to soar
+    // independently in smooth curving random-directional flight within
+    // altitude Y in [100, 450] and X in [40, 920], fire with predictive aim,
+    // and launch predatory eagle swoop attacks.
     // The activation threshold starts at 5 surviving aliens on Wave 2 (after
     // 1 completed wave) and increases by +1 for every completed wave.
     FRENZY: {
@@ -252,8 +254,11 @@
       BASE_THRESHOLD: 5,  // Base survival threshold on Wave 2 (1 completed wave)
       THRESHOLD: 5,       // Legacy alias for base threshold
       SCALE_PER_WAVE: 1,  // Threshold increases by +1 for every completed wave
-      WAVE_AMP: 18,       // Vertical sinusoidal up/down weave amplitude (pixels)
-      WAVE_FREQ: 3.4,     // Vertical weave frequency
+      SOAR_MIN_X: 40,     // Flight boundaries for independent soaring
+      SOAR_MAX_X: 920,
+      SOAR_MIN_Y: 100,
+      SOAR_MAX_Y: 450,
+      SOAR_SPEED: 140,    // Independent flight speed
       SWOOP_SPEED: 280,   // Eagle swoop dive speed
       SWOOP_MIN_GAP: 3.5, // Seconds between eagle swoop attacks
       SWOOP_MAX_GAP: 6.0,

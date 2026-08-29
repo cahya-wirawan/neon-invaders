@@ -614,19 +614,19 @@ flow in `js/game.js`).
   - **Phase 3 (< 30% HP / OVERLOAD CRISIS)**: +45% speed, crimson hull glow, and 5-way desperate radial spreads.
   - Dedicated HUD health bar supporting `[PHASE 1]`, `[ENRAGED]`, and `[OVERLOAD]` status banners.
 
-## Intelligent Frenzy & Predatory Eagle Swoops (v1.8.0)
+## Intelligent Frenzy & Predatory Eagle Swoops (v1.9.1)
 
 - **[shipped]** **Late-Wave Swarm Intelligence & Progressive Scaling (`CONFIG.FRENZY`)**:
   - Activates on Wave 2+ whenever the swarm thins down to the survival threshold (`frenzyThreshold()`).
   - **Progressive Wave Scaling**: The survival alien activation gate begins at 5 aliens on Wave 2 (after 1 completed wave) and increases by **+1 surviving alien for every completed wave** (Wave 2: 5, Wave 3: 6, Wave 4: 7, Wave 5: 8, Wave 6: 9, etc., capped at 18).
   - Wave 1 remains 100% classic Space Invaders behavior and retains its bit-identical golden checksum.
-- **[shipped]** **Dynamic 2D Sinusoidal Vertical Undulation**:
-  - Remaining survivors break out of 1D horizontal marching into fluid vertical wave weaving (`WAVE_AMP: 18px`, `WAVE_FREQ: 3.4`).
-  - Grid anchors (`gx`/`gy`) remain untouched to keep invasion floors and edge bounds mathematically honest.
+- **[shipped]** **Decoupled Independent 2D Soaring Flight**:
+  - Remaining survivors break completely out of rigid grid lockstep into independent, fluid, random-directional soaring flight like eagles (`SOAR_SPEED: 140 px/s`, bounded in $X \in [40, 920]$ and altitude $Y \in [100, 450]$).
+  - Continuous angular heading adjustments and predictive edge deflection/reflection prevent wall sticking while maintaining separate trajectories.
 - **[shipped]** **Predatory Eagle Swoop Attacks**:
-  - Periodically, a surviving alien launches an aggressive hunting swoop dive aimed at the player ship.
+  - Periodically, an individual surviving alien breaks into an aggressive hunting swoop dive aimed at the player ship (`targetY: 648`).
   - **Phase 1 (Hunting Dive)**: Curving lateral arc toward `playerX` with scarlet engine thruster flare, firing a high-speed aimed pulse bolt at dive apex.
-  - **Phase 2 (Banking Loop & Recovery)**: Smooth climbing recovery arc that brings the predator back to its grid formation slot.
+  - **Phase 2 (Banking Loop & Recovery)**: Smooth climbing recovery arc that brings the predator back into independent soaring flight.
   - Direct player collision destroys the diver and costs the player a life if not invulnerable.
 - **[shipped]** **Aimed Leading Fire**:
   - In frenzy mode, shooter selection intelligently targets the occupied column closest to the player ($70\%$ aim bias).
