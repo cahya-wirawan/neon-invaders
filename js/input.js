@@ -17,6 +17,7 @@
   var SWALLOW = {
     ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1,
     Space: 1, Enter: 1, KeyA: 1, KeyD: 1, KeyZ: 1, KeyX: 1, KeyC: 1,
+    KeyF: 1, KeyG: 1, KeyH: 1, KeyB: 1,
     KeyP: 1, KeyM: 1, ShiftLeft: 1, ShiftRight: 1,
     Digit1: 1, Digit2: 1, Digit3: 1, Digit4: 1
   };
@@ -329,6 +330,27 @@
     return gamepadJustPressed(3);
   }
 
+  function dashPressed() {
+    if (pressed.ShiftLeft || pressed.ShiftRight || pressed.KeyF) {
+      return true;
+    }
+    return gamepadJustPressed(4) || gamepadJustPressed(5); // LB / RB
+  }
+
+  function glitchIncursionPressed() {
+    if (pressed.KeyG) {
+      return true;
+    }
+    return gamepadJustPressed(2); // Gamepad X (button 2)
+  }
+
+  function hangarPressed() {
+    if (pressed.KeyH) {
+      return true;
+    }
+    return gamepadJustPressed(3); // Gamepad Y (button 3)
+  }
+
   function pointerState() {
     return pointer;
   }
@@ -344,6 +366,9 @@
     firing: firing,
     firePressed: firePressed,
     empPressed: empPressed,
+    dashPressed: dashPressed,
+    glitchIncursionPressed: glitchIncursionPressed,
+    hangarPressed: hangarPressed,
     pausePressed: pausePressed,
     mutePressed: mutePressed,
     crtPressed: crtPressed,

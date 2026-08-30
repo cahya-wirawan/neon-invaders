@@ -221,7 +221,7 @@
       ctx.restore();
     }
 
-    // Secondary EMP super ability meter (bottom-left overlay).
+    // Secondary EMP super ability meter and Phase Dash readiness (bottom-left overlay).
     if (game.state === SI.STATE.PLAYING) {
       var empRatio = SI.clamp(game.emp / C.EMP.MAX, 0, 1);
       var empReady = empRatio >= 1;
@@ -240,7 +240,29 @@
         ctx.fillStyle = empColor;
         ctx.fillRect(27, C.WORLD_H - 37, Math.max(2, 98 * empRatio), 3);
       }
+
+      // Graze Energy & Phase Dash readiness
+      if (game.player) {
+        var dashReady = game.player.dashCooldown <= 0;
+        var dashColor = dashReady ? '#d066ff' : '#6c5ce7';
+        var dashLabel = dashReady ? 'DASH READY [SHIFT]' : 'DASH RECHARGING';
+        G(ctx, dashLabel, 140, C.WORLD_H - 45, {
+          font: font(11, 700), color: dashColor, glow: dashColor, blur: dashReady ? 10 : 4, alpha: dashReady ? 0.95 : 0.65
+        });
+      }
       ctx.restore();
+    }
+
+    // Glitch Incursion Mode Info
+    if (game.isGlitchIncursion) {
+      G(ctx, 'INCURSION // DEPTH ' + game.wave, C.WORLD_W / 2, 96, {
+        font: font(15, 800), color: '#ff0055', glow: '#ff007f', blur: 12, align: 'center', alpha: 0.95
+      });
+      if (game.perks && game.perks.length > 0) {
+        G(ctx, 'PERKS: ' + game.perks.length, C.WORLD_W - 26, 96, {
+          font: font(14, 700), color: '#5ffbf1', blur: 8, align: 'right', alpha: 0.9
+        });
+      }
     }
 
     // Toast notification for unlockable achievements.
@@ -267,33 +289,45 @@
     dim(ctx, 0.45);
 
     var bob = Math.sin(t * 1.6) * 6;
-    G(ctx, 'NEON', C.WORLD_W / 2, 250 + bob, {
+    G(ctx, 'NEON', C.WORLD_W / 2, 230 + bob, {
       font: font(96, 900), color: '#eafcff', glow: C.COLORS.playerGlow, blur: 34, align: 'center'
     });
-    G(ctx, 'INVADERS', C.WORLD_W / 2, 340 + bob, {
+    G(ctx, 'INVADERS', C.WORLD_W / 2, 320 + bob, {
       font: font(76, 900), color: '#ffd0f4', glow: C.COLORS.accent, blur: 34, align: 'center'
     });
 
     var blink = 0.55 + 0.45 * Math.sin(t * 4);
-    G(ctx, 'PRESS  SPACE  /  ENTER  /  TAP  TO  START', C.WORLD_W / 2, 430, {
-      font: font(22), color: '#9df3ff', blur: 18, align: 'center', alpha: blink
+    G(ctx, 'PRESS  SPACE  /  ENTER  /  TAP  TO  START  CAMPAIGN', C.WORLD_W / 2, 400, {
+      font: font(20), color: '#9df3ff', blur: 18, align: 'center', alpha: blink
     });
 
     var rawRushPb = localStorage.getItem('neon_invaders_boss_rush_pb');
     var parsedRushPb = parseFloat(rawRushPb);
-    var rushText = (isFinite(parsedRushPb) && parsedRushPb > 0) ? ' (RECORD: ' + parsedRushPb.toFixed(2) + 's)' : '';
-    G(ctx, '[B] BOSS RUSH MODE' + rushText, C.WORLD_W / 2, 468, {
-      font: font(17, 800), color: '#ff3366', glow: '#ff2d55', blur: 14, align: 'center', alpha: 0.95
+    var rushText = (isFinite(parsedRushPb) && parsedRushPb > 0) ? ' (PB: ' + parsedRushPb.toFixed(2) + 's)' : '';
+    G(ctx, '[B] BOSS RUSH MODE' + rushText, C.WORLD_W / 2 - 190, 442, {
+      font: font(15, 800), color: '#ff3366', glow: '#ff2d55', blur: 12, align: 'center', alpha: 0.95
+    });
+
+    var glitchPb = SI.loadGlitchRecord ? SI.loadGlitchRecord() : { wave: 0, score: 0 };
+    var glitchText = glitchPb.wave > 0 ? ' (PB: DEPTH ' + glitchPb.wave + ')' : '';
+    G(ctx, '[G] GLITCH INCURSION' + glitchText, C.WORLD_W / 2 + 190, 442, {
+      font: font(15, 800), color: '#ff0055', glow: '#ff007f', blur: 12, align: 'center', alpha: 0.95
+    });
+
+    var curShip = SI.getSelectedShip ? SI.getSelectedShip() : 'ALPHA';
+    var shipCfg = (C.SHIPS && C.SHIPS.CLASSES && C.SHIPS.CLASSES[curShip]) ? C.SHIPS.CLASSES[curShip] : { name: 'ALPHA INTERCEPTOR', color: '#5ffbf1' };
+    G(ctx, '[H] FLEET HANGAR // SHIP: ' + shipCfg.name, C.WORLD_W / 2, 480, {
+      font: font(15, 800), color: shipCfg.color, glow: shipCfg.color, blur: 12, align: 'center', alpha: 0.95
     });
 
     var lines = [
-      'MOVE: ← → / A D / GAMEPAD STICK      FIRE: SPACE / Z / BTN A',
-      'EMP BOMB: X / SHIFT / BTN B          PAUSE: P / START',
-      'Defeat boss flagships at Wave 7, 14 & 21. Discover weapon fusions.'
+      'MOVE: ← → / A D / STICK      FIRE: SPACE / Z / BTN A      DASH: SHIFT / F / BTN LB',
+      'EMP BOMB: X / BTN B          PAUSE: P / START             HAZARDS: ASTEROIDS & COMETS',
+      'Defeat boss flagships at Wave 7, 14 & 21. Discover weapon fusions & ship classes.'
     ];
     for (var i = 0; i < lines.length; i++) {
-      G(ctx, lines[i], C.WORLD_W / 2, 524 + i * 32, {
-        font: font(15, 600), color: '#8fb6d8', blur: 6, align: 'center', alpha: 0.9
+      G(ctx, lines[i], C.WORLD_W / 2, 532 + i * 30, {
+        font: font(14, 600), color: '#8fb6d8', blur: 6, align: 'center', alpha: 0.9
       });
     }
 
@@ -567,13 +601,196 @@
     }
   }
 
+  var PERK_CARD = { W: 240, H: 280, GAP: 24, Y: 240 };
+
+  function perkCardRect(i, n) {
+    var count = n || 3;
+    var total = count * PERK_CARD.W + (count - 1) * PERK_CARD.GAP;
+    var x0 = (C.WORLD_W - total) / 2;
+    return { x: x0 + i * (PERK_CARD.W + PERK_CARD.GAP), y: PERK_CARD.Y, w: PERK_CARD.W, h: PERK_CARD.H };
+  }
+
+  function drawPerkDraft(ctx, game) {
+    var G = SI.FX.glowText;
+    var perks = game.perkChoices || [];
+    dim(ctx, 0.68);
+
+    G(ctx, 'GLITCH INCURSION // DEPTH ' + game.wave + ' CLEARED', C.WORLD_W / 2, 140, {
+      font: font(30, 900), color: '#ff007f', glow: '#ff0055', blur: 24, align: 'center'
+    });
+    G(ctx, 'SELECT  TACTICAL  REINFORCEMENT', C.WORLD_W / 2, 192, {
+      font: font(40, 900), color: '#eafcff', glow: '#5ffbf1', blur: 26, align: 'center'
+    });
+
+    for (var i = 0; i < perks.length; i++) {
+      var p = perks[i];
+      var r = perkCardRect(i, perks.length);
+      var sel = (i === game.perkIndex);
+      var col = p.color || '#5ffbf1';
+
+      ctx.save();
+      ctx.fillStyle = sel ? '#16122c' : '#0e0b1d';
+      ctx.strokeStyle = sel ? col : 'rgba(95,251,241,0.3)';
+      ctx.lineWidth = sel ? 3 : 1.5;
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeRect(r.x, r.y, r.w, r.h);
+
+      if (sel) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        SI.FX.drawGlow(ctx, SI.FX.glow(col), r.x + r.w / 2, r.y + r.h / 2, r.w * 1.3, 0.45);
+        ctx.restore();
+      }
+
+      // Card Header Key
+      G(ctx, '[' + (i + 1) + ']', r.x + 20, r.y + 36, {
+        font: font(18, 900), color: col, glow: col, blur: sel ? 14 : 4
+      });
+
+      // Icon & Title
+      G(ctx, p.icon || '★', r.x + r.w / 2, r.y + 90, {
+        font: font(44), color: '#ffffff', blur: 12, align: 'center'
+      });
+      G(ctx, p.title || 'PERK', r.x + r.w / 2, r.y + 155, {
+        font: font(17, 800), color: col, glow: col, blur: sel ? 12 : 4, align: 'center'
+      });
+
+      // Description
+      var desc = p.desc || '';
+      var words = desc.split(' ');
+      var l1 = words.slice(0, 4).join(' ');
+      var l2 = words.slice(4).join(' ');
+      G(ctx, l1, r.x + r.w / 2, r.y + 195, {
+        font: font(13, 600), color: '#c5d8ea', blur: 4, align: 'center'
+      });
+      if (l2) {
+        G(ctx, l2, r.x + r.w / 2, r.y + 218, {
+          font: font(13, 600), color: '#c5d8ea', blur: 4, align: 'center'
+        });
+      }
+
+      if (sel) {
+        G(ctx, '▶  EQUIP  AUGMENT', r.x + r.w / 2, r.y + 254, {
+          font: font(14, 800), color: '#ffd166', glow: '#ffd166', blur: 10, align: 'center'
+        });
+      }
+
+      ctx.restore();
+    }
+
+    G(ctx, '1 - 3  /  ← →  /  A D  TO CHOOSE        SPACE  /  ENTER  /  CLICK TO DRAFT',
+      C.WORLD_W / 2, 560, {
+        font: font(16, 700), color: '#9df3ff', blur: 12, align: 'center',
+        alpha: 0.6 + 0.4 * Math.sin(game.time * 4)
+      });
+  }
+
+  function drawHangar(ctx, game) {
+    var G = SI.FX.glowText;
+    var shipIds = ['ALPHA', 'VECTOR', 'AEGIS', 'PHANTOM'];
+    var curSelected = SI.getSelectedShip ? SI.getSelectedShip() : 'ALPHA';
+    var hoveredIdx = game.hangarIndex != null ? game.hangarIndex : 0;
+    dim(ctx, 0.72);
+
+    G(ctx, 'FLEET  HANGAR  //  SHIP  BAY', C.WORLD_W / 2, 85, {
+      font: font(34, 900), color: '#eafcff', glow: '#1ce8ff', blur: 24, align: 'center'
+    });
+    var achCount = SI.Achievements ? SI.Achievements.count() : 0;
+    G(ctx, 'ACHIEVEMENTS UNLOCKED: ' + achCount + ' / 10', C.WORLD_W / 2, 122, {
+      font: font(15, 700), color: '#00f5d4', blur: 8, align: 'center'
+    });
+
+    var cardW = 205, cardH = 360, gap = 16, cardY = 150;
+    var totalW = shipIds.length * cardW + (shipIds.length - 1) * gap;
+    var startX = (C.WORLD_W - totalW) / 2;
+
+    for (var i = 0; i < shipIds.length; i++) {
+      var id = shipIds[i];
+      var s = C.SHIPS.CLASSES[id];
+      var rx = startX + i * (cardW + gap);
+      var isUnlocked = SI.isShipUnlocked ? SI.isShipUnlocked(id) : true;
+      var isCurrent = (id === curSelected);
+      var isHovered = (i === hoveredIdx);
+      var col = isUnlocked ? (s.color || '#5ffbf1') : '#555566';
+
+      ctx.save();
+      ctx.fillStyle = isHovered ? '#1a1430' : '#0e0b1d';
+      ctx.strokeStyle = isHovered ? col : (isCurrent ? '#ffd166' : 'rgba(95,251,241,0.25)');
+      ctx.lineWidth = isHovered ? 3 : (isCurrent ? 2.5 : 1.2);
+      ctx.fillRect(rx, cardY, cardW, cardH);
+      ctx.strokeRect(rx, cardY, cardW, cardH);
+
+      if (isHovered && isUnlocked) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        SI.FX.drawGlow(ctx, SI.FX.glow(col), rx + cardW / 2, cardY + cardH / 2, cardW * 1.3, 0.4);
+        ctx.restore();
+      }
+
+      // Slot index
+      G(ctx, '[' + (i + 1) + ']', rx + 16, cardY + 28, {
+        font: font(15, 900), color: col, glow: col, blur: isHovered ? 10 : 2
+      });
+
+      // Name
+      G(ctx, s.name.split(' ')[0], rx + cardW / 2, cardY + 60, {
+        font: font(17, 800), color: col, glow: col, blur: isHovered ? 12 : 4, align: 'center'
+      });
+      G(ctx, s.name.split(' ')[1] || '', rx + cardW / 2, cardY + 80, {
+        font: font(13, 700), color: '#8fb6d8', blur: 4, align: 'center'
+      });
+
+      // Silhouette Icon
+      drawLifeIcon(ctx, rx + cardW / 2, cardY + 130, 1.6, isUnlocked ? 1 : 0.35);
+
+      // Stats
+      G(ctx, 'SPEED: ' + s.speed + ' px/s', rx + cardW / 2, cardY + 195, {
+        font: font(12, 600), color: '#c5d8ea', blur: 2, align: 'center'
+      });
+      G(ctx, 'COOLDOWN: ' + (s.cooldown * 1000).toFixed(0) + 'ms', rx + cardW / 2, cardY + 218, {
+        font: font(12, 600), color: '#c5d8ea', blur: 2, align: 'center'
+      });
+      G(ctx, 'HULL: ' + s.startLives + ' LIVES', rx + cardW / 2, cardY + 241, {
+        font: font(12, 600), color: '#c5d8ea', blur: 2, align: 'center'
+      });
+
+      // Trait / Unlock status
+      if (!isUnlocked) {
+        G(ctx, 'LOCKED', rx + cardW / 2, cardY + 290, {
+          font: font(15, 800), color: '#ff3366', glow: '#ff2d55', blur: 10, align: 'center'
+        });
+        G(ctx, 'REQ: ' + s.unlockAchievements + ' ACHIEVEMENTS', rx + cardW / 2, cardY + 315, {
+          font: font(11, 700), color: '#ffd166', blur: 4, align: 'center'
+        });
+      } else if (isCurrent) {
+        G(ctx, '● DEPLOYED ●', rx + cardW / 2, cardY + 300, {
+          font: font(14, 900), color: '#ffd166', glow: '#ffd166', blur: 12, align: 'center'
+        });
+      } else if (isHovered) {
+        G(ctx, '▶ SELECT [ENTER]', rx + cardW / 2, cardY + 300, {
+          font: font(13, 800), color: '#5ffbf1', glow: '#5ffbf1', blur: 10, align: 'center'
+        });
+      }
+
+      ctx.restore();
+    }
+
+    G(ctx, '1 - 4  /  ← →  /  A D  TO CHOOSE        SPACE / ENTER TO DEPLOY        ESC / B TO RETURN',
+      C.WORLD_W / 2, 570, {
+        font: font(15, 700), color: '#9df3ff', blur: 10, align: 'center',
+        alpha: 0.6 + 0.4 * Math.sin(game.time * 4)
+      });
+  }
+
   function draw(ctx, game) {
     var S = SI.STATE;
-    if (game.state !== S.MENU) {
+    if (game.state !== S.MENU && game.state !== S.HANGAR) {
       drawBar(ctx, game);
     }
     switch (game.state) {
       case S.MENU: drawTitle(ctx, game); break;
+      case S.HANGAR: drawHangar(ctx, game); break;
+      case S.PERK_DRAFT: drawPerkDraft(ctx, game); break;
       case S.PAUSED: drawPaused(ctx, game); break;
       case S.WAVE_CLEAR: drawWaveClear(ctx, game); break;
       case S.UPGRADE: drawUpgrade(ctx, game); break;
@@ -582,5 +799,9 @@
     }
   }
 
-  SI.HUD = { draw: draw, upgradeCardRect: upgradeCardRect };
+  SI.HUD = {
+    draw: draw,
+    upgradeCardRect: upgradeCardRect,
+    perkCardRect: perkCardRect
+  };
 })(window.SI = window.SI || {});

@@ -10,7 +10,9 @@
     PAUSED: 'PAUSED',
     WAVE_CLEAR: 'WAVE_CLEAR',
     UPGRADE: 'UPGRADE',
-    GAME_OVER: 'GAME_OVER'
+    GAME_OVER: 'GAME_OVER',
+    HANGAR: 'HANGAR',
+    PERK_DRAFT: 'PERK_DRAFT'
   };
 
   var HI_KEY = 'neon-invaders-hi';
@@ -45,6 +47,15 @@
     this.swarm = null;
     this.boss = null;
     this.ufo = null;
+    this.hazards = [];
+    this.hazardTimer = 0;
+    this.drones = [];
+    this.perks = [];
+    this.perkChoices = [];
+    this.perkIndex = 0;
+    this.hangarIndex = 0;
+    this.isGlitchIncursion = false;
+    this.shieldTimer = 0;
 
     this.state = STATE.MENU;
     this.stateTimer = 0;
@@ -98,6 +109,9 @@
       wantFire: false,
       pointer: null,
       livesLeft: this.lives,
+      spawnAsteroid: function (ast) {
+        self.hazards.push(ast);
+      },
       spawnBullet: function (b) { self.bullets.push(b); },
       shake: function (power, dur) { SI.FX.addShake(power, dur); },
       alienBulletCount: function () { return self.countBullets('alien'); },
@@ -120,6 +134,10 @@
     this.isBossRush = false;
     this.bossRushWon = false;
     this.bossRushTime = 0;
+    this.isGlitchIncursion = false;
+    this.perks = [];
+    this.drones = [];
+    this.hazards = [];
     this.score = 0;
     this.baseHi = this.hi;
     this.lives = C.PLAYER.START_LIVES;
@@ -137,6 +155,10 @@
     this.isBossRush = true;
     this.bossRushWon = false;
     this.bossRushTime = 0;
+    this.isGlitchIncursion = false;
+    this.perks = [];
+    this.drones = [];
+    this.hazards = [];
     this.score = 0;
     this.baseHi = this.hi;
     this.lives = C.PLAYER.START_LIVES;
@@ -150,10 +172,66 @@
     SI.Audio.startMusic(this.wave);
   };
 
+  Game.prototype.startGlitchIncursion = function () {
+    this.isBossRush = false;
+    this.bossRushWon = false;
+    this.bossRushTime = 0;
+    this.isGlitchIncursion = true;
+    this.perks = [];
+    this.drones = [];
+    this.hazards = [];
+    this.score = 0;
+    this.baseHi = this.hi;
+    this.lives = C.PLAYER.START_LIVES;
+    this.wave = 1;
+    this.nextExtraLife = 5000;
+    this.upgrade = 'none';
+    this.upgradeIndex = 0;
+    this.particles.clear();
+    this.startWave(1);
+    this.setState(STATE.PLAYING);
+    SI.Audio.startMusic(this.wave);
+  };
+
+  Game.prototype.openHangar = function () {
+    this.state = STATE.HANGAR;
+    this.hangarIndex = 0;
+    if (SI.Audio && SI.Audio.hangarSelect) {
+      SI.Audio.hangarSelect();
+    }
+  };
+
+  Game.prototype.hasPerk = function (id) {
+    return this.perks.indexOf(id) >= 0;
+  };
+
+  Game.prototype.rollPerkChoices = function () {
+    var all = (C.GLITCH_INCURSION && C.GLITCH_INCURSION.PERKS) ? C.GLITCH_INCURSION.PERKS.slice() : [];
+    var choices = [];
+    while (all.length > 0 && choices.length < 3) {
+      var idx = Math.floor(Math.random() * all.length);
+      choices.push(all.splice(idx, 1)[0]);
+    }
+    this.perkChoices = choices;
+    return choices;
+  };
+
+  Game.prototype.applyPerk = function (perkId) {
+    this.perks.push(perkId);
+    if (perkId === 'titan_plating') {
+      this.lives++;
+    }
+    if (SI.Audio && SI.Audio.perkDraft) {
+      SI.Audio.perkDraft();
+    }
+    this.startWave(this.wave + 1);
+    this.setState(STATE.PLAYING);
+  };
+
   Game.prototype.startWave = function (wave) {
     this.wave = wave;
     this.resetCombo();
-    if (SI.isBossWave(wave)) {
+    if (SI.isBossWave(wave) && !this.isGlitchIncursion) {
       this.swarm = null;
       this.boss = new SI.Boss(wave);
     } else {
@@ -163,6 +241,36 @@
     this.bullets.length = 0;
     this.invaded = false;
     this.player.reset(true);
+
+    var selShip = SI.getSelectedShip ? SI.getSelectedShip() : 'ALPHA';
+    this.player.applyShipClass(selShip);
+    var shipCfg = (C.SHIPS && C.SHIPS.CLASSES) ? C.SHIPS.CLASSES[selShip] : null;
+    if (shipCfg && shipCfg.startLives && wave === 1) {
+      this.lives = Math.max(this.lives, shipCfg.startLives);
+    }
+    if (shipCfg && shipCfg.startShield) {
+      this.shieldTimer = C.UPGRADE.SHIELD_TIME || 3.0;
+    }
+    if (this.hasPerk('titan_plating')) {
+      this.shieldTimer = C.UPGRADE.SHIELD_TIME || 3.0;
+    }
+
+    this.drones = [];
+    var wingmanCount = 0;
+    for (var pi = 0; pi < this.perks.length; pi++) {
+      if (this.perks[pi] === 'wingman') { wingmanCount++; }
+    }
+    for (var di = 0; di < wingmanCount; di++) {
+      this.drones.push(new SI.Drone(di, wingmanCount));
+    }
+
+    this.hazards = [];
+    if (C.ASTEROID && (wave >= (C.ASTEROID.FROM_WAVE || 3) || this.isGlitchIncursion)) {
+      this.hazardTimer = SI.rand(C.ASTEROID.MIN_INTERVAL || 6.5, C.ASTEROID.MAX_INTERVAL || 13.0);
+    } else {
+      this.hazardTimer = Infinity;
+    }
+
     this.buildBunkers();
     SI.Audio.ufoStop();
     this.ufo = null;
@@ -268,11 +376,29 @@
         var isClick = Input.confirmPressed();
         if (Input.bossRushPressed && Input.bossRushPressed()) {
           this.startBossRush();
-        } else if (isClick && p && p.y >= 445 && p.y <= 495 && p.x >= 240 && p.x <= 720) {
+        } else if (Input.glitchIncursionPressed && Input.glitchIncursionPressed()) {
+          this.startGlitchIncursion();
+        } else if (Input.hangarPressed && Input.hangarPressed()) {
+          this.openHangar();
+        } else if (isClick && p && p.active && p.y >= 445 && p.y <= 495 && p.x >= 240 && p.x <= 720) {
           this.startBossRush();
+        } else if (isClick && p && p.active && p.y >= 500 && p.y <= 550) {
+          this.startGlitchIncursion();
+        } else if (isClick && p && p.active && p.y >= 560 && p.y <= 620) {
+          this.openHangar();
         } else if (isClick) {
           this.startGame();
         }
+        break;
+
+      case STATE.HANGAR:
+        this.particles.update(dt);
+        this.updateHangar(dt);
+        break;
+
+      case STATE.PERK_DRAFT:
+        this.particles.update(dt);
+        this.updatePerkDraft(dt);
         break;
 
       case STATE.PLAYING:
@@ -293,17 +419,18 @@
         this.particles.update(dt);
         this.player.update(dt, this.syncWorld(dt, false));
         if (this.stateTimer > 2.4) {
-          // The wave no longer starts here: the player picks a cannon
-          // first, and applyUpgrade() is what calls startWave().
-          this.upgradeIndex = 0;
-          this.setState(STATE.UPGRADE);
+          if (this.isGlitchIncursion) {
+            this.rollPerkChoices();
+            this.perkIndex = 0;
+            this.setState(STATE.PERK_DRAFT);
+          } else {
+            this.upgradeIndex = 0;
+            this.setState(STATE.UPGRADE);
+          }
         }
         break;
 
       case STATE.UPGRADE:
-        // The pick window is pausable too: PICK_TIMEOUT is a real clock and a
-        // player who has to step away would otherwise be handed whatever card
-        // happened to be highlighted.
         if (Input.pausePressed()) {
           this.pause(STATE.UPGRADE);
           break;
@@ -316,10 +443,100 @@
       case STATE.GAME_OVER:
         this.particles.update(dt);
         this.flushHi();
+        if (this.isGlitchIncursion && SI.saveGlitchRecord) {
+          SI.saveGlitchRecord(this.wave, this.score);
+        }
         if (this.stateTimer > 1.2 && Input.confirmPressed()) {
           this.startGame();
         }
         break;
+    }
+  };
+
+  Game.prototype.updateHangar = function (dt) {
+    var Input = SI.Input;
+    var shipIds = ['ALPHA', 'VECTOR', 'AEGIS', 'PHANTOM'];
+    var n = shipIds.length;
+    var i;
+
+    if (Input.justPressed('ArrowLeft') || Input.justPressed('KeyA')) {
+      this.hangarIndex = (this.hangarIndex + n - 1) % n;
+      if (SI.Audio && SI.Audio.hangarSelect) { SI.Audio.hangarSelect(); }
+    }
+    if (Input.justPressed('ArrowRight') || Input.justPressed('KeyD')) {
+      this.hangarIndex = (this.hangarIndex + 1) % n;
+      if (SI.Audio && SI.Audio.hangarSelect) { SI.Audio.hangarSelect(); }
+    }
+    for (i = 0; i < n; i++) {
+      if (Input.justPressed('Digit' + (i + 1))) {
+        this.hangarIndex = i;
+        if (SI.Audio && SI.Audio.hangarSelect) { SI.Audio.hangarSelect(); }
+      }
+    }
+
+    var p = Input.pointer();
+    var tapEdge = Input.justPressed('Pointer');
+    if (tapEdge && p) {
+      var cardW = 205, gap = 16, cardY = 150, cardH = 360;
+      var totalW = n * cardW + (n - 1) * gap;
+      var startX = (C.WORLD_W - totalW) / 2;
+      for (i = 0; i < n; i++) {
+        var rx = startX + i * (cardW + gap);
+        if (p.x >= rx && p.x <= rx + cardW && p.y >= cardY && p.y <= cardY + cardH) {
+          this.hangarIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (Input.justPressed('Escape') || Input.justPressed('KeyB')) {
+      this.setState(STATE.MENU);
+      return;
+    }
+
+    if (Input.confirmPressed()) {
+      var targetId = shipIds[this.hangarIndex];
+      if (SI.isShipUnlocked(targetId)) {
+        SI.setSelectedShip(targetId);
+        this.player.applyShipClass(targetId);
+        if (SI.Audio && SI.Audio.hangarSelect) { SI.Audio.hangarSelect(); }
+        this.setState(STATE.MENU);
+      }
+    }
+  };
+
+  Game.prototype.updatePerkDraft = function (dt) {
+    var Input = SI.Input;
+    var perks = this.perkChoices || [];
+    var n = perks.length;
+    var i;
+
+    if (Input.justPressed('ArrowLeft') || Input.justPressed('KeyA')) {
+      this.perkIndex = (this.perkIndex + n - 1) % n;
+    }
+    if (Input.justPressed('ArrowRight') || Input.justPressed('KeyD')) {
+      this.perkIndex = (this.perkIndex + 1) % n;
+    }
+    for (i = 0; i < n; i++) {
+      if (Input.justPressed('Digit' + (i + 1))) {
+        this.perkIndex = i;
+      }
+    }
+
+    var p = Input.pointer();
+    var tapEdge = Input.justPressed('Pointer');
+    if (tapEdge && p && SI.HUD && typeof SI.HUD.perkCardRect === 'function') {
+      for (i = 0; i < n; i++) {
+        var r = SI.HUD.perkCardRect(i, n);
+        if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
+          this.perkIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (Input.confirmPressed() && perks[this.perkIndex]) {
+      this.applyPerk(perks[this.perkIndex].id);
     }
   };
 
@@ -485,9 +702,22 @@
       if (this.comboTimer <= 0) { this.resetCombo(); }
     }
 
+    if (this.shieldTimer > 0) {
+      this.shieldTimer -= dt;
+    }
+
     if (SI.Input && SI.Input.empPressed && SI.Input.empPressed()) {
       this.triggerEmp(world);
     }
+    if (SI.Input && SI.Input.dashPressed && SI.Input.dashPressed()) {
+      if (this.player.startDash(world.moveAxis)) {
+        if (SI.Audio && SI.Audio.phaseDash) { SI.Audio.phaseDash(); }
+        if (this.particles) {
+          this.particles.emitSparks(this.player.x, this.player.y, this.player.glow || '#d066ff', 8, 0, 0, Math.PI * 2);
+        }
+      }
+    }
+
     if (this.empTimer > 0) {
       this.empTimer -= dt;
     }
@@ -496,12 +726,33 @@
     }
 
     this.player.update(dt, world);
+    for (i = 0; i < this.drones.length; i++) {
+      this.drones[i].update(dt, world, this.player.x, this.player.y);
+    }
+
     if (this.swarm) {
       this.swarm.update(dt, world);
     }
     if (this.boss) {
       this.boss.update(dt, world);
     }
+
+    // Cosmic Space Hazards (Asteroids)
+    if (C.ASTEROID && (this.wave >= (C.ASTEROID.FROM_WAVE || 3) || this.isGlitchIncursion)) {
+      this.hazardTimer -= dt;
+      if (this.hazardTimer <= 0) {
+        this.hazardTimer = SI.rand(C.ASTEROID.MIN_INTERVAL || 6.5, C.ASTEROID.MAX_INTERVAL || 13.0);
+        var fromLeft = SI.chance(0.5);
+        var hx = fromLeft ? -30 : (C.WORLD_W + 30);
+        var hy = SI.rand(C.ASTEROID.MIN_Y || 340, C.ASTEROID.MAX_Y || 480);
+        var ast = new SI.Asteroid(hx, hy, 'large', fromLeft ? 1 : -1);
+        this.hazards.push(ast);
+      }
+    }
+    for (i = 0; i < this.hazards.length; i++) {
+      this.hazards[i].update(dt, world);
+    }
+    SI.compact(this.hazards);
 
     for (i = 0; i < this.bullets.length; i++) {
       this.bullets[i].update(dt, world);
@@ -566,16 +817,6 @@
             if (!a.alive) { continue; }
             if (a.role === 'phase' && a.phased) { continue; }
             if (SI.aabb(box, a.box())) {
-              // SHIELD REDIRECT. A shield alien eats the lethal hit aimed at
-              // a neighbour inside SHIELD.RADIUS grid cells of it. The whole
-              // mechanic is this ONE reassignment, deliberately placed on the
-              // near side of the existing kill/score pair so there is still
-              // exactly one killAlien() and one scoreKill() per resolved hit
-              // -- the shield is simply who they are about. The covered alien
-              // flashes (hitFlash) to show WHY it survived. Pierce accounting
-              // below is untouched and cannot double-redirect: shieldFor()
-              // returns null once the shield is dead, so a pierced shot's
-              // next victim in a later frame resolves normally.
               var shield = this.swarm.shieldFor(a);
               if (shield) {
                 a.hitFlash = C.ALIEN_CLASS.SHIELD.FLASH;
@@ -590,9 +831,24 @@
               }
               this.swarm.killAlien(a, world, b);
               this.scoreKill(a.score);
-              // PIERCING LASER: survives the kill and flies on. One alien
-              // per bullet per frame either way -- at MAX_DT a shot covers
-              // far less than a grid row, so nothing is skipped.
+
+              // Chain Lightning Perk in Glitch Incursion
+              if (this.hasPerk('chain_lightning') && this.swarm) {
+                var sAliens = this.swarm.aliens;
+                var chainKills = 0;
+                for (var ci = 0; ci < sAliens.length && chainKills < 2; ci++) {
+                  var ca = sAliens[ci];
+                  if (ca.alive && ca !== a && Math.abs(ca.x - a.x) < 120 && Math.abs(ca.y - a.y) < 100) {
+                    this.swarm.killAlien(ca, world);
+                    this.scoreKill(ca.score);
+                    if (world.particles) {
+                      world.particles.emitSparks(ca.x, ca.y, '#ffd166', 8, 0, 0, Math.PI * 2);
+                    }
+                    chainKills++;
+                  }
+                }
+              }
+
               if (b.pierce > 0) {
                 b.pierce--;
               } else {
@@ -631,7 +887,6 @@
           if (isSab) {
             this.addEmp((C.EMP.MAX || 100) * 0.50);
           }
-          // Banner shows what was ACTUALLY awarded, multiplier included.
           var gain = this.scoreKill(pts);
           this.banner = isSab ? 'SABOTEUR DOWN! +50% EMP' : ('+' + gain);
           this.bannerTime = 1.4;
@@ -641,7 +896,29 @@
           continue;
         }
 
-        // Player shot vs incoming alien shots -- shooting them down feels great.
+        // Player shot vs Asteroids & Space Hazards
+        var hitHazard = false;
+        for (j = 0; j < this.hazards.length; j++) {
+          var hz = this.hazards[j];
+          if (!hz.dead && SI.aabb(box, hz.box())) {
+            hitHazard = true;
+            if (b.bounce > 0 || this.hasPerk('prism_ricochet')) {
+              b.bounce = Math.max(0, b.bounce - 1);
+              b.vx = -b.vx;
+              b.vy = -b.vy;
+            } else if (b.pierce > 0) {
+              b.pierce--;
+            } else {
+              b.dead = true;
+            }
+            var scr = hz.hit(1, world, b);
+            if (scr > 0) { this.scoreKill(scr); }
+            break;
+          }
+        }
+        if (hitHazard && b.dead) { continue; }
+
+        // Player shot vs incoming alien shots
         for (j = 0; j < this.bullets.length; j++) {
           var ob = this.bullets[j];
           if (ob.dead || ob.from !== 'alien') { continue; }
@@ -661,8 +938,19 @@
         }
         if (b.dead) { continue; }
       } else {
+        // Alien shot vs Asteroids
+        for (j = 0; j < this.hazards.length; j++) {
+          var ahz = this.hazards[j];
+          if (!ahz.dead && SI.aabb(box, ahz.box())) {
+            b.dead = true;
+            ahz.hit(1, world, b);
+            break;
+          }
+        }
+        if (b.dead) { continue; }
+
         // Alien shot vs player.
-        if (this.player.alive && this.player.invuln <= 0 &&
+        if (this.player.alive && this.player.invuln <= 0 && (!this.shieldTimer || this.shieldTimer <= 0) &&
             SI.aabb(box, this.player.box())) {
           b.dead = true;
           this.loseLife(world, false);
@@ -670,13 +958,9 @@
         }
       }
 
-      // Both bullet kinds chew through bunkers. Deliberately unchanged for
-      // a piercing shot: the laser cuts through ALIENS, not through your
-      // own cover, so camping behind a bunker still costs you the shot.
+      // Bunkers
       for (j = 0; j < this.bunkers.length; j++) {
         var bunker = this.bunkers[j];
-        // Pass travel direction so the scan starts at the row the shot
-        // actually reaches first (its swept box can span several rows).
         var hit = bunker.hitTest(box, b.vy);
         if (hit) {
           bunker.damage(hit.x, hit.y, C.BUNKER.CELL * (b.from === 'player' ? 1.5 : 1.9));
@@ -688,14 +972,46 @@
       }
     }
 
-    // The formation grinds bunkers away as it descends.
+    // Hyper-Graze Detection: Proximity checks for alive player vs un-grazed alien bullets on Wave 2+
+    if (this.player.alive && (this.wave >= (C.GRAZE ? (C.GRAZE.FROM_WAVE || 2) : 2) || this.isGlitchIncursion)) {
+      var gBox = this.player.grazeBox ? this.player.grazeBox() : null;
+      var lBox = this.player.box();
+      if (gBox) {
+        for (j = 0; j < this.bullets.length; j++) {
+          var ab = this.bullets[j];
+          if (ab.from === 'alien' && !ab.dead && !ab.grazed) {
+            if (SI.aabb(ab.box(), gBox) && !SI.aabb(ab.box(), lBox)) {
+              ab.grazed = true;
+              this.player.grazeEnergy = Math.min(100, (this.player.grazeEnergy || 0) + (C.GRAZE ? C.GRAZE.CHARGE_PER_GRAZE : 12));
+              this.addScore((C.GRAZE ? C.GRAZE.SCORE : 25) * this.comboMult());
+              if (SI.Audio && SI.Audio.graze) { SI.Audio.graze(); }
+              if (world.particles) { world.particles.emitSparks(ab.x, ab.y, '#ffd166', 3, 0, -1, 0.6); }
+              if (this.hasPerk('graze_dynamo')) {
+                this.addEmp(15);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Asteroids vs Player Contact
+    if (this.player.alive && this.player.invuln <= 0 && (!this.shieldTimer || this.shieldTimer <= 0)) {
+      for (j = 0; j < this.hazards.length; j++) {
+        var hzrd = this.hazards[j];
+        if (!hzrd.dead && SI.aabb(this.player.box(), hzrd.box())) {
+          hzrd.hit(10, world);
+          this.loseLife(world, false);
+          break;
+        }
+      }
+    }
+
+    // Swarm vs bunkers and Kamikaze / Soaring collision
     if (this.swarm) {
       var swarmAliens = this.swarm.aliens;
       for (i = 0; i < swarmAliens.length; i++) {
         var al = swarmAliens[i];
-        // A diving kamikaze or swooper is exempt: it is aimed at the SHIP, and letting
-        // it also scrape every bunker it passes through would turn one
-        // dodgeable rammer into a guaranteed loss of cover.
         if (!al.alive || al.dive || al.swoop || al.y + al.h / 2 < C.BUNKER.Y - 4) { continue; }
         for (j = 0; j < this.bunkers.length; j++) {
           if (this.bunkers[j].crushBelow(al.box())) {
@@ -703,17 +1019,14 @@
           }
         }
       }
-      // KAMIKAZE & EAGLE SWOOP CONTACT -- alien-vs-player tests in the game.
-      // A diving kamikaze or swooping eagle leaves the region FORMATION.MAX_Y keeps
-      // every other alien out of. If it contacts the player ship, it costs a life.
-      if (this.player.alive && this.player.invuln <= 0) {
+      if (this.player.alive && this.player.invuln <= 0 && (!this.shieldTimer || this.shieldTimer <= 0)) {
         for (i = 0; i < swarmAliens.length; i++) {
           var kz = swarmAliens[i];
           if (!kz.alive) { continue; }
           if ((kz.dive || kz.swoop || (this.swarm.isFrenzy() && kz.soar)) && SI.aabb(kz.box(), this.player.box())) {
-            this.swarm.killAlien(kz, world);   // BEFORE loseLife(): it dies either way
+            this.swarm.killAlien(kz, world);
             this.loseLife(world, false);
-            break;                             // at most one contact per frame
+            break;
           }
         }
       }
@@ -732,18 +1045,7 @@
     return Math.min(C.COMBO.MAX, 1 + Math.floor(this.combo / C.COMBO.STEP));
   };
 
-  // The ONE scoring path a kill goes through. Returns what was actually
-  // awarded, so the UFO banner can never disagree with the score.
   Game.prototype.scoreKill = function (points) {
-    // Wave 1 is classic scoring, and so is anything that resolves after the
-    // run has already ended. The second case is not hypothetical: collide()
-    // keeps walking the SAME bullets array after the fatal alien shot is
-    // resolved, so player shots at a higher index still land -- and still
-    // score -- in the very frame that called gameOver(). Those points stand
-    // (flushHi() already exists because of them), but they must not rebuild a
-    // streak: updatePlaying() is the only place comboTimer decays, so a streak
-    // re-armed here would freeze at a non-zero value forever and the HUD would
-    // paint a stale COMBO readout over the death screen for good.
     if (this.wave < C.COMBO.FROM_WAVE || this.state === STATE.GAME_OVER) {
       this.addScore(points);
       return points;
@@ -764,9 +1066,6 @@
     if (this.score >= 20000) {
       this.unlockAchievement('high_roller');
     }
-    // Track the live hi-score for the HUD, but do not touch localStorage
-    // here: setItem is synchronous and this runs many times per second.
-    // gameOver() is what persists it.
     if (this.score > this.hi) {
       this.hi = this.score;
     }
@@ -779,10 +1078,7 @@
   };
 
   Game.prototype.loseLife = function (world, invasion) {
-    // Taking a hit drops the streak outright -- first thing, so it happens
-    // even on the path that ends in gameOver().
     this.resetCombo();
-    // An invasion ends the run outright -- no point decrementing first.
     this.lives = invasion ? 0 : this.lives - 1;
     this.world.livesLeft = this.lives;
     this.player.kill(world);
@@ -796,23 +1092,16 @@
 
   Game.prototype.gameOver = function () {
     this.setState(STATE.GAME_OVER);
-    // The run is over, so the streak is over. loseLife() cleared it a moment
-    // ago, but clearing it HERE is what pins the invariant to the end of the
-    // run rather than to one caller, and it deliberately sits AFTER setState()
-    // -- that is what arms scoreKill()'s GAME_OVER guard for the rest of this
-    // same collision pass, so the shots still in flight cannot rebuild the
-    // streak behind it. Together the two are what keep a stale COMBO readout
-    // off the death screen.
     this.resetCombo();
     SI.Audio.stopMusic();
     SI.Audio.ufoStop();
     SI.Audio.gameOver();
     this.flushHi();
+    if (this.isGlitchIncursion && SI.saveGlitchRecord) {
+      SI.saveGlitchRecord(this.wave, this.score);
+    }
   };
 
-  // Idempotent: writes at most once per hi-score improvement. update()
-  // calls it again on the GAME_OVER screen because points can still be
-  // awarded after gameOver() inside the same collision pass.
   Game.prototype.flushHi = function () {
     if (this.score > this.hi) {
       this.hi = this.score;
@@ -824,7 +1113,6 @@
   };
 
   Game.prototype.clearWave = function () {
-    // The readout must not linger into WAVE_CLEAR / UPGRADE.
     this.resetCombo();
     if (this.wave === 1) {
       this.unlockAchievement('first_blood');
@@ -910,7 +1198,6 @@
       w.particles.emitSparks(px, py, '#ffffff', 32, 0, 0, Math.PI * 2);
     }
 
-    // Destroy all active alien bullets on screen
     for (var i = 0; i < this.bullets.length; i++) {
       var b = this.bullets[i];
       if (b.from === 'alien' && !b.dead) {
@@ -921,7 +1208,6 @@
       }
     }
 
-    // Damage Boss if active
     if (this.boss && this.boss.alive) {
       this.boss.takeDamage(C.EMP.DAMAGE_BOSS, w);
       if (!this.boss.alive) {
@@ -932,7 +1218,6 @@
       }
     }
 
-    // Damage front rank of swarm
     if (this.swarm) {
       if (w) { w.isEmp = true; }
       var live = this.swarm.aliens.filter(function (a) { return a.alive && !a.commander; });
@@ -958,17 +1243,25 @@
     for (i = 0; i < this.bunkers.length; i++) {
       this.bunkers[i].draw(ctx);
     }
-    if (this.swarm && this.state !== STATE.MENU) {
+    for (i = 0; i < this.hazards.length; i++) {
+      if (!this.hazards[i].dead) {
+        this.hazards[i].draw(ctx);
+      }
+    }
+    if (this.swarm && this.state !== STATE.MENU && this.state !== STATE.HANGAR) {
       this.swarm.draw(ctx);
     }
-    if (this.boss && this.state !== STATE.MENU) {
+    if (this.boss && this.state !== STATE.MENU && this.state !== STATE.HANGAR) {
       this.boss.draw(ctx);
     }
     if (this.ufo) {
       this.ufo.draw(ctx);
     }
-    if (this.state !== STATE.MENU) {
+    if (this.state !== STATE.MENU && this.state !== STATE.HANGAR) {
       this.player.draw(ctx);
+      for (i = 0; i < this.drones.length; i++) {
+        this.drones[i].draw(ctx);
+      }
     }
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';

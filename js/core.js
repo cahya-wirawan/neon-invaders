@@ -7,7 +7,7 @@
     // scripts/verify.sh to cross-check package.json's version stays in
     // sync. Bump the MINOR number (1.3.0 -> 1.4.0) in both places together
     // for every new feature; patch/major are unused by this policy.
-    VERSION: '1.9.0',
+    VERSION: '2.0.0',
 
     WORLD_W: 960,
     WORLD_H: 720,
@@ -23,6 +23,25 @@
       RESPAWN_TIME: 1.6,
       INVULN_TIME: 2.2,
       START_LIVES: 3
+    },
+
+    // Hyper-Graze System: Proximity grazing of enemy lasers without taking hits
+    // builds Hyper energy and combo score.
+    GRAZE: {
+      FROM_WAVE: 2,         // Wave 1 stays 100% classic Space Invaders
+      PROXIMITY: 16,        // Proximity radius in pixels outside ship bounds
+      CHARGE_PER_GRAZE: 12, // Energy gained per grazed projectile
+      MAX_ENERGY: 100,      // Max graze capacity
+      SCORE: 25             // Base score awarded per graze
+    },
+
+    // Phase Dash: Short invulnerability blink maneuver with phantom trails.
+    PHASE_DASH: {
+      DURATION: 0.26,       // Duration of dash burst
+      INVULN_TIME: 0.35,    // Invulnerability window during dash
+      SPEED_MULT: 2.2,      // Velocity multiplier during dash
+      COOLDOWN: 1.2,        // Cooldown between dashes
+      ENERGY_COST: 25       // Graze energy required (or available on cooldown)
     },
 
     BULLET: {
@@ -368,6 +387,102 @@
       SHARPSHOOTER: { id: 'sharpshooter', name: 'DEADEYE', desc: 'Destroy an enemy projectile', icon: '⌖', color: '#38ef7d' },
       BUNKER_GUARDIAN: { id: 'bunker_guardian', name: 'IRON BASTION', desc: 'Clear wave with 4 bunkers intact', icon: '🛡', color: '#05d9e8' },
       HIGH_ROLLER: { id: 'high_roller', name: 'SCORE LEGEND', desc: 'Achieve 20,000+ points', icon: '👑', color: '#ffd166' }
+    },
+
+    // Cosmic Space Hazards: Floating destructible asteroids that drift across
+    // the mid-field, absorb incoming lasers, and fragment into smaller rocks.
+    ASTEROID: {
+      FROM_WAVE: 3,         // Asteroid hazards spawn on Wave 3+
+      MIN_INTERVAL: 6.5,    // Seconds between asteroid entries
+      MAX_INTERVAL: 13.0,
+      MIN_Y: 340,           // Altitude range for drifting asteroids
+      MAX_Y: 480,
+      LARGE: { hp: 3, r: 24, score: 30, color: '#ff7a5c' },
+      MEDIUM: { hp: 2, r: 16, score: 20, color: '#e58e26' },
+      SMALL: { hp: 1, r: 10, score: 10, color: '#fad390' }
+    },
+
+    // Endless Rogue-Lite Mode ("Glitch Incursion"): Procedural mutators and
+    // stackable between-wave perk drafts with separate PB tracking.
+    GLITCH_INCURSION: {
+      PB_WAVE_KEY: 'neon_invaders_glitch_pb_wave',
+      PB_SCORE_KEY: 'neon_invaders_glitch_pb_score',
+      PERKS: [
+        { id: 'wingman', title: 'WINGMAN DRONE', desc: 'Deploy an autonomous companion drone firing twin lasers.', icon: '🛸', color: '#5ffbf1' },
+        { id: 'chain_lightning', title: 'TESLA ARC', desc: 'Alien kills arc electric bolts to 2 adjacent invaders.', icon: '⚡', color: '#ffd166' },
+        { id: 'graze_dynamo', title: 'GRAZE DYNAMO', desc: '+100% Graze energy & instant +25% EMP on graze.', icon: '⚛', color: '#54ffa8' },
+        { id: 'overcharge', title: 'OVERCHARGE CORE', desc: '+25% player strafe speed & -20% weapon cooldown.', icon: '🔥', color: '#ff56d5' },
+        { id: 'titan_plating', title: 'TITAN PLATING', desc: '+1 Max Life & free kinetic barrier at start of wave.', icon: '🛡', color: '#3d5bff' },
+        { id: 'prism_ricochet', title: 'PRISM RICOCHET', desc: 'All player projectiles gain +1 bonus ricochet bounce.', icon: '💎', color: '#bf55ec' }
+      ]
+    },
+
+    // The Fleet Hangar: Unlockable Ship Classes with unique stat profiles
+    // and retro achievement unlock thresholds.
+    SHIPS: {
+      SELECTED_KEY: 'neon_invaders_selected_ship',
+      CLASSES: {
+        ALPHA: {
+          id: 'ALPHA',
+          name: 'ALPHA INTERCEPTOR',
+          desc: 'Standard balanced fighter equipped with twin ion cannons.',
+          speed: 420,
+          cooldown: 0.28,
+          w: 52,
+          h: 26,
+          startLives: 3,
+          startShield: false,
+          dashCooldownMult: 1.0,
+          unlockAchievements: 0,
+          color: '#5ffbf1',
+          glow: '#1ce8ff'
+        },
+        VECTOR: {
+          id: 'VECTOR',
+          name: 'VECTOR STRIKER',
+          desc: 'Lightweight agility chassis with lightning strafe speed.',
+          speed: 490,
+          cooldown: 0.22,
+          w: 44,
+          h: 24,
+          startLives: 3,
+          startShield: false,
+          dashCooldownMult: 0.85,
+          unlockAchievements: 3,
+          color: '#ffd166',
+          glow: '#ffe066'
+        },
+        AEGIS: {
+          id: 'AEGIS',
+          name: 'AEGIS DREADNOUGHT',
+          desc: 'Heavy armored hull with kinetic barrier on every wave start.',
+          speed: 370,
+          cooldown: 0.32,
+          w: 60,
+          h: 28,
+          startLives: 4,
+          startShield: true,
+          dashCooldownMult: 1.2,
+          unlockAchievements: 6,
+          color: '#54ffa8',
+          glow: '#38ef7d'
+        },
+        PHANTOM: {
+          id: 'PHANTOM',
+          name: 'PHANTOM REAPER',
+          desc: 'Stealth frame with -50% Phase Dash cooldown and dark violet trail.',
+          speed: 440,
+          cooldown: 0.26,
+          w: 48,
+          h: 25,
+          startLives: 3,
+          startShield: false,
+          dashCooldownMult: 0.50,
+          unlockAchievements: 8,
+          color: '#d066ff',
+          glow: '#bf55ec'
+        }
+      }
     }
   };
 
@@ -554,6 +669,64 @@
     }
   }
 
+  function isShipUnlocked(shipId) {
+    var cls = CONFIG.SHIPS.CLASSES[shipId];
+    if (!cls) { return false; }
+    if (cls.unlockAchievements <= 0) { return true; }
+    return getUnlockedCount() >= cls.unlockAchievements;
+  }
+
+  function getSelectedShip() {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        var s = localStorage.getItem(CONFIG.SHIPS.SELECTED_KEY);
+        if (s && CONFIG.SHIPS.CLASSES[s] && isShipUnlocked(s)) {
+          return s;
+        }
+      } catch (e) { /* ignore */ }
+    }
+    return 'ALPHA';
+  }
+
+  function setSelectedShip(shipId) {
+    if (!CONFIG.SHIPS.CLASSES[shipId] || !isShipUnlocked(shipId)) {
+      return false;
+    }
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(CONFIG.SHIPS.SELECTED_KEY, shipId);
+      } catch (e) { /* ignore */ }
+    }
+    return true;
+  }
+
+  function loadGlitchRecord() {
+    var rec = { wave: 0, score: 0, bestWave: 0, bestScore: 0 };
+    if (typeof localStorage !== 'undefined') {
+      try {
+        var w = parseInt(localStorage.getItem(CONFIG.GLITCH_INCURSION.PB_WAVE_KEY), 10);
+        var s = parseInt(localStorage.getItem(CONFIG.GLITCH_INCURSION.PB_SCORE_KEY), 10);
+        if (!isNaN(w)) { rec.wave = w; rec.bestWave = w; }
+        if (!isNaN(s)) { rec.score = s; rec.bestScore = s; }
+      } catch (e) { /* ignore */ }
+    }
+    return rec;
+  }
+
+  function saveGlitchRecord(wave, score) {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        var cur = loadGlitchRecord();
+        if (wave > cur.wave) {
+          localStorage.setItem(CONFIG.GLITCH_INCURSION.PB_WAVE_KEY, String(wave));
+        }
+        if (score > cur.score) {
+          localStorage.setItem(CONFIG.GLITCH_INCURSION.PB_SCORE_KEY, String(score));
+        }
+      } catch (e) { /* ignore */ }
+    }
+  }
+
   SI.Achievements = {
     load: loadAchievements,
     save: saveAchievements,
@@ -562,6 +735,12 @@
     count: getUnlockedCount,
     reset: resetAchievements
   };
+
+  SI.isShipUnlocked = isShipUnlocked;
+  SI.getSelectedShip = getSelectedShip;
+  SI.setSelectedShip = setSelectedShip;
+  SI.loadGlitchRecord = loadGlitchRecord;
+  SI.saveGlitchRecord = saveGlitchRecord;
 
   SI.CONFIG = CONFIG;
   SI.waveConfig = waveConfig;

@@ -450,6 +450,127 @@
     }
   }
 
+  function graze() {
+    if (!ready() || muted) { return; }
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    var t = now();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(1400, t);
+    osc.frequency.exponentialRampToValueAtTime(2800, t + 0.045);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.18, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.045);
+    osc.connect(g);
+    g.connect(sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.05);
+  }
+
+  function phaseDash() {
+    if (!ready() || muted) { return; }
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    var t = now();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(650, t);
+    osc.frequency.exponentialRampToValueAtTime(160, t + 0.12);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.22, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+    osc.connect(g);
+    g.connect(sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.13);
+  }
+
+  function asteroidHit() {
+    if (!ready() || muted) { return; }
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    var t = now();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(160, t);
+    osc.frequency.exponentialRampToValueAtTime(60, t + 0.08);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.25, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+    osc.connect(g);
+    g.connect(sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.09);
+  }
+
+  function asteroidBreak() {
+    if (!ready() || muted) { return; }
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    var t = now();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(220, t);
+    osc.frequency.exponentialRampToValueAtTime(45, t + 0.16);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.35, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+    osc.connect(g);
+    g.connect(sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.17);
+  }
+
+  function droneShoot() {
+    if (!ready() || muted) { return; }
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    var t = now();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(920, t);
+    osc.frequency.exponentialRampToValueAtTime(460, t + 0.04);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.12, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+    osc.connect(g);
+    g.connect(sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.045);
+  }
+
+  function perkDraft() {
+    if (!ready() || muted) { return; }
+    var t = now();
+    [523.25, 659.25, 783.99].forEach(function (freq, i) {
+      var osc = ctx.createOscillator();
+      var g = ctx.createGain();
+      var st = t + i * 0.06;
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, st);
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.linearRampToValueAtTime(0.2, st + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + 0.14);
+      osc.connect(g);
+      g.connect(sfxBus);
+      osc.start(st);
+      osc.stop(st + 0.15);
+    });
+  }
+
+  function hangarSelect() {
+    if (!ready() || muted) { return; }
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    var t = now();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, t);
+    osc.frequency.setValueAtTime(880, t + 0.05);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.2, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+    osc.connect(g);
+    g.connect(sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.11);
+  }
+
   SI.Audio = {
     unlock: unlock,
     ready: ready,
@@ -466,6 +587,13 @@
     ufoStart: ufoStart,
     ufoStop: ufoStop,
     ufoKilled: ufoKilled,
+    graze: graze,
+    phaseDash: phaseDash,
+    asteroidHit: asteroidHit,
+    asteroidBreak: asteroidBreak,
+    droneShoot: droneShoot,
+    perkDraft: perkDraft,
+    hangarSelect: hangarSelect,
     startMusic: startMusic,
     stopMusic: stopMusic,
     setMusicWave: setMusicWave,

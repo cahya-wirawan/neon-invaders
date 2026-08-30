@@ -185,7 +185,8 @@ function makeStorage() {
 const AUDIO_METHODS = [
   'unlock', 'ready', 'setMuted', 'toggleMute', 'shoot', 'alienHit',
   'bunkerHit', 'playerHit', 'waveClear', 'gameOver', 'extraLife', 'ufoStart',
-  'ufoStop', 'ufoKilled', 'startMusic', 'stopMusic', 'setMusicWave', 'setMusicState'
+  'ufoStop', 'ufoKilled', 'startMusic', 'stopMusic', 'setMusicWave', 'setMusicState',
+  'graze', 'phaseDash', 'asteroidHit', 'asteroidBreak', 'droneShoot', 'perkDraft', 'hangarSelect'
 ];
 
 function makeAudio() {
@@ -4783,6 +4784,250 @@ scenario('48. Singularity Beam (spread_pierce Fused Weapon)', () => {
 
       Audio.setMusicState('normal');
       check('(e) Returning to normal state executes smoothly', true);
+    });
+  });
+
+  scenario('52. Hyper-Graze System & Proximity Energy Accumulation', () => {
+    withSeed(5201, () => {
+      const env = loadGame(JS_DIR);
+      const C = env.SI.CONFIG;
+      check('(a) GRAZE config defined with PROXIMITY, CHARGE, and SCORE',
+        !!C.GRAZE && C.GRAZE.FROM_WAVE === 2 && C.GRAZE.PROXIMITY === 16 && C.GRAZE.SCORE === 25);
+
+      // (b) Wave 1 inertness: Bullet grazing within proximity does NOT score on Wave 1
+      const g1 = startedGame(env, 1);
+      g1.player.x = 480;
+      g1.player.y = 648;
+      g1.player.invuln = 0;
+      const b1 = new env.SI.Bullet(480 + 35, 648, -100, 'alien', '#ff0000');
+      g1.bullets.push(b1);
+      const scoreBefore1 = g1.score;
+      g1.collide(g1.world);
+      check('(b) Wave 1 bullet proximity does NOT award graze score',
+        g1.score === scoreBefore1 && !b1.grazed && g1.player.grazeEnergy === 0);
+
+      // (c) Wave 2+: Bullet inside graze box (< 16px outside lethal hitbox) triggers graze
+      const g2 = startedGame(env, 2);
+      g2.player.x = 480;
+      g2.player.y = 648;
+      g2.player.invuln = 0;
+      g2.player.grazeEnergy = 0;
+      // Player box is ~52w, so edge is at 480 + 26 = 506. Graze pad is 16px -> 506 to 522 is graze range.
+      const b2 = new env.SI.Bullet(512, 648, -100, 'alien', '#ff0000');
+      g2.bullets.push(b2);
+      const scoreBefore2 = g2.score;
+      g2.collide(g2.world);
+      check('(c) Wave 2 bullet proximity awards graze score and marks bullet grazed',
+        b2.grazed === true && g2.score === scoreBefore2 + C.GRAZE.SCORE && g2.player.grazeEnergy === C.GRAZE.CHARGE_PER_GRAZE);
+
+      // (d) Single-graze invariant: same bullet does not graze twice in subsequent ticks
+      g2.collide(g2.world);
+      check('(d) Grazed bullet does not trigger duplicate graze awards',
+        g2.score === scoreBefore2 + C.GRAZE.SCORE && g2.player.grazeEnergy === C.GRAZE.CHARGE_PER_GRAZE);
+
+      // (e) Direct hit: inside lethal hitbox is a life loss, not a graze
+      const g3 = startedGame(env, 2);
+      g3.player.x = 480;
+      g3.player.y = 648;
+      g3.player.invuln = 0;
+      const b3 = new env.SI.Bullet(480, 648, -100, 'alien', '#ff0000');
+      g3.bullets.push(b3);
+      const livesBefore3 = g3.lives;
+      g3.collide(g3.world);
+      check('(e) Direct lethal hit deducts life and consumes bullet',
+        g3.lives === livesBefore3 - 1 && b3.dead === true);
+    });
+  });
+
+  scenario('53. Phase Dash Mechanism & Invulnerability Window', () => {
+    withSeed(5301, () => {
+      const env = loadGame(JS_DIR);
+      const C = env.SI.CONFIG;
+      const D = C.PHASE_DASH;
+      check('(a) PHASE_DASH config defined with duration, invuln, and cooldown',
+        !!D && D.INVULN_TIME === 0.35 && D.COOLDOWN === 1.2 && D.SPEED_MULT === 2.2);
+
+      const g = startedGame(env, 2);
+      g.player.x = 480;
+      g.player.invuln = 0;
+      g.player.dashCooldown = 0;
+      g.player.dashTimer = 0;
+
+      // (b) Trigger dash
+      const dashed = g.player.startDash(1);
+      check('(b) startDash activates dash state and invulnerability',
+        dashed === true && g.player.dashTimer > 0 && g.player.invuln >= D.INVULN_TIME);
+
+      // (c) Burst displacement during dash
+      const xStart = g.player.x;
+      g.player.update(0.1, { moveAxis: 1, pointer: null, wantFire: false });
+      check('(c) Dash movement covers high-velocity burst displacement',
+        g.player.x > xStart + (C.PLAYER.SPEED * 0.1 * 1.5));
+
+      // (d) Invulnerability against bullets while dashing
+      const bullet = new env.SI.Bullet(g.player.x, g.player.y, -100, 'alien', '#ff0000');
+      g.bullets.push(bullet);
+      const livesBefore = g.lives;
+      g.collide(g.world);
+      check('(d) Player is invulnerable to alien bullets while dashing',
+        g.lives === livesBefore && !bullet.dead);
+
+      // (e) Cooldown prevents immediate re-triggering
+      const dashAgain = g.player.startDash(1);
+      check('(e) startDash rejected while cooldown is active',
+        dashAgain === false && g.player.dashCooldown > 0);
+    });
+  });
+
+  scenario('54. Cosmic Space Hazards (Asteroids) & Multi-Stage Fracturing', () => {
+    withSeed(5401, () => {
+      const env = loadGame(JS_DIR);
+      const C = env.SI.CONFIG;
+      check('(a) ASTEROID config defined with 3 tiers and FROM_WAVE = 3',
+        !!C.ASTEROID && C.ASTEROID.FROM_WAVE === 3 && C.ASTEROID.LARGE.hp === 3 && C.ASTEROID.MEDIUM.hp === 2 && C.ASTEROID.SMALL.hp === 1);
+
+      // (b) Asteroid entity properties and box
+      const ast = new env.SI.Asteroid(480, 360, 'large', 1);
+      check('(b) Large asteroid initializes with 3 HP and radius 24',
+        ast.hp === 3 && ast.radius === 24 && !ast.dead);
+
+      // (c) Hit test and damage resolution
+      const world = {
+        particles: env.SI.Particles ? new env.SI.Particles(100) : null,
+        audio: env.SI.Audio,
+        spawnAsteroid: (child) => spawnedChildren.push(child)
+      };
+      const spawnedChildren = [];
+      const scoreGain1 = ast.hit(1, world);
+      check('(c) Single hit decrements asteroid HP without destroying it',
+        ast.hp === 2 && !ast.dead && scoreGain1 === 0);
+
+      // (d) Multi-stage fracturing: Destroying Large spawns 2 Medium Asteroids
+      const scoreGain2 = ast.hit(2, world);
+      check('(d) Lethal hit destroys Large asteroid, awards score, and spawns 2 Medium asteroids',
+        ast.dead === true && scoreGain2 === C.ASTEROID.LARGE.score && spawnedChildren.length === 2 && spawnedChildren[0].size === 'medium');
+
+      // (e) Destroying Medium spawns 2 Small Asteroids
+      const medAst = spawnedChildren[0];
+      const medChildren = [];
+      world.spawnAsteroid = (child) => medChildren.push(child);
+      medAst.hit(2, world);
+      check('(e) Destroying Medium asteroid spawns 2 Small asteroids',
+        medAst.dead === true && medChildren.length === 2 && medChildren[0].size === 'small');
+
+      // (f) Destroying Small asteroid leaves no further children
+      const smallAst = medChildren[0];
+      const smallChildren = [];
+      world.spawnAsteroid = (child) => smallChildren.push(child);
+      smallAst.hit(1, world);
+      check('(f) Destroying Small asteroid produces no further children',
+        smallAst.dead === true && smallChildren.length === 0);
+    });
+  });
+
+  scenario('55. The Fleet Hangar & Ship Class Customization', () => {
+    withSeed(5501, () => {
+      const env = loadGame(JS_DIR);
+      const C = env.SI.CONFIG;
+      check('(a) SHIPS config defines 4 distinct hull classes',
+        !!C.SHIPS && !!C.SHIPS.CLASSES.ALPHA && !!C.SHIPS.CLASSES.VECTOR && !!C.SHIPS.CLASSES.AEGIS && !!C.SHIPS.CLASSES.PHANTOM);
+
+      // (b) Unlock thresholds: ALPHA unlocked by default (0), VECTOR at 3, AEGIS at 6, PHANTOM at 8
+      check('(b) Ship unlock requirements match retro achievement milestones',
+        env.SI.isShipUnlocked('ALPHA') === true &&
+        C.SHIPS.CLASSES.VECTOR.unlockAchievements === 3 &&
+        C.SHIPS.CLASSES.AEGIS.unlockAchievements === 6 &&
+        C.SHIPS.CLASSES.PHANTOM.unlockAchievements === 8);
+
+      // (c) Apply Ship Class stats to Player
+      const player = new env.SI.Player();
+      player.applyShipClass('VECTOR');
+      check('(c) VECTOR ship class applies speed 490 and reduced fire cooldown',
+        player.speed === 490 && player.fireCooldownTime === 0.22 && player.dashCooldownMult === 0.85);
+
+      player.applyShipClass('AEGIS');
+      check('(c2) AEGIS ship class applies armored width 60 and start lives 4',
+        player.w === 60 && C.SHIPS.CLASSES.AEGIS.startLives === 4 && C.SHIPS.CLASSES.AEGIS.startShield === true);
+
+      // (d) Hangar navigation and selection persistence
+      for (let k = 0; k < 8; k++) {
+        env.SI.Achievements.unlock('ach_' + k);
+      }
+      env.SI.setSelectedShip('PHANTOM');
+      check('(d) getSelectedShip reads persisted choice from localStorage',
+        env.SI.getSelectedShip() === 'PHANTOM');
+      env.SI.setSelectedShip('ALPHA');
+      check('(d2) setSelectedShip updates choice to ALPHA',
+        env.SI.getSelectedShip() === 'ALPHA');
+    });
+  });
+
+  scenario('56. Endless Rogue-Lite Glitch Incursion Mode & Perk Drafting', () => {
+    withSeed(5601, () => {
+      const env = loadGame(JS_DIR);
+      const g = new env.SI.Game();
+
+      // (a) Start Glitch Incursion
+      g.startGlitchIncursion();
+      check('(a) startGlitchIncursion sets isGlitchIncursion flag and starts on Wave 1',
+        g.isGlitchIncursion === true && g.wave === 1 && g.perks.length === 0);
+
+      // (b) Wave Clear in Glitch Incursion transitions to PERK_DRAFT
+      g.stateTimer = 2.5;
+      g.state = env.SI.STATE.WAVE_CLEAR;
+      g.update(0.016);
+      check('(b) Wave clear in Glitch Incursion transitions to PERK_DRAFT',
+        g.state === env.SI.STATE.PERK_DRAFT && g.perkChoices.length === 3);
+
+      // (c) Apply Perk and Stack Bonuses
+      const initialLives = g.lives;
+      g.applyPerk('titan_plating');
+      check('(c) Drafting titan_plating adds perk to collection and increments max lives',
+        g.hasPerk('titan_plating') === true && g.lives === initialLives + 1 && g.state === env.SI.STATE.PLAYING);
+
+      // (d) Record persistence on Game Over
+      g.score = 15400;
+      g.wave = 9;
+      g.gameOver();
+      const rec = env.SI.loadGlitchRecord();
+      check('(d) Game Over in Incursion mode persists Wave and Score records',
+        rec.bestWave >= 9 && rec.bestScore >= 15400);
+    });
+  });
+
+  scenario('57. Drone Wingmen & Tesla Arc Chain Lightning', () => {
+    withSeed(5701, () => {
+      const env = loadGame(JS_DIR);
+      const g = startedGame(env, 1);
+      g.isGlitchIncursion = true;
+      g.perks = ['wingman', 'wingman', 'chain_lightning'];
+      g.startWave(2);
+
+      // (a) Drone Companion wingmen deployment
+      check('(a) 2 wingman perks deploy 2 companion Drone wingmen',
+        g.drones.length === 2 && g.drones[0] instanceof env.SI.Drone);
+
+      // (b) Drone update and autonomous firing
+      const world = g.world;
+      world.spawnBullet = (b) => droneBullets.push(b);
+      const droneBullets = [];
+      g.drones[0].fireCooldown = 0.01;
+      g.drones[0].update(0.05, world, g.player.x, g.player.y);
+      check('(b) Wingman drone tracks player position and fires pulse laser',
+        droneBullets.length === 1 && droneBullets[0].droneShot === true);
+
+      // (c) Tesla Arc / Chain Lightning on Alien Kill
+      const alien1 = g.swarm.aliens[0];
+      const alien2 = g.swarm.aliens[1];
+      alien1.alive = true;
+      alien2.alive = true;
+      alien1.x = 200; alien1.y = 200;
+      alien2.x = 220; alien2.y = 200; // nearby neighbour within 120px
+      const shot = new env.SI.Bullet(200, 200, -700, 'player', '#ffffff');
+      g.bullets.push(shot);
+      g.collide(g.world);
+      check('(c) Killing alien with chain_lightning perk triggers Tesla Arc kill on nearby neighbor',
+        alien1.alive === false && alien2.alive === false);
     });
   });
 

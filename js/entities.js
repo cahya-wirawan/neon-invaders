@@ -101,6 +101,8 @@
     this.h = C.PLAYER.H;
     this.x = C.WORLD_W / 2;
     this.y = C.PLAYER.Y;
+    this.speed = C.PLAYER.SPEED;
+    this.fireCooldownTime = C.PLAYER.FIRE_COOLDOWN;
     this.cooldown = 0;
     this.invuln = C.PLAYER.INVULN_TIME;
     this.respawn = 0;
@@ -111,7 +113,28 @@
     // Alternates the launch side of a bouncing shot -- deterministic, so
     // the upgrade adds no entropy to the RNG stream.
     this.bounceSide = 1;
+    this.shipClass = 'ALPHA';
+    this.grazeEnergy = 0;
+    this.dashTimer = 0;
+    this.dashCooldown = 0;
+    this.dashDir = 0;
+    this.dashCooldownMult = 1.0;
+    this.color = C.COLORS.player;
+    this.glow = C.COLORS.playerGlow;
   }
+
+  Player.prototype.applyShipClass = function (shipId) {
+    var S = (C.SHIPS && C.SHIPS.CLASSES) ? C.SHIPS.CLASSES[shipId] : null;
+    if (!S) { return; }
+    this.shipClass = shipId;
+    this.speed = S.speed || C.PLAYER.SPEED;
+    this.fireCooldownTime = S.cooldown || C.PLAYER.FIRE_COOLDOWN;
+    this.w = S.w || C.PLAYER.W;
+    this.h = S.h || C.PLAYER.H;
+    this.dashCooldownMult = S.dashCooldownMult || 1.0;
+    this.color = S.color || C.COLORS.player;
+    this.glow = S.glow || C.COLORS.playerGlow;
+  };
 
   Player.prototype.reset = function (full) {
     this.x = C.WORLD_W / 2;
@@ -120,13 +143,36 @@
     this.respawn = 0;
     this.invuln = C.PLAYER.INVULN_TIME;
     this.tilt = 0;
+    this.dashTimer = 0;
+    this.dashCooldown = 0;
     if (full) {
       this.thrust = 0;
+      this.grazeEnergy = 0;
     }
   };
 
   Player.prototype.box = function () {
     return { x: this.x - this.w / 2 + 4, y: this.y - this.h / 2, w: this.w - 8, h: this.h };
+  };
+
+  Player.prototype.grazeBox = function () {
+    var pad = (C.GRAZE && C.GRAZE.PROXIMITY) || 16;
+    return {
+      x: this.x - this.w / 2 - pad,
+      y: this.y - this.h / 2 - pad,
+      w: this.w + pad * 2,
+      h: this.h + pad * 2
+    };
+  };
+
+  Player.prototype.startDash = function (dir) {
+    if (!this.alive || this.dashCooldown > 0) { return false; }
+    var D = C.PHASE_DASH;
+    this.dashTimer = (D && D.DURATION) || 0.26;
+    this.invuln = Math.max(this.invuln, (D && D.INVULN_TIME) || 0.35);
+    this.dashCooldown = ((D && D.COOLDOWN) || 1.2) * (this.dashCooldownMult || 1.0);
+    this.dashDir = dir || (this.tilt > 0.04 ? 1 : (this.tilt < -0.04 ? -1 : 0));
+    return true;
   };
 
   // Spawns the volley for the currently active cannon upgrade. With no
@@ -185,34 +231,15 @@
     }
 
     b = new Bullet(bx, by, -speed, 'player', C.COLORS.bullet);
-    // TWO INDEPENDENT `if`s, not an if/else chain: the WEAPON COMBINATION
-    // (U.COMBINED_ID) is exactly the union of both blocks, and pierce/bounce
-    // are already independent Bullet fields, so it needs no third code path
-    // and no new field. For 'none' / 'spread' / 'shield' neither block runs;
-    // for plain 'pierce' or plain 'bounce' exactly the one block runs, with
-    // the same side effects (bounceSide flip included) it always had.
     if (up === 'pierce' || up === U.COMBINED_ID) {
       b.pierce = U.PIERCE_COUNT;
     }
     if (up === 'bounce' || up === U.COMBINED_ID) {
       b.bounce = U.BOUNCE_MAX;
       b.vx = U.BOUNCE_VX * this.bounceSide;
-      // A bouncing shot climbs SLOWER than a normal one (BOUNCE_VY, not
-      // PLAYER_SPEED). At the standard 720 it leaves the top of the world in
-      // 0.93s and covers only ~520 units sideways, which is not enough to
-      // reach a wall from mid-screen -- the upgrade would be inert. See the
-      // arithmetic in CONFIG.UPGRADE.
       b.vy = -U.BOUNCE_VY;
       this.bounceSide = -this.bounceSide;
     }
-    // ONE colour decision, evaluated once, AFTER the field blocks -- the two
-    // `if`s above set fields only. Writing the colour inside them would have
-    // the combined shot repainted three times over with only the last write
-    // surviving, which is correct by ordering rather than by construction and
-    // breaks the moment the blocks are reordered. The combined shot must not
-    // masquerade as either half, so it wins outright; otherwise each half
-    // keeps the colour it always had, and everything else keeps the plain
-    // bullet white the Bullet was constructed with.
     b.color = up === U.COMBINED_ID ? C.COLORS.pierceBounce
       : up === 'pierce' ? C.COLORS.playerGlow
       : up === 'bounce' ? C.COLORS.warn
@@ -232,6 +259,9 @@
     if (this.invuln > 0) {
       this.invuln -= dt;
     }
+    if (this.dashCooldown > 0) {
+      this.dashCooldown -= dt;
+    }
 
     var axis = world.moveAxis || 0;
     var pointer = world.pointer;
@@ -243,17 +273,29 @@
         axis = 0;
       }
     }
-    this.x += axis * C.PLAYER.SPEED * dt;
+
+    var curSpeed = this.speed || C.PLAYER.SPEED;
+    if (this.dashTimer > 0) {
+      this.dashTimer -= dt;
+      var dashSpeed = curSpeed * (C.PHASE_DASH.SPEED_MULT || 2.2);
+      this.x += (this.dashDir !== 0 ? this.dashDir : (axis !== 0 ? axis : 0)) * dashSpeed * dt;
+      if (world.particles && SI.chance(0.8)) {
+        world.particles.emitTrail(this.x, this.y, this.glow || '#d066ff', 12, 0.25);
+      }
+    } else {
+      this.x += axis * curSpeed * dt;
+    }
+
     var half = this.w / 2;
     this.x = SI.clamp(this.x, half + 12, C.WORLD_W - half - 12);
     this.tilt = SI.lerp(this.tilt, axis * 0.22, Math.min(1, dt * 10));
     this.thrust = SI.lerp(this.thrust, Math.abs(axis), Math.min(1, dt * 8));
 
-    if (world.particles && Math.random() < 0.7) {
+    if (world.particles && SI.chance(0.7)) {
       world.particles.emitTrail(
         this.x + SI.rand(-8, 8),
         this.y + this.h / 2 + 2,
-        this.thrust > 0.4 ? '#ffd166' : C.COLORS.playerGlow,
+        this.thrust > 0.4 ? '#ffd166' : (this.glow || C.COLORS.playerGlow),
         6 + this.thrust * 8,
         0.22
       );
@@ -261,10 +303,10 @@
 
     this.cooldown -= dt;
     if (world.wantFire && this.cooldown <= 0) {
-      this.cooldown = C.PLAYER.FIRE_COOLDOWN;
+      this.cooldown = this.fireCooldownTime || C.PLAYER.FIRE_COOLDOWN;
       this.fire(world);
       if (world.particles) {
-        world.particles.emitSparks(this.x, this.y - this.h / 2 - 6, C.COLORS.player, 6, 0, -1, 0.5);
+        world.particles.emitSparks(this.x, this.y - this.h / 2 - 6, this.color || C.COLORS.player, 6, 0, -1, 0.5);
       }
       if (world.audio) {
         world.audio.shoot();
@@ -1286,10 +1328,10 @@
       } else {
         f.k = 1 - SI.smoothstep(f.t / easeOut);
       }
-    } else if (this.formationsEnabled && !this.isFrenzy()) {
+    } else if (this.formationsEnabled) {
       this.formationTimer -= dt;
       if (this.formationTimer <= 0) {
-        if (this.aliveCount() >= F.MIN_ALIVE) {
+        if (this.aliveCount() >= F.MIN_ALIVE && !this.isFrenzy()) {
           this.startFormation(null, world);
         } else {
           this.formationTimer = this.nextFormationGap();
@@ -1699,9 +1741,73 @@
     ctx.restore();
   };
 
+  /* ------------------------------ Drone ----------------------------- */
+
+  function Drone(index, total) {
+    this.index = index;
+    this.total = total || 1;
+    this.x = 0;
+    this.y = 0;
+    this.fireCooldown = 0.4 + index * 0.25;
+    this.pulse = 0;
+    this.w = 16;
+    this.h = 16;
+  }
+
+  Drone.prototype.update = function (dt, world, playerX, playerY) {
+    this.pulse += dt;
+    var ang = (this.pulse * 3.2) + (this.index * Math.PI);
+    var offsetX = (this.index === 0 ? -44 : 44) + Math.cos(ang) * 10;
+    var offsetY = -12 + Math.sin(ang) * 8;
+    this.x = playerX + offsetX;
+    this.y = playerY + offsetY;
+
+    this.fireCooldown -= dt;
+    if (this.fireCooldown <= 0) {
+      this.fireCooldown = 1.0;
+      if (world && world.spawnBullet) {
+        var b = new Bullet(this.x, this.y - 8, -C.BULLET.PLAYER_SPEED * 0.88, 'player', '#5ffbf1');
+        b.droneShot = true;
+        world.spawnBullet(b);
+        if (world.particles) {
+          world.particles.emitSparks(this.x, this.y - 6, '#5ffbf1', 4, 0, -1, 0.4);
+        }
+        if (world.audio) {
+          world.audio.droneShoot();
+        }
+      }
+    }
+  };
+
+  Drone.prototype.draw = function (ctx) {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    SI.FX.drawGlow(ctx, SI.FX.glow('#5ffbf1'), 0, 0, 32, 0.65);
+    ctx.restore();
+
+    ctx.fillStyle = '#1e1428';
+    ctx.strokeStyle = '#5ffbf1';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(0, -7);
+    ctx.lineTo(7, 4);
+    ctx.lineTo(0, 2);
+    ctx.lineTo(-7, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(-1.5, -2, 3, 3);
+    ctx.restore();
+  };
+
   SI.Bullet = Bullet;
   SI.Player = Player;
   SI.Alien = Alien;
   SI.Swarm = Swarm;
   SI.Boss = Boss;
+  SI.Drone = Drone;
 })(window.SI = window.SI || {});

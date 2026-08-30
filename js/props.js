@@ -228,6 +228,133 @@
     ctx.restore();
   };
 
+  /* ----------------------------- Asteroid --------------------------- */
+
+  function Asteroid(x, y, size, dir) {
+    this.size = size || 'large';
+    var cfg = (C.ASTEROID && C.ASTEROID[this.size.toUpperCase()]) || { hp: 3, r: 24, score: 30, color: '#ff7a5c' };
+    this.hp = cfg.hp;
+    this.maxHp = cfg.hp;
+    this.radius = cfg.r;
+    this.w = this.radius * 2;
+    this.h = this.radius * 2;
+    this.score = cfg.score;
+    this.color = cfg.color;
+    this.x = x;
+    this.y = y;
+    this.rot = SI.rand(0, Math.PI * 2);
+    this.rotSpeed = SI.rand(-1.8, 1.8);
+    var d = dir || (SI.chance(0.5) ? 1 : -1);
+    var spd = SI.rand(C.ASTEROID.SPEED_MIN || 70, C.ASTEROID.SPEED_MAX || 120);
+    this.vx = d * spd;
+    this.vy = SI.rand(-15, 15);
+    this.dead = false;
+
+    // Fixed procedural faceted vertices relative to unit circle
+    this.numVerts = 8;
+    this.vertOffsets = [];
+    for (var i = 0; i < this.numVerts; i++) {
+      this.vertOffsets.push(SI.rand(0.78, 1.18));
+    }
+  }
+
+  Asteroid.prototype.box = function () {
+    return {
+      x: this.x - this.radius,
+      y: this.y - this.radius,
+      w: this.radius * 2,
+      h: this.radius * 2
+    };
+  };
+
+  Asteroid.prototype.update = function (dt, world) {
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.rot += this.rotSpeed * dt;
+
+    if (this.x < -60 || this.x > C.WORLD_W + 60 || this.y < 200 || this.y > C.WORLD_H - 100) {
+      this.dead = true;
+    }
+  };
+
+  Asteroid.prototype.hit = function (damage, world, bullet) {
+    this.hp -= (damage || 1);
+    if (world && world.particles) {
+      world.particles.emitSparks(this.x, this.y, this.color, 6, 0, 1, 0.8);
+    }
+    if (world && world.audio && typeof world.audio.asteroidHit === 'function') {
+      world.audio.asteroidHit();
+    }
+
+    if (this.hp <= 0) {
+      this.dead = true;
+      if (world && world.particles) {
+        world.particles.emitExplosion(this.x, this.y, this.color, 16, 0.9);
+        world.particles.emitDebris(this.x, this.y, '#ffffff', 8, 0.8);
+      }
+      if (world && world.audio && typeof world.audio.asteroidBreak === 'function') {
+        world.audio.asteroidBreak();
+      }
+
+      // Multi-stage fracturing: Large splits into 2 Medium, Medium splits into 2 Small
+      if (world && world.spawnAsteroid) {
+        if (this.size === 'large') {
+          var a1 = new Asteroid(this.x - 12, this.y, 'medium', -1);
+          var a2 = new Asteroid(this.x + 12, this.y, 'medium', 1);
+          world.spawnAsteroid(a1);
+          world.spawnAsteroid(a2);
+        } else if (this.size === 'medium') {
+          var s1 = new Asteroid(this.x - 8, this.y, 'small', -1);
+          var s2 = new Asteroid(this.x + 8, this.y, 'small', 1);
+          world.spawnAsteroid(s1);
+          world.spawnAsteroid(s2);
+        }
+      }
+      return this.score;
+    }
+    return 0;
+  };
+
+  Asteroid.prototype.draw = function (ctx) {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.rot);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    SI.FX.drawGlow(ctx, SI.FX.glow(this.color), 0, 0, this.radius * 2.8, 0.45);
+    ctx.restore();
+
+    ctx.fillStyle = '#1e1428';
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    for (var i = 0; i < this.numVerts; i++) {
+      var ang = (i / this.numVerts) * Math.PI * 2;
+      var r = this.radius * this.vertOffsets[i];
+      var px = Math.cos(ang) * r;
+      var py = Math.sin(ang) * r;
+      if (i === 0) {
+        ctx.moveTo(px, py);
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Rocky crater details
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(-this.radius * 0.3, -this.radius * 0.25, this.radius * 0.22, 0, Math.PI * 2);
+    ctx.arc(this.radius * 0.35, this.radius * 0.2, this.radius * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  };
+
   SI.Bunker = Bunker;
   SI.Ufo = Ufo;
+  SI.Asteroid = Asteroid;
 })(window.SI = window.SI || {});
