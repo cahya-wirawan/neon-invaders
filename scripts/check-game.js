@@ -441,45 +441,74 @@ scenario('2. no-upgrade bullet is byte-for-byte the classic bullet', () => {
 });
 
 /* --------------------------------------------------------------------- */
-scenario('3. WEDGE formation deviates then returns exactly to the grid', () => {
+scenario('3. STARLING MURMURATION formation (wedge alias) undulates, swirls, expands, and returns cleanly to the grid', () => {
   withSeed(22, () => {
     const env = loadGame(JS_DIR);
     const C = env.SI.CONFIG;
     const game = startedGame(env, 2);
     quietSwarm(game);
     const sw = game.swarm;
-    sw.formationTimer = Infinity;           // only the forced one runs
-    sw.startFormation('wedge', game.world);
-    check('formation started', !!sw.formation && sw.formation.kind === 'wedge');
+
+    /* (a) Dual aliasing verification */
+    sw.formationTimer = Infinity;
+    const murm = sw.startFormation('murmuration', game.world);
+    check('dual alias: startFormation("murmuration") starts murmuration kind',
+      !!murm && murm.kind === 'murmuration');
+    sw.snapToGrid();
+
+    const wedge = sw.startFormation('wedge', game.world);
+    check('dual alias: startFormation("wedge") starts wedge kind',
+      !!wedge && wedge.kind === 'wedge');
 
     let holdSeen = false;
     let centreDepth = 0;
-    let edgeDepth = 0;
-    let edgeShift = 0;
-    let deepestCol = -1;
+    let topSwirl = 0;
+    let bottomSwirl = 0;
+    let leftSpread = 0;
+    let rightSpread = 0;
+    let boundsOk = true;
+
     const span = Math.ceil(
       (C.FORMATION.EASE_IN + C.FORMATION.HOLD + C.FORMATION.EASE_OUT) / DT) + 30;
     for (let t = 0; t < span && sw.formation; t++) {
       tick(env, game);
       if (sw.formation && sw.formation.phase === 1 && !holdSeen) {
         holdSeen = true;
-        let best = -Infinity;
         for (const a of sw.aliens) {
           if (!a.alive) continue;
-          const d = a.y - a.gy;
-          if (d > best) { best = d; deepestCol = a.col; }
-          if (a.col === 5) { centreDepth = d; }
-          if (a.col === 0) { edgeDepth = d; edgeShift = a.x - a.gx; }
+          if (a.x < C.FORMATION.EDGE_PAD || a.x > C.WORLD_W - C.FORMATION.EDGE_PAD ||
+              a.y < a.gy || a.y > C.FORMATION.MAX_Y) {
+            boundsOk = false;
+          }
+          if (a.col === 5 && a.row === 2) {
+            centreDepth = a.y - a.gy;
+          }
+          if (a.col === 5 && a.row === 0) {
+            topSwirl = a.x - a.gx;
+          }
+          if (a.col === 5 && a.row === 4) {
+            bottomSwirl = a.x - a.gx;
+          }
+          if (a.col === 0 && a.row === 2) {
+            leftSpread = a.x - a.gx;
+          }
+          if (a.col === 10 && a.row === 2) {
+            rightSpread = a.x - a.gx;
+          }
         }
       }
     }
     check('reached the HOLD phase', holdSeen);
-    check('centre column dips ~WEDGE_DEPTH',
-      Math.abs(centreDepth - C.FORMATION.WEDGE_DEPTH) < 0.5, `dip=${centreDepth}`);
-    check('centre column is the deepest', deepestCol === 5, `deepest col=${deepestCol}`);
-    check('outer column stays at grid depth', Math.abs(edgeDepth) < 0.5, `dip=${edgeDepth}`);
-    check('outer column is pinched inward',
-      Math.abs(edgeShift - 5 * C.FORMATION.WEDGE_PINCH) < 0.5, `shift=${edgeShift}`);
+    check('centre alien dips ~MURMURATION_DEPTH',
+      Math.abs(centreDepth - C.FORMATION.MURMURATION_DEPTH) < 3.5, `dip=${centreDepth}`);
+    check('swirl vector inversion: top row swirls right, bottom row swirls left symmetrically',
+      topSwirl > 0 && bottomSwirl < 0 && Math.abs(topSwirl + bottomSwirl) < 4.0,
+      `top=${topSwirl} bottom=${bottomSwirl}`);
+    check('cloud expansion: left flank expands left, right flank expands right symmetrically',
+      leftSpread < 0 && rightSpread > 0 && Math.abs(leftSpread + rightSpread) < 4.0,
+      `left=${leftSpread} right=${rightSpread}`);
+    check('boundary clamping: all aliens stay within [EDGE_PAD, WORLD_W - EDGE_PAD] and [gy, MAX_Y]',
+      boundsOk);
     check('formation completed', sw.formation === null);
 
     let clean = true;
@@ -492,7 +521,7 @@ scenario('3. WEDGE formation deviates then returns exactly to the grid', () => {
         break;
       }
     }
-    check('every alien returned to x===gx, y===gy, fx===0, fy===0', clean, bad);
+    check('every alien returned cleanly to x===gx, y===gy, fx===0, fy===0', clean, bad);
   });
 });
 

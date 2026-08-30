@@ -1281,18 +1281,37 @@
         a.fy = F.SWEEP_DEPTH * frac;
         a.fx = 0;
       }
-    } else {
-      // V-shape: apex at the centre column, pinched inwards.
+    } else if (kind === 'murmuration' || kind === 'wedge' || !kind) {
+      // Starling Murmuration flocking dynamics calculation ('murmuration' / 'wedge' dual alias):
+      // multi-harmonic wave undulation + swirling vortex flow + dynamic cloud density modulation
+      var mRow = (S.ROWS - 1) / 2;
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
         if (!a.alive || a.dive || a.swoop) { continue; }
-        var d = Math.abs(a.col - m);
-        a.fy = m > 0 ? F.WEDGE_DEPTH * (1 - d / m) : F.WEDGE_DEPTH;
-        a.fx = -(a.col - m) * F.WEDGE_PINCH;
+        var nx = m > 0 ? (a.col - m) / m : 0;
+        var ny = mRow > 0 ? (a.row - mRow) / mRow : 0;
+
+        // 1. Multi-harmonic wave undulation (primary + harmonic frequencies)
+        var wavePrimary = Math.cos(nx * (Math.PI / 2) * F.MURMURATION_FREQ_PRIMARY);
+        var waveHarmonic = Math.sin(nx * Math.PI * F.MURMURATION_FREQ_HARMONIC);
+        var waveY = wavePrimary + 0.25 * waveHarmonic;
+
+        // 2. Swirling vortex flow
+        var swirlX = -ny * F.MURMURATION_AMP_X * F.MURMURATION_SWIRL_FACTOR;
+        var swirlY = nx * (F.MURMURATION_AMP_Y * 0.25) * F.MURMURATION_SWIRL_FACTOR;
+
+        // 3. Dynamic cloud expansion & density modulation
+        var spreadX = (a.col - m) * F.MURMURATION_SPREAD_X;
+        var waveX = Math.sin(nx * Math.PI * F.MURMURATION_FREQ_PRIMARY) * (F.MURMURATION_AMP_X * 0.2);
+
+        a.fy = Math.max(0, F.MURMURATION_DEPTH * waveY + swirlY);
+        a.fx = spreadX + swirlX + waveX;
       }
+    } else {
+      return null;
     }
 
-    this.formation = { kind: kind, phase: 0, t: 0, k: 0, col: col };
+    this.formation = { kind: kind || 'murmuration', phase: 0, t: 0, k: 0, col: col };
     this.formationCount++;
     return this.formation;
   };
@@ -1357,21 +1376,21 @@
       return;
     }
 
+    var isMurm = (f.kind === 'murmuration' || f.kind === 'wedge');
     for (i = 0; i < this.aliens.length; i++) {
       a = this.aliens[i];
       if (!a.alive || a.dive || a.swoop || (this.isFrenzy() && a.soar)) { continue; }
       ox = a.fx * f.k;
       oy = a.fy * f.k;
+      if (isMurm && f.k > 0) {
+        // Continuous organic murmuration ripples across flight duration
+        ox += Math.sin(f.t * 3.2 + a.col * 0.55 + a.row * 0.4) * (3.0 * f.k);
+        oy += Math.cos(f.t * 2.8 + a.row * 0.75 + a.col * 0.3) * (2.2 * f.k);
+      }
       ex = a.gx + ox;
       ey = a.gy + oy;
-      if (ox !== 0) {
-        ex = SI.clamp(ex, F.EDGE_PAD, C.WORLD_W - F.EDGE_PAD);
-      }
-      if (oy > 0) {
-        // Never push an alien deeper than MAX_Y, and never pull one that
-        // is already deeper than that back UP (the grid owns descent).
-        ey = Math.max(a.gy, Math.min(ey, F.MAX_Y));
-      }
+      ex = SI.clamp(ex, F.EDGE_PAD, C.WORLD_W - F.EDGE_PAD);
+      ey = Math.max(a.gy, Math.min(ey, F.MAX_Y));
       a.x = ex;
       a.y = ey;
     }

@@ -124,6 +124,13 @@
       PINCER_PINCH: 12, // horizontal squeeze inward for outer wings
       INVERTED_WEDGE_DEPTH: 75, // how far outer wings dip in inverted wedge
       SWEEP_DEPTH: 80,  // how far diagonal wave dips
+      MURMURATION_DEPTH: 82,
+      MURMURATION_AMP_Y: 72,
+      MURMURATION_AMP_X: 36,
+      MURMURATION_FREQ_PRIMARY: 1.0,
+      MURMURATION_FREQ_HARMONIC: 2.2,
+      MURMURATION_SWIRL_FACTOR: 0.85,
+      MURMURATION_SPREAD_X: 10,
       EDGE_PAD: 46      // effective x is clamped into [PAD, WORLD_W - PAD]
     },
 
