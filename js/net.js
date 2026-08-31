@@ -36,6 +36,8 @@
   var KEY_BASE = STORAGE_PREFIX + 'baseUrl';
   var KEY_TOKEN = STORAGE_PREFIX + 'token';
   var KEY_USER = STORAGE_PREFIX + 'username';
+  var KEY_EMAIL = STORAGE_PREFIX + 'email';
+  var KEY_IS_ANONYMOUS = STORAGE_PREFIX + 'isAnonymous';
   var KEY_PENDING = STORAGE_PREFIX + 'pendingSubmit';
   /* Firebase web config. A Firebase "apiKey" is a PUBLIC identifier, not a
    * secret -- it identifies the project to Google's endpoints and every
@@ -62,6 +64,7 @@
     token: '',
     username: '',
     email: '',
+    isAnonymous: false,
     projectId: '',
     apiKey: '',
     timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -99,6 +102,28 @@
       },
       'catch': function () { return this; }
     };
+  }
+
+  // Detect platform: 'ios', 'android', or 'web' via Capacitor and userAgent.
+  function getPlatform() {
+    try {
+      if (typeof window !== 'undefined' && window.Capacitor) {
+        if (typeof window.Capacitor.getPlatform === 'function') {
+          var cp = window.Capacitor.getPlatform();
+          if (cp === 'ios' || cp === 'android') { return cp; }
+        } else if (window.Capacitor.platform === 'ios' || window.Capacitor.platform === 'android') {
+          return window.Capacitor.platform;
+        }
+      }
+      var nav = (typeof window !== 'undefined' && window.navigator) || (typeof navigator !== 'undefined' ? navigator : null);
+      if (nav) {
+        var ua = (nav.userAgent || '').toLowerCase();
+        if (/iphone|ipad|ipod/.test(ua)) { return 'ios'; }
+        if (/macintosh/.test(ua) && nav.maxTouchPoints > 1) { return 'ios'; }
+        if (/android/.test(ua)) { return 'android'; }
+      }
+    } catch (e) { /* ignore */ }
+    return 'web';
   }
 
   // localStorage throws in Safari private mode and in some WebView configs.
@@ -346,7 +371,10 @@
     return {
       baseUrl: state.baseUrl,
       username: state.username,
+      email: state.email,
       loggedIn: !!state.token,
+      isAnonymous: state.isAnonymous,
+      platform: getPlatform(),
       timeoutMs: state.timeoutMs,
       lastError: state.lastError,
       lastSubmit: state.lastSubmit,
@@ -498,14 +526,25 @@
     }
   }
 
-  function adoptFirebaseSession(idToken, username, email) {
+  function adoptFirebaseSession(idToken, username, email, isAnonymous) {
     state.token = String(idToken || '');
     state.username = String(username || '');
     state.email = String(email || '');
+    state.isAnonymous = !!isAnonymous;
     storeSet(KEY_TOKEN, state.token);
     storeSet(KEY_USER, state.username);
+    storeSet(KEY_EMAIL, state.email);
+    storeSet(KEY_IS_ANONYMOUS, state.isAnonymous ? 'true' : '');
     state.lastError = '';
-    return { ok: true, status: 200, data: { username: state.username } };
+    return {
+      ok: true,
+      status: 200,
+      data: {
+        username: state.username,
+        email: state.email,
+        isAnonymous: state.isAnonymous
+      }
+    };
   }
 
   /* Maps a Firebase error object onto this file's flat result shape. */
@@ -521,10 +560,14 @@
       return resolved(fail('no_user', 'Firebase returned no user.'));
     }
     return Promise.resolve(user.getIdToken()).then(function (idToken) {
+      var isAnon = !!user.isAnonymous;
       var name = user.displayName || '';
       var mail = user.email || '';
       if (!name && mail) { name = mail.split('@')[0]; }
-      return adoptFirebaseSession(idToken, name, mail);
+      if (!name && isAnon) {
+        name = 'Guest ' + (user.uid ? user.uid.substring(0, 6) : 'Pilot');
+      }
+      return adoptFirebaseSession(idToken, name, mail, isAnon);
     }, function (e) {
       return firebaseFailure(e);
     });
@@ -556,6 +599,350 @@
     return withEmailPassword('createUserWithEmailAndPassword', email, password);
   }
 
+  /* Anonymous sign-in ("Play as Guest"). */
+  function signInAnonymously() {
+    return ensureAuth().then(function (res) {
+      if (!res || res.ok === false) { return res; }
+      try {
+        var auth = fb().auth();
+        if (typeof auth.signInAnonymously !== 'function') {
+          return fail('not_supported', 'signInAnonymously is not supported by this SDK.');
+        }
+        var p = auth.signInAnonymously();
+        if (!p || typeof p.then !== 'function') {
+          return fail('firebase_error', 'Firebase did not return a promise.');
+        }
+        return p.then(finishSignIn, function (e) { return firebaseFailure(e); });
+      } catch (e) {
+        return firebaseFailure(e);
+      }
+    });
+  }
+
+  function handleLinkError(e) {
+    var code = (e && e.code) || '';
+    if (code === 'auth/credential-already-in-use' || code === 'auth/email-already-in-use' ||
+        code === 'credential-already-in-use' || code === 'email-already-in-use') {
+      return {
+        ok: false,
+        status: 409,
+        error: 'credential_already_in_use',
+        message: (e && e.message) || 'This credential is already linked to another account.'
+      };
+    }
+    return firebaseFailure(e);
+  }
+
+  /* Account linking for anonymous accounts. Preserves UID, active run token and personal best. */
+  function linkAccount(credentialOrEmail, password) {
+    return ensureAuth().then(function (res) {
+      if (!res || res.ok === false) { return res; }
+      var user = currentFirebaseUser();
+      if (!user) {
+        return fail('no_user', 'No active user session to link.');
+      }
+      if (typeof user.linkWithCredential !== 'function') {
+        return fail('not_supported', 'linkWithCredential is not supported by this SDK.');
+      }
+      var cred = null;
+      var F = fb();
+      try {
+        if (credentialOrEmail && typeof credentialOrEmail === 'object') {
+          cred = credentialOrEmail;
+        } else if (typeof credentialOrEmail === 'string' && password !== undefined) {
+          if (F && F.auth && F.auth.EmailAuthProvider && typeof F.auth.EmailAuthProvider.credential === 'function') {
+            cred = F.auth.EmailAuthProvider.credential(String(credentialOrEmail), String(password));
+          } else {
+            cred = { providerId: 'password', email: String(credentialOrEmail), password: String(password) };
+          }
+        } else {
+          return fail('invalid_argument', 'Provide a credential or email and password.');
+        }
+      } catch (e) {
+        return firebaseFailure(e);
+      }
+
+      var p;
+      try {
+        p = user.linkWithCredential(cred);
+      } catch (e) {
+        return handleLinkError(e);
+      }
+
+      if (!p || typeof p.then !== 'function') {
+        return fail('firebase_error', 'Firebase did not return a promise.');
+      }
+
+      return p.then(function (userCred) {
+        var u = (userCred && userCred.user) || currentFirebaseUser() || user;
+        return Promise.resolve(u.getIdToken ? u.getIdToken(true) : null).then(function (idToken) {
+          state.isAnonymous = false;
+          storeSet(KEY_IS_ANONYMOUS, '');
+          if (idToken) {
+            state.token = String(idToken);
+            storeSet(KEY_TOKEN, state.token);
+          }
+          var mail = u.email || (typeof credentialOrEmail === 'string' ? credentialOrEmail : '');
+          var name = u.displayName || '';
+          if (!name && mail) { name = mail.split('@')[0]; }
+          if (!name) { name = state.username; }
+          state.username = name;
+          state.email = mail;
+          storeSet(KEY_USER, state.username);
+          storeSet(KEY_EMAIL, state.email);
+          renderSession();
+          flushPending()['catch'](function () { /* ignore */ });
+          return {
+            ok: true,
+            status: 200,
+            data: {
+              username: state.username,
+              email: state.email,
+              isAnonymous: false
+            }
+          };
+        }, function (e) {
+          return firebaseFailure(e);
+        });
+      }, function (e) {
+        return handleLinkError(e);
+      });
+    });
+  }
+
+  function generateSecureNonce(len) {
+    var length = len || 32;
+    var chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    try {
+      var crypt = (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) || (typeof crypto !== 'undefined' ? crypto : null);
+      if (!crypt || typeof crypt.getRandomValues !== 'function') {
+        return null;
+      }
+      var buf = new Uint8Array(length);
+      crypt.getRandomValues(buf);
+      var res = '';
+      for (var i = 0; i < length; i++) {
+        res += chars.charAt(buf[i] % chars.length);
+      }
+      return res;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function sha256Hex(str) {
+    try {
+      var crypt = (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) || (typeof crypto !== 'undefined' ? crypto : null);
+      if (!crypt || !crypt.subtle || typeof crypt.subtle.digest !== 'function') {
+        return resolved(fail('crypto_unavailable', 'Web Crypto SHA-256 is unavailable on this device.'));
+      }
+      var enc = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+      var data = enc ? enc.encode(str) : null;
+      if (!data) {
+        data = new Uint8Array(str.length);
+        for (var i = 0; i < str.length; i++) {
+          data[i] = str.charCodeAt(i) & 0xff;
+        }
+      }
+      return Promise.resolve(crypt.subtle.digest('SHA-256', data)).then(function (buf) {
+        var arr = new Uint8Array(buf);
+        var hex = '';
+        for (var j = 0; j < arr.length; j++) {
+          var h = arr[j].toString(16);
+          hex += (h.length === 1 ? '0' + h : h);
+        }
+        return { ok: true, hash: hex };
+      }, function (e) {
+        return fail('crypto_unavailable', (e && e.message) || 'SHA-256 digest computation failed.');
+      });
+    } catch (e) {
+      return resolved(fail('crypto_unavailable', (e && e.message) || 'SHA-256 digest computation failed.'));
+    }
+  }
+
+  function getAppleCredential() {
+    var capPlugin = null;
+    try {
+      if (typeof window !== 'undefined') {
+        if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.SignInWithApple) {
+          capPlugin = window.Capacitor.Plugins.SignInWithApple;
+        } else if (window.SignInWithApple) {
+          capPlugin = window.SignInWithApple;
+        }
+      }
+    } catch (e) {}
+
+    if (capPlugin && typeof capPlugin.authorize === 'function') {
+      try {
+        var rawNonce = generateSecureNonce(32);
+        if (!rawNonce) {
+          return resolved(fail('crypto_unavailable', 'Secure nonce generation is unavailable on this device.'));
+        }
+        return sha256Hex(rawNonce).then(function (hashRes) {
+          if (!hashRes || hashRes.ok === false) { return hashRes; }
+          var hashedNonce = hashRes.hash;
+          var authPromise = capPlugin.authorize({
+            clientId: 'com.neoninvaders.app',
+            redirectURI: 'https://' + (state.projectId || 'demo-proj') + '.firebaseapp.com/__/auth/handler',
+            scopes: 'email name',
+            nonce: hashedNonce
+          });
+          return Promise.resolve(authPromise).then(function (res) {
+            var idToken = (res && res.response && res.response.identityToken) ||
+                          (res && res.identityToken) || (res && res.idToken) || '';
+            if (!idToken) {
+              return fail('no_identity_token', 'No identity token received from Apple native sign in.');
+            }
+            var F = fb();
+            if (F && F.auth && F.auth.OAuthProvider) {
+              var provider = new F.auth.OAuthProvider('apple.com');
+              var cred = null;
+              if (typeof provider.credential === 'function') {
+                cred = provider.credential({
+                  idToken: idToken,
+                  rawNonce: rawNonce
+                });
+              } else if (typeof F.auth.OAuthProvider.credential === 'function') {
+                try {
+                  cred = F.auth.OAuthProvider.credential('apple.com', {
+                    idToken: idToken,
+                    rawNonce: rawNonce
+                  });
+                } catch (e1) {
+                  cred = F.auth.OAuthProvider.credential({
+                    idToken: idToken,
+                    rawNonce: rawNonce
+                  });
+                }
+              }
+              if (cred) {
+                return { ok: true, credential: cred, isNative: true };
+              }
+            }
+            return { ok: true, credential: { providerId: 'apple.com', idToken: idToken, rawNonce: rawNonce }, isNative: true };
+          }, function (e) {
+            return firebaseFailure(e);
+          });
+        }, function (e) {
+          return firebaseFailure(e);
+        });
+      } catch (e) {
+        return resolved(firebaseFailure(e));
+      }
+    }
+
+    var plat = getPlatform();
+    if (plat === 'ios' || plat === 'android') {
+      return resolved(fail('disallowed_useragent',
+        'Native auth bridge required on mobile platforms to prevent disallowed_useragent OAuth blocking.'));
+    }
+
+    var F = fb();
+    if (!F || !F.auth || !F.auth.OAuthProvider) {
+      return resolved(fail('not_supported', 'OAuthProvider is not available in this SDK.'));
+    }
+    var webProvider = new F.auth.OAuthProvider('apple.com');
+    if (typeof webProvider.addScope === 'function') {
+      webProvider.addScope('email');
+      webProvider.addScope('name');
+    }
+    return resolved({ ok: true, provider: webProvider, isNative: false });
+  }
+
+  function signInWithApple() {
+    return ensureAuth().then(function (res) {
+      if (!res || res.ok === false) { return res; }
+      return getAppleCredential().then(function (credRes) {
+        if (!credRes || credRes.ok === false) { return credRes; }
+        var auth = fb().auth();
+        var p;
+        try {
+          if (credRes.credential) {
+            if (typeof auth.signInWithCredential === 'function') {
+              p = auth.signInWithCredential(credRes.credential);
+            } else {
+              return fail('not_supported', 'signInWithCredential is not supported.');
+            }
+          } else if (credRes.provider) {
+            if (typeof auth.signInWithPopup === 'function') {
+              p = auth.signInWithPopup(credRes.provider);
+            } else {
+              return fail('not_supported', 'signInWithPopup is not supported.');
+            }
+          } else {
+            return fail('no_credential', 'Could not obtain Apple credential.');
+          }
+        } catch (e) {
+          return firebaseFailure(e);
+        }
+        return Promise.resolve(p).then(finishSignIn, function (e) { return firebaseFailure(e); });
+      });
+    });
+  }
+
+  function linkWithApple() {
+    return ensureAuth().then(function (res) {
+      if (!res || res.ok === false) { return res; }
+      var user = currentFirebaseUser();
+      if (!user) {
+        return fail('no_user', 'No active user session to link.');
+      }
+      return getAppleCredential().then(function (credRes) {
+        if (!credRes || credRes.ok === false) { return credRes; }
+        if (credRes.credential) {
+          return linkAccount(credRes.credential);
+        } else if (credRes.provider) {
+          if (typeof user.linkWithPopup === 'function') {
+            var p;
+            try {
+              p = user.linkWithPopup(credRes.provider);
+            } catch (e) {
+              return handleLinkError(e);
+            }
+            return Promise.resolve(p).then(function (userCred) {
+              var u = (userCred && userCred.user) || currentFirebaseUser() || user;
+              return Promise.resolve(u.getIdToken ? u.getIdToken(true) : null).then(function (idToken) {
+                state.isAnonymous = false;
+                storeSet(KEY_IS_ANONYMOUS, '');
+                if (idToken) {
+                  state.token = String(idToken);
+                  storeSet(KEY_TOKEN, state.token);
+                }
+                var mail = u.email || '';
+                var name = u.displayName || '';
+                if (!name && mail) { name = mail.split('@')[0]; }
+                if (!name) { name = state.username; }
+                state.username = name;
+                state.email = mail;
+                storeSet(KEY_USER, state.username);
+                storeSet(KEY_EMAIL, state.email);
+                renderSession();
+                flushPending()['catch'](function () { /* ignore */ });
+                return {
+                  ok: true,
+                  status: 200,
+                  data: {
+                    username: state.username,
+                    email: state.email,
+                    isAnonymous: false
+                  }
+                };
+              }, function (e) {
+                return firebaseFailure(e);
+              });
+            }, function (e) {
+              return handleLinkError(e);
+            });
+          } else {
+            return fail('not_supported', 'linkWithPopup is not supported.');
+          }
+        } else {
+          return fail('no_credential', 'Could not obtain Apple credential.');
+        }
+      });
+    });
+  }
+
   /* One silent ID-token refresh. Firebase ID tokens expire after an hour, so a
    * long session (or a token restored from localStorage) will eventually get a
    * 401 from OUR server; this swaps in a fresh one and the caller retries
@@ -575,6 +962,57 @@
     } catch (e) {
       return resolved(false);
     }
+  }
+
+  var lastForegroundAt = 0;
+  var foregroundInFlight = false;
+  var lifecycleHooked = false;
+
+  /* Mobile lifecycle hook: on returning to foreground, refresh token and flush pending runs. */
+  function onForeground() {
+    var now = Date.now ? Date.now() : (+new Date());
+    if (now - lastForegroundAt < 1000 || foregroundInFlight) {
+      return;
+    }
+    lastForegroundAt = now;
+    if (state.token) {
+      foregroundInFlight = true;
+      refreshIdToken().then(function () {
+        return flushPending();
+      })['catch'](function () {})
+        .then(function () {
+          foregroundInFlight = false;
+        });
+    }
+  }
+
+  function setupLifecycleHooks() {
+    if (lifecycleHooked) { return; }
+    lifecycleHooked = true;
+    if (DOC && typeof DOC.addEventListener === 'function') {
+      DOC.addEventListener('visibilitychange', function () {
+        if (DOC.visibilityState === 'visible') {
+          onForeground();
+        }
+      });
+    }
+    try {
+      var capApp = null;
+      if (typeof window !== 'undefined') {
+        if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
+          capApp = window.Capacitor.Plugins.App;
+        } else if (window.App) {
+          capApp = window.App;
+        }
+      }
+      if (capApp && typeof capApp.addListener === 'function') {
+        capApp.addListener('appStateChange', function (appState) {
+          if (appState && appState.isActive) {
+            onForeground();
+          }
+        });
+      }
+    } catch (e) { /* ignore */ }
   }
 
   /* An authenticated request that survives one expired ID token. A 401 from
@@ -606,11 +1044,14 @@
     state.token = '';
     state.username = '';
     state.email = '';
+    state.isAnonymous = false;
     state.personalBest = null;
     state.lastSubmit = null;
     runState = { token: '', startedMs: 0, failed: false };
     storeSet(KEY_TOKEN, '');
     storeSet(KEY_USER, '');
+    storeSet(KEY_EMAIL, '');
+    storeSet(KEY_IS_ANONYMOUS, '');
     // A pending run belongs to the account that played it. Dropping it here
     // stops it from being re-attributed to whoever signs in next.
     clearPending();
@@ -830,6 +1271,11 @@
     '#ni-net button.ni-act{flex:1;cursor:pointer;padding:5px 6px;font:inherit;',
     'background:#141a3c;color:#9df3ff;border:1px solid #2b3d6b;border-radius:4px;}',
     '#ni-net button.ni-act:hover{border-color:#ff56d5;color:#ff56d5;}',
+    '#ni-net button.ni-apple{background:#000;color:#fff;border:1px solid #444;}',
+    '#ni-net button.ni-apple:hover{border-color:#fff;color:#fff;}',
+    '#ni-net .ni-badge{display:inline-block;padding:2px 5px;font-size:9px;font-weight:bold;',
+    'letter-spacing:.08em;text-transform:uppercase;border-radius:3px;background:#ffd166;',
+    'color:#060514;margin:6px 0 2px;}',
     '#ni-net .ni-status{margin-top:8px;min-height:15px;font-size:11px;color:#ffd166;',
     'word-break:break-word;}',
     '#ni-net .ni-board{margin-top:8px;max-height:132px;overflow:auto;font-size:11px;}',
@@ -858,7 +1304,15 @@
     var node = DOC.createElement(tag);
     for (var k in props) {
       if (Object.prototype.hasOwnProperty.call(props, k)) {
-        node[k] = props[k];
+        if (k === 'style' && typeof props[k] === 'object' && props[k] !== null) {
+          for (var s in props[k]) {
+            if (Object.prototype.hasOwnProperty.call(props[k], s)) {
+              node.style[s] = props[k][s];
+            }
+          }
+        } else {
+          node[k] = props[k];
+        }
       }
     }
     return node;
@@ -873,15 +1327,47 @@
   function renderSession() {
     if (!els) { return; }
     var inSession = !!state.token;
-    els.toggle.textContent = inSession ? ('◈ ' + state.username) : '◈ ONLINE';
+    var isAnon = !!state.isAnonymous;
+    var plat = getPlatform();
+    var showApple = (plat === 'ios' || plat === 'web');
+
+    if (inSession) {
+      els.toggle.textContent = isAnon ? ('◈ [GUEST] ' + state.username) : ('◈ ' + state.username);
+    } else {
+      els.toggle.textContent = '◈ ONLINE';
+    }
+
+    if (els.guestBadge) {
+      els.guestBadge.style.display = (inSession && isAnon) ? '' : 'none';
+    }
+
     els.login.style.display = inSession ? 'none' : '';
     els.register.style.display = inSession ? 'none' : '';
+    els.guest.style.display = inSession ? 'none' : '';
+    els.apple.style.display = (!inSession && showApple) ? '' : 'none';
+
+    if (els.linkSection) {
+      els.linkSection.style.display = (inSession && isAnon) ? '' : 'none';
+    }
+    if (els.linkApple) {
+      els.linkApple.style.display = (inSession && isAnon && showApple) ? '' : 'none';
+    }
+
     els.logout.style.display = inSession ? '' : 'none';
-    els.username.disabled = inSession;
-    els.password.disabled = inSession;
-    if (inSession) {
+
+    if (inSession && !isAnon) {
+      els.username.disabled = true;
+      els.password.disabled = true;
       els.username.value = state.username;
       els.password.value = '';
+    } else if (inSession && isAnon) {
+      els.username.disabled = false;
+      els.password.disabled = false;
+      els.username.value = '';
+      els.password.value = '';
+    } else {
+      els.username.disabled = false;
+      els.password.disabled = false;
     }
   }
 
@@ -961,6 +1447,56 @@
       ['catch'](function () { renderStatus('Request failed.'); });
   }
 
+  function doGuestSignIn() {
+    readBase();
+    readFirebaseConfig();
+    renderStatus('Signing in as guest...');
+    signInAnonymously().then(afterAuth)
+      ['catch'](function () { renderStatus('Guest sign-in failed.'); });
+  }
+
+  function doAppleSignIn() {
+    readBase();
+    readFirebaseConfig();
+    renderStatus('Connecting to Apple...');
+    signInWithApple().then(afterAuth)
+      ['catch'](function () { renderStatus('Apple sign-in failed.'); });
+  }
+
+  function doLinkAccount() {
+    readBase();
+    readFirebaseConfig();
+    renderStatus('Linking account...');
+    linkAccount(els.username.value, els.password.value).then(function (res) {
+      if (res && res.ok) {
+        renderStatus('Account linked! Signed in as ' + state.username + '.');
+        renderSession();
+        refreshBoard();
+      } else {
+        renderStatus((res && res.message) || 'Account linking failed.');
+      }
+    })['catch'](function () {
+      renderStatus('Account linking failed.');
+    });
+  }
+
+  function doLinkApple() {
+    readBase();
+    readFirebaseConfig();
+    renderStatus('Linking with Apple...');
+    linkWithApple().then(function (res) {
+      if (res && res.ok) {
+        renderStatus('Account linked with Apple! Signed in as ' + state.username + '.');
+        renderSession();
+        refreshBoard();
+      } else {
+        renderStatus((res && res.message) || 'Apple linking failed.');
+      }
+    })['catch'](function () {
+      renderStatus('Apple linking failed.');
+    });
+  }
+
   function doLogout() {
     logout();
     renderSession();
@@ -1035,14 +1571,34 @@
     body.appendChild(el('label', { textContent: 'Password' }));
     body.appendChild(password);
 
-    var row = el('div', { className: 'ni-row' });
+    var guestBadge = el('div', { className: 'ni-badge', textContent: 'Guest Account' });
+    body.appendChild(guestBadge);
+
+    var row1 = el('div', { className: 'ni-row' });
     var loginBtn = el('button', { className: 'ni-act', type: 'button', textContent: 'Sign in' });
     var registerBtn = el('button', { className: 'ni-act', type: 'button', textContent: 'Register' });
     var logoutBtn = el('button', { className: 'ni-act', type: 'button', textContent: 'Sign out' });
-    row.appendChild(loginBtn);
-    row.appendChild(registerBtn);
-    row.appendChild(logoutBtn);
-    body.appendChild(row);
+    row1.appendChild(loginBtn);
+    row1.appendChild(registerBtn);
+    row1.appendChild(logoutBtn);
+    body.appendChild(row1);
+
+    var rowGuest = el('div', { className: 'ni-row' });
+    var guestBtn = el('button', { className: 'ni-act', type: 'button', textContent: 'Play as Guest' });
+    var appleBtn = el('button', { className: 'ni-act ni-apple', type: 'button', textContent: ' Sign in with Apple' });
+    rowGuest.appendChild(guestBtn);
+    rowGuest.appendChild(appleBtn);
+    body.appendChild(rowGuest);
+
+    var linkSection = el('div', { style: { display: 'none' } });
+    linkSection.appendChild(el('label', { textContent: 'Link Account' }));
+    var rowLink = el('div', { className: 'ni-row' });
+    var linkBtn = el('button', { className: 'ni-act', type: 'button', textContent: 'Link Account' });
+    var linkAppleBtn = el('button', { className: 'ni-act ni-apple', type: 'button', textContent: 'Link  Apple' });
+    rowLink.appendChild(linkBtn);
+    rowLink.appendChild(linkAppleBtn);
+    linkSection.appendChild(rowLink);
+    body.appendChild(linkSection);
 
     var statusEl = el('div', { className: 'ni-status' });
     var board = el('div', { className: 'ni-board' });
@@ -1056,8 +1612,12 @@
     els = {
       root: root, toggle: toggle, body: body, server: server,
       project: project, apiKey: apiKey,
-      username: username, password: password, login: loginBtn,
-      register: registerBtn, logout: logoutBtn, status: statusEl, board: board
+      username: username, password: password,
+      guestBadge: guestBadge,
+      login: loginBtn, register: registerBtn, logout: logoutBtn,
+      guest: guestBtn, apple: appleBtn,
+      linkSection: linkSection, linkBtn: linkBtn, linkApple: linkAppleBtn,
+      status: statusEl, board: board
     };
 
     // Every panel button drops focus once it has done its job. A button that
@@ -1085,6 +1645,10 @@
     loginBtn.onclick = function () { doLogin(); releaseFocus(loginBtn); };
     registerBtn.onclick = function () { doRegister(); releaseFocus(registerBtn); };
     logoutBtn.onclick = function () { doLogout(); releaseFocus(logoutBtn); };
+    guestBtn.onclick = function () { doGuestSignIn(); releaseFocus(guestBtn); };
+    appleBtn.onclick = function () { doAppleSignIn(); releaseFocus(appleBtn); };
+    linkBtn.onclick = function () { doLinkAccount(); releaseFocus(linkBtn); };
+    linkAppleBtn.onclick = function () { doLinkApple(); releaseFocus(linkAppleBtn); };
 
     /* Enter inside a field submits. The capture-phase shield below calls this
      * directly (a capture-phase stopImmediatePropagation() would otherwise
@@ -1095,7 +1659,11 @@
       if (!e || e.niEnterHandled) { return; }
       if (e.key === 'Enter' || e.keyCode === 13) {
         e.niEnterHandled = true;
-        if (!state.token) { doLogin(); }
+        if (!state.token) {
+          doLogin();
+        } else if (state.isAnonymous) {
+          doLinkAccount();
+        }
       }
     };
     username.onkeydown = onEnter;
@@ -1120,13 +1688,20 @@
     state.baseUrl = normaliseBase(storeGet(KEY_BASE));
     state.token = storeGet(KEY_TOKEN);
     state.username = storeGet(KEY_USER);
+    state.email = storeGet(KEY_EMAIL) || '';
+    state.isAnonymous = state.token ? (storeGet(KEY_IS_ANONYMOUS) === 'true') : false;
     // Config only -- reading these does NOT load the SDK or touch the network.
     state.projectId = storeGet(KEY_PROJECT);
     state.apiKey = storeGet(KEY_APIKEY);
     state.pending = state.token ? loadPending() : null;
-    if (!state.token) { storeSet(KEY_PENDING, ''); }
+    if (!state.token) {
+      storeSet(KEY_PENDING, '');
+      storeSet(KEY_EMAIL, '');
+      storeSet(KEY_IS_ANONYMOUS, '');
+    }
 
     hookGame();
+    setupLifecycleHooks();
     buildPanel();
 
     // The only automatic traffic: a player who already signed in on this
@@ -1167,6 +1742,12 @@
     // Preferred names.
     signIn: signIn,
     signUp: signUp,
+    signInAnonymously: signInAnonymously,
+    signInAsGuest: signInAnonymously,
+    linkAccount: linkAccount,
+    signInWithApple: signInWithApple,
+    linkWithApple: linkWithApple,
+    getPlatform: getPlatform,
     logout: logout,
     startRun: startRun,
     submitScore: submitScore,
@@ -1180,7 +1761,9 @@
       boot: safeBoot,
       ensureSdk: ensureSdk,
       refreshIdToken: refreshIdToken,
-      FIREBASE_CDN: FIREBASE_CDN
+      FIREBASE_CDN: FIREBASE_CDN,
+      onForeground: onForeground,
+      getPlatform: getPlatform
     }
   };
 })(window.SI = window.SI || {});

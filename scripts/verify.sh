@@ -476,84 +476,27 @@ else
 fi
 
 # ---------------------------------------------------------------- AC13
-hdr "AC13: nothing outside this round's authorized scope (WEAPON COMBINATION SYSTEM) changed; the engine regression suite passes"
-# THIS ROUND'S SCOPE IS DIFFERENT FROM THE LAST ONE. The previous round --
-# DISTINCT ALIEN CLASSES -- authorized js/core.js, js/entities.js and
-# js/game.js and froze js/hud.js. This round is the WEAPON COMBINATION SYSTEM
-# (exactly ONE combination: PIERCING LASER + BOUNCING SHOT fused onto a single
-# bullet), so js/hud.js comes BACK OUT of the frozen list and IS AUTHORIZED
-# this round: the combination is a real pick-screen card, so it needs its own
-# UPGRADES table entry (name/blurb/colour) and its own icon glyph, and the
-# card list has to be read from game.upgradeChoices() instead of
-# CONFIG.UPGRADE.IDS. js/entities.js stays authorized too -- Player.fire() is
-# where the two field sets are unioned.
-#
-# server/ is FULLY FROZEN this round, with NO carve-out at all. The reason it
-# needs none is arithmetic, and it is MACHINE-CHECKED in (e) below rather than
-# merely asserted here: a bouncing bullet survives WALLS, it does not kill more
-# aliens, so the combined shot's kill ceiling is still exactly
-# 1 + UPGRADE.PIERCE_COUNT = 3 aliens per trigger pull -- precisely the
-# BEST_ALIENS_PER_SHOT that server/src/anticheat.js already assumes for bound 1.
-# (scripts/check-game.js scenario 29 brute-forces 60 combined flights -- 15
-# launch x positions x both launch sides x 2 heights -- through a full swarm and
-# confirms no flight ever EXCEEDS that ceiling; what it asserts is the upper
-# bound plus non-vacuity, not an exact worst-case number. Scenario 31 runs the
-# same ceiling check with the SHIELD alien's redirect in the mix, which is the
-# one cross-feature path that could have leaked an extra kill into a trigger
-# pull.) The combination also carries
-# NO score bonus of its own -- each kill pays its own SCORE.ROW value at the
-# multiplier already in force -- so BEST_ALIEN_SCORE and COMBO_MAX are
-# unchanged, PEAK_SCORE_PER_SECOND stays ~522/s and bound 2's 800/s ceiling
-# needs no re-derivation either. Nothing under server/ may change, and the whole
-# tree is checked below with no exclusions.
-#
-# The check is still the same two halves:
-#   (a) everything the round was NOT authorized to touch is still untouched,
-#       and
-#   (b) the authorized engine files pass scripts/check-game.js, which is the
-#       real regression gate for them (its scenario 1 is a golden per-tick
-#       checksum against the PRE-feature game, so classic play being
-#       bit-identical is still proven -- just by behaviour, not by bytes).
-#
-# Authorized to change this round, hence excluded from (a):
-#   js/core.js                            (UPGRADE.COMBINED_ID + UPGRADE
-#                                          .COMBINES, COLORS.pierceBounce,
-#                                          VERSION)
-#   js/entities.js                        (Player.fire()'s pierce/bounce
-#                                          if/else-if split into two
-#                                          INDEPENDENT ifs, plus the combined
-#                                          colour override -- no new Bullet
-#                                          field, collide() untouched)
-#   js/game.js                            (Game.upgradeChoices(), and the pick
-#                                          screen's hit-test / tick / apply
-#                                          reading it instead of UPGRADE.IDS)
-#   js/hud.js                             (the pierce_bounce UPGRADES entry,
-#                                          its icon, the card list read from
-#                                          game.upgradeChoices(), and the card
-#                                          count passed to drawUpgradeCard)
-#   scripts/check-game.js                 (scenarios 28-31 appended -- 31 is
-#                                          the combined bullet vs the SHIELD
-#                                          alien's redirect; NO pre-existing
-#                                          scenario (1-27) or shared helper
-#                                          was modified this round)
+hdr "AC13: nothing outside this round's authorized scope (MOBILE AUTHENTICATION BEST PRACTICES) changed; the engine regression suite passes"
+# Authorized to change this round:
+#   js/net.js                             (anonymous auth, account linking,
+#                                          Sign in with Apple, lifecycle hooks,
+#                                          platform detection)
+#   docs/MOBILE.md                        (Mobile Authentication Best Practices)
+#   scripts/check-net.js                  (test coverage for mobile auth)
 #   scripts/verify.sh                     (this retarget)
-#   README.md FEATURES.md                 (the docs for the above)
-#   package.json                          (the "version" field ONLY, bumped to
-#                                          1.3.0 with CONFIG.VERSION -- AC15
-#                                          below is what checks they agree)
-# NOT authorized: js/net.js (frozen -- the combination is engine-only and the
-# opt-in leaderboard bridge has nothing to say about it) and every path under
-# server/ (frozen -- no new kill ceiling, no score bonus, nothing to
-# re-derive; see (e)).
+#
+# Frozen this round: all core engine files (js/{core,fx,audio,input,starfield,
+# particles,entities,props,hud,game,main}.js, css, index.html), android/, ios/,
+# and server/.
 
 # --- (a) untouched-outside-scope, tracked AND untracked -----------------
-FROZEN_ENGINE="js/starfield.js js/particles.js js/main.js css/style.css index.html js/net.js"
+FROZEN_ENGINE="js/core.js js/fx.js js/audio.js js/input.js js/starfield.js js/particles.js js/entities.js js/props.js js/hud.js js/game.js js/main.js css/style.css index.html"
 FROZEN_MOBILE="android ios capacitor.config.json package-lock.json"
 DIRTY_ENGINE="$(git status --porcelain --untracked-files=all -- $FROZEN_ENGINE)"
 DIRTY_MOBILE="$(git status --porcelain --untracked-files=all -- $FROZEN_MOBILE)"
 DIRTY_SERVER="$(git status --porcelain --untracked-files=all -- server)"
 DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
-  ':(exclude)scripts/check-game.js' ':(exclude)scripts/verify.sh')"
+  ':(exclude)scripts/check-net.js' ':(exclude)scripts/check-game.js' ':(exclude)scripts/verify.sh')"
 # package.json is authorized for its "version" field ONLY, so do not simply
 # exclude it -- pin the claim instead: every added/removed line in its diff
 # must BE a "version" line. Anything else (a new dependency, a changed script,
@@ -561,10 +504,10 @@ DIRTY_SCRIPTS="$(git status --porcelain --untracked-files=all -- scripts \
 DIRTY_PKGJSON="$(git diff HEAD -- package.json | grep -E '^[+-]' \
   | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true)"
 DIRTY="$DIRTY_ENGINE$DIRTY_MOBILE$DIRTY_SERVER$DIRTY_SCRIPTS$DIRTY_PKGJSON"
-note "6 frozen engine files + css + index.html + net.js -> '${DIRTY_ENGINE:-<clean>}'"
+note "11 frozen engine files + css + index.html -> '${DIRTY_ENGINE:-<clean>}'"
 note "android/ ios/ capacitor.config.json package-lock.json      -> '${DIRTY_MOBILE:-<clean>}'"
 note "ALL of server/ (no carve-out at all this round)            -> '${DIRTY_SERVER:-<clean>}'"
-note "pre-existing scripts/* (minus check-game.js + verify.sh)    -> '${DIRTY_SCRIPTS:-<clean>}'"
+note "pre-existing scripts/* (minus check-net/check-game/verify)  -> '${DIRTY_SCRIPTS:-<clean>}'"
 note "package.json lines changed that are NOT the version field  -> '${DIRTY_PKGJSON:-<clean>}'"
 
 GSTATIC_IN_HTML="$(grep -c 'gstatic\|firebase' index.html || true)"

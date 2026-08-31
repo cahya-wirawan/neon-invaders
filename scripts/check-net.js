@@ -68,6 +68,7 @@ function makeDocument() {
   }
 
   function makeElement(tagName) {
+    const styleObj = {};
     const node = {
       tagName: String(tagName).toUpperCase(),
       nodeName: String(tagName).toUpperCase(),
@@ -82,7 +83,10 @@ function makeDocument() {
       disabled: false,
       textContent: '',
       childNodes: [],
-      style: {},
+      get style() { return styleObj; },
+      set style(v) {
+        throw new TypeError("Cannot assign to read only property 'style' of object");
+      },
       parentNode: null,
       listeners: [],
       setAttribute(k, v) { node[k] = v; },
@@ -134,7 +138,11 @@ function makeDocument() {
     createTextNode: (text) => ({ nodeType: 3, textContent: String(text), childNodes: [] }),
     getElementById: (id) => byId.get(id) || null,
     getElementsByTagName: (tag) => (String(tag).toLowerCase() === 'head' ? [head] : []),
-    addEventListener() {},
+    addEventListener(type, fn, capture) {
+      this._listeners.push({ type, fn, capture: !!capture });
+    },
+    removeEventListener() {},
+    _listeners: [],
     _byId: byId,
     _scripts: scripts,
     _scriptSrcs: () => scripts.map((s) => String(s.src || ''))
@@ -146,13 +154,26 @@ function makeDocument() {
  * of the compat API net.js touches. */
 function makeFakeFirebase(options) {
   const opts = options || {};
-  const calls = { initializeApp: 0, signIn: 0, signUp: 0, signOut: 0, getIdToken: [] };
+  const calls = {
+    initializeApp: 0,
+    signIn: 0,
+    signUp: 0,
+    signInAnonymously: 0,
+    signOut: 0,
+    linkWithCredential: 0,
+    linkWithPopup: 0,
+    signInWithPopup: 0,
+    signInWithCredential: 0,
+    getIdToken: []
+  };
   let currentUser = null;
 
-  function makeUser(email) {
+  function makeUser(email, isAnonymous, uid) {
     return {
-      email,
-      displayName: opts.displayName === undefined ? null : opts.displayName,
+      uid: uid || (isAnonymous ? 'anon-uid-123' : 'user-uid-456'),
+      email: email || (isAnonymous ? null : 'user@example.com'),
+      displayName: opts.displayName === undefined ? (isAnonymous ? null : 'Pilot') : opts.displayName,
+      isAnonymous: !!isAnonymous,
       getIdToken(force) {
         calls.getIdToken.push(!!force);
         // Only the FORCED refresh fails: the initial sign-in must still work,
@@ -160,7 +181,40 @@ function makeFakeFirebase(options) {
         if (opts.getIdTokenFails && force) {
           return Promise.reject(new Error('token refresh failed'));
         }
-        return Promise.resolve(force ? 'refreshed-id-token' : (opts.idToken || 'fake-id-token'));
+        return Promise.resolve(force ? 'refreshed-id-token' : (opts.idToken || (isAnonymous ? 'fake-anon-token' : 'fake-id-token')));
+      },
+      linkWithCredential(cred) {
+        calls.linkWithCredential += 1;
+        if (opts.linkFailsConflict) {
+          const e = new Error('The credential is already in use.');
+          e.code = 'auth/credential-already-in-use';
+          return Promise.reject(e);
+        }
+        if (opts.linkFails) {
+          const e = new Error('Linking failed.');
+          e.code = 'auth/invalid-credential';
+          return Promise.reject(e);
+        }
+        this.isAnonymous = false;
+        if (cred && cred.email) this.email = cred.email;
+        if (cred && cred.providerId === 'apple.com') this.email = 'appleuser@example.com';
+        return Promise.resolve({ user: this });
+      },
+      linkWithPopup(provider) {
+        calls.linkWithPopup += 1;
+        if (opts.linkFailsConflict) {
+          const e = new Error('The credential is already in use.');
+          e.code = 'auth/credential-already-in-use';
+          return Promise.reject(e);
+        }
+        if (opts.linkFails) {
+          const e = new Error('Popup linking failed.');
+          e.code = 'auth/popup-closed-by-user';
+          return Promise.reject(e);
+        }
+        this.isAnonymous = false;
+        this.email = 'appleuser@example.com';
+        return Promise.resolve({ user: this });
       }
     };
   }
@@ -174,7 +228,7 @@ function makeFakeFirebase(options) {
         e.code = 'auth/wrong-password';
         return Promise.reject(e);
       }
-      currentUser = makeUser(email);
+      currentUser = makeUser(email, false);
       return Promise.resolve({ user: currentUser });
     },
     createUserWithEmailAndPassword(email) {
@@ -184,7 +238,37 @@ function makeFakeFirebase(options) {
         e.code = 'auth/email-already-in-use';
         return Promise.reject(e);
       }
-      currentUser = makeUser(email);
+      currentUser = makeUser(email, false);
+      return Promise.resolve({ user: currentUser });
+    },
+    signInAnonymously() {
+      calls.signInAnonymously += 1;
+      if (opts.signInAnonymouslyFails) {
+        const e = new Error('Anonymous auth disabled.');
+        e.code = 'auth/admin-restricted-operation';
+        return Promise.reject(e);
+      }
+      currentUser = makeUser(null, true);
+      return Promise.resolve({ user: currentUser });
+    },
+    signInWithCredential(cred) {
+      calls.signInWithCredential += 1;
+      if (opts.signInWithCredentialFails) {
+        const e = new Error('Credential sign-in failed.');
+        e.code = 'auth/invalid-credential';
+        return Promise.reject(e);
+      }
+      currentUser = makeUser('appleuser@example.com', false);
+      return Promise.resolve({ user: currentUser });
+    },
+    signInWithPopup(provider) {
+      calls.signInWithPopup += 1;
+      if (opts.signInWithPopupFails) {
+        const e = new Error('Popup sign-in failed.');
+        e.code = 'auth/popup-closed-by-user';
+        return Promise.reject(e);
+      }
+      currentUser = makeUser('appleuser@example.com', false);
       return Promise.resolve({ user: currentUser });
     },
     signOut() {
@@ -193,6 +277,22 @@ function makeFakeFirebase(options) {
       return Promise.resolve();
     }
   });
+
+  auth.EmailAuthProvider = {
+    credential(email, password) {
+      return { providerId: 'password', email, password };
+    }
+  };
+
+  function OAuthProvider(providerId) {
+    this.providerId = providerId;
+    this.scopes = [];
+    this.addScope = function (scope) { this.scopes.push(scope); return this; };
+    this.credential = function (params) {
+      return { providerId: this.providerId, idToken: params && params.idToken, rawNonce: params && params.rawNonce };
+    };
+  }
+  auth.OAuthProvider = OAuthProvider;
 
   const fb = {
     apps: [],
@@ -203,7 +303,9 @@ function makeFakeFirebase(options) {
     },
     app: () => fb.apps[0],
     auth,
-    _calls: calls
+    _calls: calls,
+    _setUser: (u) => { currentUser = u; },
+    _makeUser: makeUser
   };
   return fb;
 }
@@ -222,6 +324,18 @@ function makeWindow() {
   const listeners = [];
   const win = {
     listeners,
+    crypto: global.crypto || {
+      getRandomValues(buf) {
+        for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256);
+        return buf;
+      },
+      subtle: {
+        async digest(algo, data) {
+          const cryptoModule = require('crypto');
+          return cryptoModule.createHash('sha256').update(Buffer.from(data)).digest();
+        }
+      }
+    },
     addEventListener(type, fn, capture) {
       listeners.push({ type, fn, capture: !!capture });
     },
@@ -412,8 +526,9 @@ async function main() {
   await scenario('loads with a normal environment', async () => {
     const { Net } = loadNet({ fetch: async () => fakeResponse(200, '{}') });
     check('SI.Net is exported', !!Net);
-    const api = ['configure', 'status', 'register', 'login', 'logout',
-      'submitScore', 'leaderboard', 'personalBest'];
+    const api = ['configure', 'status', 'register', 'login', 'signIn', 'signUp',
+      'signInAnonymously', 'signInAsGuest', 'linkAccount', 'signInWithApple',
+      'linkWithApple', 'getPlatform', 'logout', 'submitScore', 'leaderboard', 'personalBest'];
     for (const k of api) {
       check(`SI.Net.${k} is a function`, Net && typeof Net[k] === 'function');
     }
@@ -958,6 +1073,232 @@ async function main() {
     check('net.js contains no outerHTML assignment', !/\.outerHTML\s*=/.test(SOURCE));
     check('net.js does not use document.write', SOURCE.indexOf('document.write') === -1);
     check('net.js does not use eval', !/\beval\s*\(/.test(SOURCE));
+  });
+
+  await scenario('getPlatform detects ios, android, and web correctly', async () => {
+    // 1. Capacitor getPlatform() method
+    const winCapIos = makeWindow();
+    winCapIos.Capacitor = { getPlatform: () => 'ios' };
+    const { Net: NetCapIos } = loadNet({ window: winCapIos });
+    check('Capacitor.getPlatform() === "ios" detected as ios', NetCapIos.getPlatform() === 'ios');
+    check('status().platform reflects ios', NetCapIos.status().platform === 'ios');
+
+    const winCapAndroid = makeWindow();
+    winCapAndroid.Capacitor = { getPlatform: () => 'android' };
+    const { Net: NetCapAndroid } = loadNet({ window: winCapAndroid });
+    check('Capacitor.getPlatform() === "android" detected as android', NetCapAndroid.getPlatform() === 'android');
+    check('status().platform reflects android', NetCapAndroid.status().platform === 'android');
+
+    // 2. Capacitor.platform property
+    const winCapProp = makeWindow();
+    winCapProp.Capacitor = { platform: 'ios' };
+    const { Net: NetCapProp } = loadNet({ window: winCapProp });
+    check('Capacitor.platform property detected as ios', NetCapProp.getPlatform() === 'ios');
+
+    // 3. UserAgent fallback: iPhone / Android / Desktop via win.navigator
+    const winIphone = makeWindow();
+    winIphone.navigator = { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', maxTouchPoints: 5 };
+    const { Net: NetIphone } = loadNet({ window: winIphone });
+    check('iPhone UA detected as ios', NetIphone.getPlatform() === 'ios');
+
+    const winAndroid = makeWindow();
+    winAndroid.navigator = { userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8)', maxTouchPoints: 5 };
+    const { Net: NetAndroid } = loadNet({ window: winAndroid });
+    check('Android UA detected as android', NetAndroid.getPlatform() === 'android');
+
+    const winMac = makeWindow();
+    winMac.navigator = { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 0 };
+    const { Net: NetMac } = loadNet({ window: winMac });
+    check('Desktop Mac UA detected as web', NetMac.getPlatform() === 'web');
+
+    const winWin = makeWindow();
+    winWin.navigator = { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', maxTouchPoints: 0 };
+    const { Net: NetWin } = loadNet({ window: winWin });
+    check('Desktop Windows UA detected as web', NetWin.getPlatform() === 'web');
+  });
+
+  await scenario('anonymous guest sign-in and score submission', async () => {
+    const fakeFb = makeFakeFirebase();
+    const server = makeFakeServer();
+    const { Net } = loadNet({ firebase: fakeFb, fetch: server.fetch });
+    Net.configure({ baseUrl: 'http://localhost:3000', projectId: 'demo-proj', apiKey: 'public-key' });
+
+    check('initial isAnonymous is false', Net.status().isAnonymous === false);
+    check('signInAsGuest is aliased to signInAnonymously', Net.signInAsGuest === Net.signInAnonymously);
+
+    const res = await Net.signInAnonymously();
+    check('signInAnonymously resolves ok', !!res && res.ok === true);
+    check('status().loggedIn is true', Net.status().loggedIn === true);
+    check('status().isAnonymous is true', Net.status().isAnonymous === true);
+    check('status().username is Guest Pilot / anon name', /^Guest\s+/.test(Net.status().username));
+    check('Firebase signInAnonymously was called', fakeFb._calls.signInAnonymously === 1);
+
+    // Start a run and submit score as guest
+    const runRes = await Net.startRun();
+    check('startRun succeeds for anonymous user', !!runRes && runRes.ok === true);
+    const scoreRes = await Net.submitScore(2500, 3);
+    check('submitScore succeeds for anonymous user', !!scoreRes && scoreRes.ok === true);
+    check('score recorded by server', server.submitted.length === 1 && server.submitted[0].score === 2500);
+  });
+
+  await scenario('account linking preserves session, run token, and flushes pending runs', async () => {
+    const fakeFb = makeFakeFirebase();
+    const server = makeFakeServer();
+    const { Net } = loadNet({ firebase: fakeFb, fetch: server.fetch });
+    Net.configure({ baseUrl: 'http://localhost:3000', projectId: 'demo-proj', apiKey: 'public-key' });
+
+    await Net.signInAnonymously();
+    check('signed in anonymously', Net.status().isAnonymous === true);
+
+    // Start a run under anonymous user
+    await Net.startRun();
+    const currentRunToken = Net.status().runToken;
+    check('active run token acquired', !!currentRunToken);
+
+    // Link account with email + password
+    const linkRes = await Net.linkAccount('upgraded@example.com', 'mypassword123');
+    check('linkAccount resolves ok: true', !!linkRes && linkRes.ok === true);
+    check('status().isAnonymous is now false', Net.status().isAnonymous === false);
+    check('status().username updated to email username', Net.status().username === 'upgraded');
+    check('active run token preserved across linking', Net.status().runToken === currentRunToken);
+    check('user.linkWithCredential was called', fakeFb._calls.linkWithCredential === 1);
+
+    // Submit score for the run started while anonymous
+    const subRes = await Net.submitScore(5000, 5);
+    check('submitScore succeeds using preserved run token', !!subRes && subRes.ok === true);
+    check('server accepted the score', server.submitted.some((s) => s.score === 5000 && s.runToken === currentRunToken));
+  });
+
+  await scenario('linking conflict returns credential_already_in_use without destroying anonymous session', async () => {
+    const fakeFb = makeFakeFirebase({ linkFailsConflict: true });
+    const server = makeFakeServer();
+    const { Net } = loadNet({ firebase: fakeFb, fetch: server.fetch });
+    Net.configure({ baseUrl: 'http://localhost:3000', projectId: 'demo-proj', apiKey: 'public-key' });
+
+    const anonRes = await Net.signInAnonymously();
+    const tokenBefore = Net.status().token;
+    check('anonymous user signed in', !!anonRes && anonRes.ok === true && Net.status().isAnonymous === true);
+
+    const linkRes = await Net.linkAccount('conflict@example.com', 'hunter2hunter2');
+    check('linkAccount returns ok: false on conflict', !!linkRes && linkRes.ok === false);
+    check('error is credential_already_in_use', linkRes.error === 'credential_already_in_use', linkRes.error);
+    check('status is 409', linkRes.status === 409, `status=${linkRes.status}`);
+
+    // Anonymous session must NOT be destroyed
+    check('player is still logged in', Net.status().loggedIn === true);
+    check('player is still anonymous', Net.status().isAnonymous === true);
+    check('token was preserved', Net.status().token === tokenBefore);
+  });
+
+  await scenario('sign in with Apple routes to native bridge when available or web popup', async () => {
+    // 1. Native bridge via window.Capacitor.Plugins.SignInWithApple
+    const winNative = makeWindow();
+    let nativeAuthCalled = 0;
+    winNative.Capacitor = {
+      Plugins: {
+        SignInWithApple: {
+          authorize: async () => {
+            nativeAuthCalled += 1;
+            return {
+              response: {
+                identityToken: 'apple-jwt-token-native',
+                nonce: 'raw-nonce-123'
+              }
+            };
+          }
+        }
+      }
+    };
+    const fakeFbNative = makeFakeFirebase();
+    const { Net: NetNative } = loadNet({ window: winNative, firebase: fakeFbNative });
+    NetNative.configure({ baseUrl: 'http://localhost:3000', projectId: 'demo-proj', apiKey: 'public-key' });
+
+    const nativeRes = await NetNative.signInWithApple();
+    check('native signInWithApple resolves ok', !!nativeRes && nativeRes.ok === true);
+    check('native plugin authorize was invoked', nativeAuthCalled === 1);
+    check('Firebase signInWithCredential was called', fakeFbNative._calls.signInWithCredential === 1);
+
+    // 2. Web fallback via OAuthProvider and signInWithPopup
+    const winWeb = makeWindow();
+    const fakeFbWeb = makeFakeFirebase();
+    const { Net: NetWeb } = loadNet({ window: winWeb, firebase: fakeFbWeb });
+    NetWeb.configure({ baseUrl: 'http://localhost:3000', projectId: 'demo-proj', apiKey: 'public-key' });
+
+    const webRes = await NetWeb.signInWithApple();
+    check('web signInWithApple resolves ok', !!webRes && webRes.ok === true);
+    check('Firebase signInWithPopup was called', fakeFbWeb._calls.signInWithPopup === 1);
+
+    // 3. linkWithApple on anonymous user (web popup)
+    await NetWeb.signInAnonymously();
+    check('anonymous user signed in', NetWeb.status().isAnonymous === true);
+    const linkAppleRes = await NetWeb.linkWithApple();
+    check('linkWithApple resolves ok', !!linkAppleRes && linkAppleRes.ok === true);
+    check('status().isAnonymous is false after linking with Apple', NetWeb.status().isAnonymous === false);
+    check('Firebase linkWithPopup was called', fakeFbWeb._calls.linkWithPopup === 1);
+  });
+
+  await scenario('lifecycle foreground triggers silent token refresh and flushes pending submissions', async () => {
+    const doc = makeDocument();
+    doc.visibilityState = 'hidden';
+    const win = makeWindow();
+    let appStateCallback = null;
+    win.Capacitor = {
+      Plugins: {
+        App: {
+          addListener: (event, cb) => {
+            if (event === 'appStateChange') { appStateCallback = cb; }
+          }
+        }
+      }
+    };
+    const fakeFb = makeFakeFirebase();
+    const server = makeFakeServer({ scoresUp: false });
+    const { Net } = loadNet({ document: doc, window: win, firebase: fakeFb, fetch: server.fetch });
+    Net.configure({ baseUrl: 'http://localhost:3000', projectId: 'demo-proj', apiKey: 'public-key' });
+
+    await Net.signIn('pilot@example.com', 'hunter2hunter2');
+
+    // Create a pending submit while server is down
+    await Net.startRun();
+    await Net.submitScore(8888, 4);
+    check('run held as pending', Net.status().pendingSubmit !== null);
+
+    // Server comes back online
+    server.state.scoresUp = true;
+    fakeFb._calls.getIdToken.length = 0;
+
+    // 1. Simulate visibilitychange (returning to foreground)
+    doc.visibilityState = 'visible';
+    Net._internal.onForeground();
+    await new Promise((r) => setTimeout(r, 40));
+
+    check('foreground refreshed ID token', fakeFb._calls.getIdToken.length >= 1);
+    check('foreground flushed pending score', server.submitted.length === 1 && server.submitted[0].score === 8888);
+    check('pending slot cleared', Net.status().pendingSubmit === null);
+
+    // 2. Simulate Capacitor appStateChange after debounce interval
+    await new Promise((r) => setTimeout(r, 1050));
+    if (appStateCallback) {
+      fakeFb._calls.getIdToken.length = 0;
+      appStateCallback({ isActive: true });
+      await new Promise((r) => setTimeout(r, 40));
+      check('Capacitor appStateChange isActive refreshed token', fakeFb._calls.getIdToken.length >= 1);
+    }
+  });
+
+  await scenario('net.js adheres strictly to ES5 syntax', async () => {
+    const netSource = fs.readFileSync(NET_JS, 'utf8');
+    const stripped = netSource.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+    check('net.js contains no const keyword outside comments',
+      !/^\s*(?:[^/]*[;{}]|[a-zA-Z0-9_$]*\s+)?const\s+[a-zA-Z0-9_$]+/m.test(stripped));
+    check('net.js contains no let keyword outside comments',
+      !/^\s*(?:[^/]*[;{}]|[a-zA-Z0-9_$]*\s+)?let\s+[a-zA-Z0-9_$]+/m.test(stripped));
+    check('net.js contains no arrow functions outside comments',
+      !/=>/.test(stripped));
+    check('net.js contains no template literals outside comments',
+      !/`/.test(stripped));
+    check('net.js contains no class declarations outside comments',
+      !/\bclass\s+[a-zA-Z0-9_$]+/.test(stripped));
   });
 
   // Let any straggling microtask/rejection land before we tally.

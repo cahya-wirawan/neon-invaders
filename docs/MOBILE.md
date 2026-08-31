@@ -153,6 +153,33 @@ change is needed.
 
 ---
 
+## Mobile Authentication Best Practices
+
+The authentication system in `js/net.js` implements mobile game industry best practices across Android and iOS platforms:
+
+### 1. Frictionless Anonymous Onboarding ("Play as Guest")
+- **Instant Engagement**: Mobile players should never be blocked by mandatory login screens before experiencing gameplay. Neon Invaders provides zero-friction anonymous authentication via Firebase's `signInAnonymously()`.
+- **Full Feature Parity**: Guest pilots receive a distinct temporary UID, acquire server run tokens, record personal best scores, and compete on the leaderboard immediately without providing an email or password.
+
+### 2. Seamless Account Linking & Conflict Handling
+- **Progress Preservation**: When a guest pilot later decides to create an account or sign in with permanent credentials, `SI.Net.linkAccount()` links their existing anonymous user identity to their permanent credential via `user.linkWithCredential()`.
+- **Zero Data Loss**: Linking preserves the user's UID, active game run tokens (`runState.token`), personal best records, and immediately retries any pending offline scores (`flushPending()`).
+- **Conflict Handling**: If the credential (email or OAuth provider) is already in use by another account (`auth/credential-already-in-use` / `auth/email-already-in-use`), the client returns `{ ok: false, error: 'credential_already_in_use' }` without tearing down or corrupting the player's active anonymous session.
+
+### 3. Sign in with Apple (App Store Review Guideline 4.8)
+- **Store Compliance**: App Store Review Guideline 4.8 mandates that apps offering third-party or social login providers must also offer Sign in with Apple as an equivalent option.
+- **Platform-Aware UI**: `js/net.js` detects the platform via `getPlatform()` and surfaces the " Sign in with Apple" and "Link  Apple" actions on iOS and Web platforms.
+
+### 4. Native Bridge vs. WebView Popup Restrictions
+- **WebView Sandboxing**: Mobile WebViews (iOS WKWebView and Android WebView) restrict or block browser popups and multi-window redirects (`window.open` / `signInWithPopup`).
+- **Capacitor Native Bridge Routing**: In Capacitor native builds, `js/net.js` checks for native plugins (such as `window.Capacitor.Plugins.SignInWithApple`). If available, it invokes native iOS `AuthenticationServices` dialogs to obtain the signed Apple identity token and nonces, exchanging them seamlessly with Firebase Auth via `OAuthProvider('apple.com').credential()`. On standard desktop browsers, it cleanly falls back to standard `signInWithPopup`.
+
+### 5. App Lifecycle Token Refresh & Offline Flushing
+- **Resuming from Background**: Mobile operating systems aggressively pause and resume WebViews. Because Firebase ID tokens expire after 1 hour (3600s), returning to a game left suspended in the background could lead to unexpected `401 Unauthorized` responses.
+- **Foreground Synchronization**: `js/net.js` listens to standard document `visibilitychange` events and Capacitor's `App.addListener('appStateChange')` events. When the app returns to the foreground (`document.visibilityState === 'visible'` or `appState.isActive === true`), it automatically executes a silent token refresh (`user.getIdToken(true)`) and flushes any retryable pending submissions.
+
+---
+
 ## Layout
 
 ```
