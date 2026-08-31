@@ -45,15 +45,19 @@ python3 -m http.server 8000
 
 ## Controls
 
-| Action          | Keyboard / Mouse               | Gamepad (Direct / Xbox / DualShock) |
-| --------------- | ------------------------------ | ----------------------------------- |
-| Move            | `←` `→` or `A` `D` / Mouse Drag| Left Stick / D-Pad                  |
-| Fire            | `Space` or `Z` / Hold Click    | Button A / Button X / Right Trigger |
-| EMP Super Bomb  | `X` or `Shift`                 | Button B / Left Trigger / Button Y  |
-| CRT Mode Toggle | `C`                            | -                                   |
-| Pause           | `P`                            | Start / Options Button              |
-| Mute            | `M`                            | -                                   |
-| Start / Restart | `Enter`, `Space`, or tap/click | Button A / Start Button             |
+| Action                  | Keyboard / Mouse               | Gamepad (Direct / Xbox / DualShock) |
+| ----------------------- | ------------------------------ | ----------------------------------- |
+| Move                    | `←` `→` or `A` `D` / Mouse Drag| Left Stick / D-Pad                  |
+| Fire                    | `Space` or `Z` / Hold Click    | Button A / Button X / Right Trigger |
+| Phase Dash              | `F` or `Shift`                 | Left Bumper (`LB`)                  |
+| EMP Super Bomb          | `X`                            | Button B / Left Trigger / Button Y  |
+| Glitch Incursion Mode   | `G` (from Menu)                | Button X (from Menu)                |
+| Boss Rush Mode          | `B` (from Menu)                | Button Y (from Menu)                |
+| Hangar (Ship Class)     | `H` (from Menu) / Click Box    | Right Bumper (`RB`) (from Menu)     |
+| CRT Mode Toggle         | `C`                            | -                                   |
+| Pause                   | `P`                            | Start / Options Button              |
+| Mute                    | `M`                            | -                                   |
+| Start / Restart         | `Enter`, `Space`, or tap/click | Button A / Start Button             |
 
 Touch and mouse: press and hold — the ship steers toward your finger/cursor and
 fires continuously.
@@ -65,16 +69,28 @@ A pick made in the very first instant the screen appears is ignored — release 
 mashing fire through the wave-clear screen can't blow past the choice
 unread; left alone for 12 seconds it picks the highlighted card for you.
 
-## Special Abilities & Features (v1.8.0)
+## Special Abilities & Features (v2.0.0)
 
-- **Intelligent Frenzy & Predatory Eagle Swoops**: When surviving aliens drop to the survival threshold on Wave 2+ (scaling by +1 alien per completed wave: 5 on Wave 2, 6 on Wave 3, 7 on Wave 4, etc.), aliens enter Frenzy mode, dynamically weaving up and down in 2D sinusoidal waves, launching hunting eagle swoop dive attacks with aimed apex bolts, and targeting the player ship with leading fire.
-- **Prism Scatter Fused Weapon**: Combines `spread` + `bounce` upgrades into a 3-way ricocheting volley where all projectiles bounce off side walls up to 2 times.
-- **Phase / Cloaking Alien Class**: Specialist cloaked aliens (Wave 6+) that cycle between active solid state and intangible phased states with high-frequency sine flicker tells.
+- **Starling Murmuration Swarm Choreography**: Replaces static wedge formations with dynamic, multi-harmonic flocking waves ($A_y = 82\text{px}$), swirling vortex field vectors ($S = 0.85$), and cloud expansion that undulates gracefully before returning to grid lockstep.
+- **Intelligent Frenzy & Predatory Eagle Swoops**: When surviving aliens drop to the survival threshold on Wave 2+ (scaling by +1 alien per completed wave: 5 on Wave 2, 6 on Wave 3, 7 on Wave 4, etc.), aliens enter Frenzy mode, dynamically soaring independently in 2D random-directional trajectories, launching predatory eagle swoop dive attacks with aimed apex bolts, and targeting the player ship with leading fire.
+- **Hyper-Graze & Phase Dash System**: Grazing incoming alien projectiles within $<16\text{px}$ charges the Hyper/Graze meter and awards bonus score. Pressing `F` / `Shift` / Gamepad `LB` triggers a high-velocity **Phase Dash** blink with motion trails and an invulnerability window ($0.35\text{s}$).
+- **Cosmic Hazards & Asteroids**: Mid-screen drifting space hazards (Wave 3+) that absorb enemy and player fire with multi-stage fracturing (Large $\to$ 2 Medium $\to$ 4 Small) to provide dynamic tactical cover.
+- **The Fleet Hangar (Ship Classes)**: Unlockable ship hulls via Retro Achievements:
+  - **Alpha Fighter**: Classic balanced standard hull.
+  - **Vector Interceptor**: High speed ($490\text{u/s}$) and ultra-rapid fire cadence.
+  - **Aegis Frigate**: Armored wide hull ($60\text{px}$), starts with $4$ lives and reinforced defense.
+  - **Phantom Stalker**: Extended Phase Dash duration and $+50\%$ graze collection radius.
+- **Endless Rogue-Lite "Glitch Incursion" Mode**: Selectable from Menu (`G` / Gamepad `X`) with procedural mutators, post-wave drafting of stackable perks (including **Companion Drone Wingmen**, **Tesla Arc Chain Lightning**, **Titan Plating**, and **Overcharge**), and persistent records.
+- **Boss Rush Mode**: Selectable from Menu (`B` / Gamepad `Y`), testing player mastery against all milestone bosses in rapid back-to-back combat.
+- **Fused Weapon Repertoire**:
+  - **Prism Scatter** (`spread` + `bounce`): 3-way ricocheting volley bouncing off boundary walls.
+  - **Singularity Beam** (`spread` + `pierce`): 3-way heavy piercing lasers that punch through multiple ranks.
+  - **Pierce + Bounce**: Acid-green bouncing lasers that cut through lines and reflect off side walls.
+- **Specialist Alien Classes**: **Shield Alien** (absorbs hits for adjacent neighbors), **Kamikaze Unit** (dives straight at player), **Phase Alien** (cycles in and out of bullet intangibility), and **Splitter Alien** (divides into 2 mini-drones unless vaporized by Pierce or EMP).
+- **Secondary EMP Super Bomb**: Combat kills charge the EMP meter (0–100%). Activate `X` / Gamepad `B` / `LT` to instantly clear all incoming projectiles, damage the swarm/boss, and trigger dual-motor haptic rumble feedback.
 - **CRT Scanline & Phosphor Bloom Modes**: Real-time switchable visual post-processing (`OFF`, `SCANLINES`, `PHOSPHOR`) toggled with `C` key or via Pause Menu.
-- **Wave 21 "Hive Nexus" Milestone Encounter**: 120 HP crystalline flagship encounter with 3 enraged/overload combat phases, 4-way pulse barrages, and 5-way radial desperate spreads.
-- **Secondary EMP Super Bomb**: Combat kills, kill-streaks, commanders, UFOs, and boss combat charge the secondary EMP meter (0–100%). When ready, activate `X` / `Shift` / Gamepad `LT`/`B` to vaporize all incoming enemy projectiles, damage the alien swarm / boss, and trigger haptic rumble feedback.
-- **Native Gamepad + Haptics**: Full plug-and-play support for standard gamepads with analog stick deadzones, D-pad navigation, and dual-motor haptic vibration feedback.
-- **Retro Achievements System**: 10 offline persistent achievements tracked in `localStorage` with in-game animated toast notifications and Title Screen progress display.
+- **Dynamic Adaptive Audio**: Live multi-track Web Audio synthesis transitioning seamlessly between normal, frenzy, boss, and boss enraged states.
+- **Mobile Authentication Best Practices**: 1-tap anonymous guest onboarding, non-destructive account linking preserving UIDs and run tokens, native Sign in with Apple (with cryptographic SHA-256 nonces), native bridge routing, and automatic foreground token refreshes.
 
 Sound only starts after your first key press or tap: browsers require a user
 gesture before an `AudioContext` may run, so the context is created inside that
@@ -103,7 +119,7 @@ first input handler.
   — up to ~4x sooner at x4. That knock-on is intended, not a separate
   mechanic.
 - The hi-score is kept in `localStorage` (silently skipped if storage is blocked).
-- The title screen shows a small `v1.2.0` tag in the bottom-**left** corner —
+- The title screen shows a small `v2.0.0` tag in the bottom-**left** corner —
   bottom-right is where `js/net.js`'s opt-in online panel is pinned —
   (`SI.CONFIG.VERSION` in `js/core.js`), kept in sync with the root
   `package.json`'s `version` field — `scripts/verify.sh` checks the two never
@@ -121,7 +137,7 @@ also accelerates as its numbers thin out, and the music tempo rises with the wav
 ## Gameplay: evolving formations and cannon upgrades
 
 From wave 2 the swarm periodically breaks into dynamic formations, unlocking richer shapes as waves advance:
-- **Wave 2**: **Wedge** (V-shape with center apex dipping forward) and **Dive** (single column commits toward ship $X$).
+- **Wave 2**: **Starling Murmuration** (organic undulating wave + swirling vortex cloud; aliased with 'wedge') and **Dive** (single column commits toward ship $X$).
 - **Wave 3**: **Pincer** (left and right wings plunge forward and pinch inward toward center).
 - **Wave 4**: **Inverted Chevron / Funnel** (outer wings advance forward in chevron, center holds back).
 - **Wave 5+**: **Sweeping Wave** (staggered diagonal wave rolling across the columns).

@@ -166,17 +166,18 @@ The authentication system in `js/net.js` implements mobile game industry best pr
 - **Zero Data Loss**: Linking preserves the user's UID, active game run tokens (`runState.token`), personal best records, and immediately retries any pending offline scores (`flushPending()`).
 - **Conflict Handling**: If the credential (email or OAuth provider) is already in use by another account (`auth/credential-already-in-use` / `auth/email-already-in-use`), the client returns `{ ok: false, error: 'credential_already_in_use' }` without tearing down or corrupting the player's active anonymous session.
 
-### 3. Sign in with Apple (App Store Review Guideline 4.8)
+### 3. Sign in with Apple (App Store Review Guideline 4.8 & Nonce Protocol)
 - **Store Compliance**: App Store Review Guideline 4.8 mandates that apps offering third-party or social login providers must also offer Sign in with Apple as an equivalent option.
 - **Platform-Aware UI**: `js/net.js` detects the platform via `getPlatform()` and surfaces the " Sign in with Apple" and "Link  Apple" actions on iOS and Web platforms.
+- **Cryptographic Replay Protection**: To prevent replay attacks, the client generates a 32-byte cryptographically secure random raw nonce via `window.crypto.getRandomValues`. The SHA-256 hash of this raw nonce is computed via `crypto.subtle.digest('SHA-256')` and sent to Apple in the authorization request (`capPlugin.authorize({ nonce: hashedNonce })`). The raw nonce is then passed to Firebase's `OAuthProvider.credential({ idToken, rawNonce })`, allowing Firebase to securely verify the token against Apple's signature.
 
-### 4. Native Bridge vs. WebView Popup Restrictions
-- **WebView Sandboxing**: Mobile WebViews (iOS WKWebView and Android WebView) restrict or block browser popups and multi-window redirects (`window.open` / `signInWithPopup`).
-- **Capacitor Native Bridge Routing**: In Capacitor native builds, `js/net.js` checks for native plugins (such as `window.Capacitor.Plugins.SignInWithApple`). If available, it invokes native iOS `AuthenticationServices` dialogs to obtain the signed Apple identity token and nonces, exchanging them seamlessly with Firebase Auth via `OAuthProvider('apple.com').credential()`. On standard desktop browsers, it cleanly falls back to standard `signInWithPopup`.
+### 4. Native Bridge vs. WebView Popup Restrictions (Disallowed UserAgent Defense)
+- **WebView Sandboxing & OAuth Blocks**: Modern mobile WebViews (iOS WKWebView and Android WebView) block standard OAuth popups (`signInWithPopup`), triggering Google/Apple `403 disallowed_useragent` errors.
+- **Native Bridge Routing**: On mobile platforms (`plat === 'ios'` or `'android'`), `js/net.js` checks for native Capacitor plugins (`window.Capacitor.Plugins.SignInWithApple`). When present, it routes authentication through native system dialogs (`AuthenticationServices` on iOS). If the native bridge is absent on mobile platforms, it safely guards against launching Web popups by returning `{ ok: false, error: 'disallowed_useragent' }`. On standard desktop browsers, it smoothly uses standard `OAuthProvider` Web popups.
 
 ### 5. App Lifecycle Token Refresh & Offline Flushing
-- **Resuming from Background**: Mobile operating systems aggressively pause and resume WebViews. Because Firebase ID tokens expire after 1 hour (3600s), returning to a game left suspended in the background could lead to unexpected `401 Unauthorized` responses.
-- **Foreground Synchronization**: `js/net.js` listens to standard document `visibilitychange` events and Capacitor's `App.addListener('appStateChange')` events. When the app returns to the foreground (`document.visibilityState === 'visible'` or `appState.isActive === true`), it automatically executes a silent token refresh (`user.getIdToken(true)`) and flushes any retryable pending submissions.
+- **Resuming from Background**: Mobile operating systems aggressively suspend backgrounded WebViews. Because Firebase ID tokens expire after 1 hour (3600s), resuming a suspended game could lead to unexpected `401 Unauthorized` responses on score submission.
+- **Foreground Synchronization & Debouncing**: `js/net.js` hooks into standard document `visibilitychange` events and Capacitor's `App.addListener('appStateChange')` events with a 1000ms debounce interval and in-flight request locks. Returning to the foreground automatically triggers a silent background token refresh (`refreshIdToken()`) and immediately flushes queued offline runs (`flushPending()`).
 
 ---
 

@@ -631,3 +631,103 @@ flow in `js/game.js`).
 - **[shipped]** **Aimed Leading Fire**:
   - In frenzy mode, shooter selection intelligently targets the occupied column closest to the player ($70\%$ aim bias).
 
+## Starling Murmuration Swarm Choreography (v2.0.0)
+
+- **[shipped]** **Organic Multi-Harmonic Swarm Flocking (`CONFIG.FORMATION.MURMURATION`)**:
+  - Replaces the legacy static V-shaped Wedge formation with a dynamic, wave-like Starling Murmuration choreography.
+  - Seamless dual aliasing across `'murmuration'` and `'wedge'`, supported across all commander personality sequences (Aggressor, Tactician, Barrage).
+  - Time-dependent offset calculation combines:
+    - Primary and harmonic vertical wave undulation ($A_y = 82\text{px}$, $f_1 = 1.0\text{Hz}$, $f_2 = 2.2\text{Hz}$).
+    - Swirling vortex flow vector field ($S_{\text{factor}} = 0.85$).
+    - Dynamic lateral cloud expansion/compression ($P_x = 10\text{px}$).
+  - Swarm grid anchors $(gx, gy)$ march unaffected; hard safety clamping keeps aliens within $[46, 914]$ and above the invasion floor; smooth grounding ($fx=0, fy=0$) on completion, wave clear, or commander defeat.
+
+## Hyper-Graze & Phase Dash System (v2.0.0)
+
+- **[shipped]** **Proximity Bullet Grazing (`CONFIG.GRAZE`)**:
+  - Active from Wave 2+ (Wave 1 remains 100% classic Space Invaders).
+  - Grazing enemy projectiles within $<16\text{px}$ outside the ship's collision box charges the Graze/Hyper meter ($+12$ energy per bullet) and awards $+25$ points.
+  - Grazed bullets trigger visual energy spark trails and audio chirp feedback while remaining in play.
+- **[shipped]** **Phase Dash Invulnerability Blink (`CONFIG.PHASE_DASH`)**:
+  - Triggered via `KeyF`, `Shift`, or Gamepad `LB`.
+  - Performs a high-velocity dash burst ($2.2\times$ speed) lasting $0.26\text{s}$ with an invulnerability window ($0.35\text{s}$).
+  - Renders multi-stage ghost/phantom motion trails behind the ship hull.
+  - Consumes Graze energy ($25$ energy) or executes with a $1.2\text{s}$ cooldown.
+
+## Cosmic Space Hazards & Asteroids (v2.0.0)
+
+- **[shipped]** **Drifting Asteroid Fields (`CONFIG.ASTEROID`)**:
+  - Active from Wave 3+, spawning drifting space asteroids with multi-tiered destructibility:
+    - **Large Asteroids**: $3$ HP, radius $24\text{px}$, awards $100$ pts on destruction and fractures into 2 Medium Asteroids.
+    - **Medium Asteroids**: $2$ HP, radius $16\text{px}$, awards $50$ pts on destruction and fractures into 2 Small Asteroids.
+    - **Small Asteroids**: $1$ HP, radius $10\text{px}$, awards $25$ pts on destruction.
+  - Asteroids absorb incoming alien shots and player bullets, providing dynamic tactical cover across the mid-screen.
+
+## The Fleet Hangar: Unlockable Ship Classes (v2.0.0)
+
+- **[shipped]** **4 Distinct Ship Hull Classes (`CONFIG.SHIPS`)**:
+  - **Alpha Fighter**: Default balanced hull (Speed $420$, $3$ lives, standard cooldown).
+  - **Vector Interceptor**: Speed $490\text{u/s}$, reduced fire cooldown ($0.22\text{s}$), unlocked by achieving COMBO x4 (`combo_master`).
+  - **Aegis Frigate**: Heavy armored hull ($60\text{px}$ width), starts with $4$ lives and reinforced defense, unlocked by defeating the Vanguard Mothership (`mothership_down`).
+  - **Phantom Stalker**: Extended Phase Dash duration ($0.38\text{s}$) and $+50\%$ graze collection radius ($24\text{px}$), unlocked by equipping a fused weapon (`weapon_fused`).
+- **[shipped]** **Hangar UI & Persistence**:
+  - Interactive ship selection box on Menu screen (`KeyH` / Gamepad `RB` / Click), persisting player choice in `localStorage['neon_invaders_selected_ship']`.
+
+## Endless Rogue-Lite "Glitch Incursion" Mode (v2.0.0)
+
+- **[shipped]** **Infinite Procedural Mode (`startGlitchIncursion`)**:
+  - Selectable from Menu via `KeyG` / Gamepad `X` or clicking the Mode button.
+  - Features endless procedural waves with scaling mutators and separate personal best record tracking (`neon_invaders_incursion_pb_wave`, `neon_invaders_incursion_pb_score`).
+- **[shipped]** **Post-Wave Perk Drafting (`STATE.PERK_DRAFT`)**:
+  - Between incursion waves, players draft 1 of 3 randomized stackable perks:
+    - **Companion Drone Wingmen** (`wingman`): Deploys companion drones alongside the ship that track movement and fire auxiliary pulse lasers.
+    - **Tesla Arc Chain Lightning** (`chain_lightning`): Alien kills trigger lethal electrical arcs to adjacent neighbors.
+    - **Titan Plating** (`titan_plating`): Increases maximum ship lives ($+1$).
+    - **Overcharge** (`overcharge`): Boosts firing rate and EMP recharge rate.
+
+## Boss Rush Mode (v2.0.0)
+
+- **[shipped]** **Milestone Boss Gauntlet (`startBossRush`)**:
+  - Selectable from Menu via `KeyB` / Gamepad `Y` or clicking the Mode button.
+  - Pits the player directly against all milestone bosses in rapid sequence: **Vanguard Mothership** (Wave 7) $\to$ **Dreadnought Sovereign** (Wave 14) $\to$ **Hive Nexus** (Wave 21).
+  - Dedicated Boss Rush victory state and separate leaderboard tracking.
+
+## Singularity Beam Fused Weapon (v2.0.0)
+
+- **[shipped]** **Singularity Beam (`spread_pierce`)**:
+  - Fused upgrade combining `spread` and `pierce` cannon upgrades.
+  - Fires a 3-way spread of heavy piercing plasma beams that punch through up to $2$ alien ranks per projectile, decimating dense formations.
+
+## Splitter Alien & Stealth Saboteur UFO (v2.0.0)
+
+- **[shipped]** **Splitter Alien Class (`ALIEN_CLASS.SPLITTER`)**:
+  - Spawns on Wave 5+; upon being destroyed by a standard bullet, fractures into 2 agile mini-drones that dive independently.
+  - Vaporized cleanly without splitting when destroyed by a **Piercing Laser** or **EMP Super Bomb**.
+- **[shipped]** **Stealth Saboteur UFO (`CONFIG.UFO.SABOTEUR`)**:
+  - Specialist cloaked bonus craft (Wave 5+) that actively drains the player's EMP charge over time while on screen.
+  - Defeating the Saboteur awards $+50\%$ instant EMP energy recharge.
+
+## Dynamic Adaptive Audio Layers (v2.0.0)
+
+- **[shipped]** **Multi-Track Reactive Web Audio Synthesis (`SI.Audio.setMusicState`)**:
+  - Synthesizes dynamic musical layers that adapt to real-time battle tension:
+    - `normal`: Classic driving synthesizer baseline, arpeggio, and drum sequence.
+    - `frenzy`: Accelerated tempo with heightened percussion and high-pass resonance sweeps.
+    - `boss`: Heavy, ominous bassline with aggressive down-tuned arpeggio modulation.
+    - `boss_enraged`: Maximum intensity overload rhythm with overdrive harmonics.
+
+## Mobile Authentication Best Practices (v2.0.0)
+
+- **[shipped]** **Frictionless Anonymous / Guest Onboarding**:
+  - 1-tap "Play as Guest" entry (`signInAnonymously()`) acquiring an ephemeral Firebase UID and ID token with zero login barriers.
+  - Supports instant run starts (`startRun()`) and score submissions (`submitScore()`).
+- **[shipped]** **Non-Destructive Account Linking**:
+  - Upgrading guest sessions via `linkAccount()` or `linkWithApple()` preserves the existing Firebase UID, active run token, and personal best.
+  - Handles `auth/credential-already-in-use` (409) gracefully without corrupting the anonymous session.
+- **[shipped]** **Sign in with Apple on iOS (Guideline 4.8 Compliance)**:
+  - Generates a 32-byte cryptographically secure raw nonce (`window.crypto.getRandomValues`), hashes it with SHA-256 (`crypto.subtle.digest`), passes the hashed nonce to the native Apple authorization request, and passes the raw nonce to Firebase Auth (`OAuthProvider.credential`), guaranteeing cryptographic replay protection.
+- **[shipped]** **Native Bridge Routing & WebView Protection**:
+  - Detects native mobile platforms (`getPlatform()` via Capacitor runtime checks) and prevents standard Web popup fallbacks that trigger `disallowed_useragent` (403) errors in mobile WebViews.
+- **[shipped]** **Mobile App Lifecycle Hooks & Automatic Token Refresh**:
+  - Listens to `visibilitychange` and Capacitor `appStateChange` with 1000ms debounce and in-flight locks to refresh stale 1-hour ID tokens and flush queued offline scores upon foreground resumption.
+

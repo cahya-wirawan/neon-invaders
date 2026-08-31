@@ -49,13 +49,15 @@ multiplier, the alien classes, or anything they reach — `js/core.js`,
 `js/entities.js`, `js/game.js`, `js/hud.js`:
 
 ```
-node scripts/check-game.js    # formations + upgrades + commander
+node scripts/check-game.js    # formations (Starling Murmuration) + upgrades + commander
                               # personalities + kill-streak multiplier +
                               # alien classes + weapon combinations +
                               # boss encounters + gamepad/EMP/achievements +
                               # phase aliens + CRT visual modes + Wave 21 Hive Nexus +
-                              # Intelligent Frenzy & Eagle Swoops,
-                              # headless, 47 scenarios (553 checks)
+                              # Intelligent Frenzy & Eagle Swoops + Hyper-Graze/Phase Dash +
+                              # Cosmic Asteroid Fields + Fleet Hangar + Glitch Incursion +
+                              # Drone Wingmen & Tesla Arcs,
+                              # headless, 57 scenarios (632 checks)
 ```
 
 or just open `index.html` directly (`file://` works too, since scripts are
