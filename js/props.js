@@ -145,6 +145,7 @@
 
   function Ufo(dir, wave) {
     var U = C.UFO;
+    this.wave = wave || 1;
     this.w = U.W;
     this.h = U.H;
     this.dir = dir;
@@ -153,6 +154,7 @@
     this.x = dir > 0 ? -this.w : C.WORLD_W + this.w;
     this.dead = false;
     this.phase = 0;
+    this.spawnTimer = (U && U.SPAWN_INTERVAL) || 2.0;
     this.isSaboteur = !!(wave >= 5 && (wave % 2 === 1));
     this.color = this.isSaboteur ? (C.COLORS.saboteurUfo || '#d680ff') : C.COLORS.ufo;
     this.score = this.isSaboteur ? 500 : SI.pick(U.SCORES);
@@ -168,13 +170,25 @@
     if (this.isSaboteur && world && typeof world.empCharge === 'number') {
       world.empCharge = Math.max(0, world.empCharge - 0.05 * dt);
     }
+    // Deploy an alien every SPAWN_INTERVAL (2.0s) while traversing the screen on Wave 2+
+    var fromWave = (C.UFO && C.UFO.FROM_WAVE) || 2;
+    if (this.wave >= fromWave) {
+      var interval = (C.UFO && C.UFO.SPAWN_INTERVAL) || 2.0;
+      this.spawnTimer -= dt;
+      if (this.spawnTimer <= 0) {
+        this.spawnTimer = interval;
+        if (this.x >= 0 && this.x <= C.WORLD_W && world && typeof world.spawnAlienFromUfo === 'function') {
+          world.spawnAlienFromUfo(this.x, this.y + this.h / 2);
+        }
+      }
+    }
     if ((this.dir > 0 && this.x > C.WORLD_W + this.w) ||
         (this.dir < 0 && this.x < -this.w)) {
       this.dead = true;
       this.escaped = true;
       return;
     }
-    if (world.particles && Math.random() < 0.5) {
+    if (world && world.particles && Math.random() < 0.5) {
       world.particles.emitTrail(this.x - this.dir * this.w * 0.4, this.y + 6, this.color, 10, 0.3);
     }
   };

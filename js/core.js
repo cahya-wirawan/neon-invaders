@@ -74,6 +74,8 @@
       SPEED: 170,
       MIN_DELAY: 14,
       MAX_DELAY: 26,
+      FROM_WAVE: 2,        // Wave 1 stays 100% classic Space Invaders
+      SPAWN_INTERVAL: 2.0, // alien drop rate every 2.0 seconds while flying
       SCORES: [50, 100, 150, 200, 300]
     },
 

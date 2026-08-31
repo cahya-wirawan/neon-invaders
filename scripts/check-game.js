@@ -5060,6 +5060,81 @@ scenario('48. Singularity Beam (spread_pierce Fused Weapon)', () => {
     });
   });
 
+  scenario('58. Mystery Saucer Alien Deployment & Independent Eagle Flight', () => {
+    withSeed(5801, () => {
+      const env = loadGame(JS_DIR);
+      const g = startedGame(env, 2); // Wave 2
+      const C = env.SI.CONFIG;
+
+      // (a) Configuration constants
+      check('(a) CONFIG.UFO defines SPAWN_INTERVAL and FROM_WAVE',
+        C.UFO.SPAWN_INTERVAL === 2.0 && C.UFO.FROM_WAVE === 2);
+
+      // (b) UFO drops an alien every 2.0 seconds while on screen
+      g.ufo = new env.SI.Ufo(1, 2); // moving right, wave 2
+      g.ufo.x = 200; // on screen
+      const initialCount = g.swarm.aliens.length;
+      
+      // Update UFO by 2.1 seconds
+      g.ufo.update(2.1, g.world);
+      check('(b) UFO drops an alien when spawn interval elapses',
+        g.swarm.aliens.length === initialCount + 1);
+
+      // (c) Deployed alien properties and soar initialization
+      const spawnedAlien = g.swarm.aliens[g.swarm.aliens.length - 1];
+      check('(c) Deployed alien is tagged isUfoAlien and has soar initialized',
+        spawnedAlien.isUfoAlien === true && spawnedAlien.alive === true &&
+        typeof spawnedAlien.soar === 'object' && typeof spawnedAlien.soar.heading === 'number');
+
+      // (d) Deployed alien flies independently within soaring bounds
+      const startX = spawnedAlien.x;
+      const startY = spawnedAlien.y;
+      g.swarm.updateSoaring(0.5, g.world);
+      check('(d) Deployed alien moves in independent soaring trajectory',
+        (spawnedAlien.x !== startX || spawnedAlien.y !== startY) &&
+        spawnedAlien.x >= 40 && spawnedAlien.x <= 920 &&
+        spawnedAlien.y >= 100 && spawnedAlien.y <= 450);
+
+      // (e) Second alien deployed flies independently with distinct heading
+      g.ufo.x = 400;
+      g.ufo.update(2.1, g.world);
+      const spawnedAlien2 = g.swarm.aliens[g.swarm.aliens.length - 1];
+      check('(e) Multiple deployed aliens fly independently with distinct headings',
+        g.swarm.aliens.length === initialCount + 2 &&
+        spawnedAlien2.isUfoAlien === true &&
+        spawnedAlien2.soar.heading !== spawnedAlien.soar.heading);
+
+      // (f) Deployed alien can launch predatory eagle swoop attacks aimed at player
+      g.swarm.eagleSwoopTimer = 0;
+      g.world.playerX = 480;
+      g.swarm.updateEagleSwoop(0.01, g.world);
+      const hasSwooper = g.swarm.aliens.some((a) => a.isUfoAlien && a.swoop !== null);
+      check('(f) UFO-spawned alien can launch predatory swoop dive attack', hasSwooper);
+
+      // (g) Combat resolution against UFO-spawned alien
+      const targetAlien = g.swarm.aliens[g.swarm.aliens.length - 1];
+      targetAlien.x = 850;
+      targetAlien.y = 420;
+      targetAlien.gx = 850;
+      targetAlien.gy = 420;
+      const bullet = new env.SI.Bullet(850, 430, -720, 'player', '#ffffff');
+      bullet.update(0.02, g.world);
+      g.bullets.push(bullet);
+      const prevScore = g.score;
+      g.collide(g.world);
+      check('(g) Player bullet destroys UFO-spawned alien and awards score',
+        targetAlien.alive === false && g.score > prevScore);
+
+      // (h) Wave clear triggers when all aliens (grid + UFO-spawned) are defeated
+      for (const a of g.swarm.aliens) {
+        a.alive = false;
+      }
+      g.updatePlaying(0.016);
+      check('(h) Wave clears cleanly when all aliens including UFO spawns are defeated',
+        g.state === env.SI.STATE.WAVE_CLEAR || g.state === env.SI.STATE.UPGRADE);
+    });
+  });
+
 if (baselineDir) {
   try { fs.rmSync(baselineDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
 }

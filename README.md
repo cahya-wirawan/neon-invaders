@@ -187,6 +187,9 @@ value when you shoot it and nothing when it removes itself. What they cost you
 is position — the shield decides which shots are wasted, and the kamikaze
 decides where you are standing.
 
+### Mystery Flying Saucer Alien Deployment
+From wave 2, whenever the **Mystery Flying Saucer** (UFO) crosses the top of the arena, it drops a new alien every 2.0 seconds (`CONFIG.UFO.SPAWN_INTERVAL`). These spawned aliens uncouple completely from the marching grid, soaring freely across the upper battlefield like hunting eagles in random curving 2D trajectories. Periodically, they launch predatory eagle swoops toward the player ship's horizontal lane, unleashing an aimed pulse bolt at the dive apex before banking upward in a climbing loop back to soaring altitude.
+
 Clearing a wave offers a choice of cannon upgrade (pick one — it replaces
 whatever you had, it doesn't stack): **spread shot** (three angled bullets
 per volley), **piercing laser** (survives multiple alien hits instead of

@@ -731,3 +731,15 @@ flow in `js/game.js`).
 - **[shipped]** **Mobile App Lifecycle Hooks & Automatic Token Refresh**:
   - Listens to `visibilitychange` and Capacitor `appStateChange` with 1000ms debounce and in-flight locks to refresh stale 1-hour ID tokens and flush queued offline scores upon foreground resumption.
 
+## Mystery Flying Saucer Alien Deployment (v2.0.0)
+
+- **[shipped]** **UFO Alien Spawning Mechanics (`CONFIG.UFO.SPAWN_INTERVAL: 2.0`, `CONFIG.UFO.FROM_WAVE: 2`)**:
+  - While traversing the upper stratosphere ($Y = 84$), the Mystery Flying Saucer deploys a new neon-winged alien from its position every 2.0 seconds (`ufo.spawnTimer`).
+  - Spawning is active starting on Wave 2+; Wave 1 remains 100% classic Space Invaders for determinism and golden checksum fidelity.
+  - Deployed aliens are tagged with `isUfoAlien = true`, colored vibrant magenta (`#ff33aa`) with swept neon winglet silhouette tells and additive glow.
+- **[shipped]** **Independent Eagle Soaring Physics & Predatory Swoops**:
+  - Each deployed alien uncouples completely from the grid and soars independently in smooth 2D curving random trajectories across $X \in [40, 920]$ and $Y \in [100, 450]$ at speed $140\text{px/s}$.
+  - Deployed aliens periodically launch predatory eagle swoop dives toward the player ship's horizontal coordinates, firing an aimed pulse bolt at the apex before banking upward in a climbing loop back to soaring altitude.
+  - Grid bounds and formation calculations ignore UFO aliens so marching step-descent and invasion floors remain pristine.
+  - Full combat resolution: UFO-spawned aliens are fully targetable by all weapons, fused beams, and EMP bombs, awards 30 points (scaled by active kill combos), and cleans up seamlessly on wave clear.
+

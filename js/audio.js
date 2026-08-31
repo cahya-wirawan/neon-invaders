@@ -288,6 +288,13 @@
     noise({ freq: 2000, toFreq: 200, dur: 0.4, gain: 0.2, at: t });
   }
 
+  function ufoSpawn() {
+    if (!ready() || muted) { return; }
+    var t = now();
+    tone({ type: 'sawtooth', freq: 520, toFreq: 260, dur: 0.12, gain: 0.12, at: t });
+    tone({ type: 'triangle', freq: 680, toFreq: 340, dur: 0.08, gain: 0.08, at: t });
+  }
+
   /* ------------------------------ music ----------------------------- */
   /* Lookahead scheduler: a timer wakes every LOOKAHEAD_MS and schedules
    * every note that falls inside the next SCHEDULE_AHEAD seconds against
@@ -587,6 +594,7 @@
     ufoStart: ufoStart,
     ufoStop: ufoStop,
     ufoKilled: ufoKilled,
+    ufoSpawn: ufoSpawn,
     graze: graze,
     phaseDash: phaseDash,
     asteroidHit: asteroidHit,

@@ -468,6 +468,7 @@
     this.phased = false;
     this.splitter = false;
     this.isMini = false;
+    this.isUfoAlien = false;
     this.w = C.SWARM.ALIEN_W;
     this.h = C.SWARM.ALIEN_H;
     this.hitFlash = 0;
@@ -513,6 +514,9 @@
         this.phased ? this.w * 2.0 : this.w * 2.6, this.phased ? 0.35 + 0.15 * flicker : 0.5);
     } else if (this.role === 'splitter') {
       SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.splitter || '#ffaa00'), this.x, this.y + bob, this.w * 2.6, 0.55);
+    }
+    if (this.isUfoAlien) {
+      SI.FX.drawGlow(ctx, SI.FX.glow('#ff33aa'), this.x, this.y + bob, this.w * 2.8, 0.65);
     }
     if (this.swoop) {
       SI.FX.drawGlow(ctx, SI.FX.glow('#ff3366'), this.x, this.y + bob, this.w * 3.2, 0.75);
@@ -576,6 +580,11 @@
       ctx.fillStyle = '#eeddff';
       ctx.fillRect(ox - cw * 0.7, oy + ch * 0.6, cw * 0.7, ch * 2.2);
       ctx.fillRect(ox + this.w, oy + ch * 0.6, cw * 0.7, ch * 2.2);
+    } else if (this.isUfoAlien) {
+      // Swept neon winglets
+      ctx.fillStyle = '#ff88dd';
+      ctx.fillRect(ox - cw * 0.8, oy - ch * 0.4, cw * 0.8, ch * 1.6);
+      ctx.fillRect(ox + this.w, oy - ch * 0.4, cw * 0.8, ch * 1.6);
     }
   };
 
@@ -721,6 +730,43 @@
     return a;
   };
 
+  // UFO-SPAWNED INDEPENDENT ALIEN:
+  // Drops an alien from the Mystery Flying Saucer into independent eagle-like soaring flight.
+  Swarm.prototype.spawnFromUfo = function (x, y, world) {
+    var row = 0;
+    var col = -1;
+    var type = 0;
+    var color = '#ff33aa';
+    var score = 30;
+    var a = new Alien(row, col, type, color, score);
+    a.x = x;
+    a.y = y;
+    a.gx = x;
+    a.gy = y;
+    a.fx = 0;
+    a.fy = 0;
+    a.isUfoAlien = true;
+    a.alive = true;
+    var initHeading = SI.rand(0, Math.PI * 2);
+    a.soar = {
+      heading: initHeading,
+      turnTimer: SI.rand(0.6, 2.0),
+      turnRate: SI.rand(-2.4, 2.4)
+    };
+    a.swoop = null;
+    this.aliens.push(a);
+    this.total++;
+
+    if (world && world.particles) {
+      world.particles.emitSparks(x, y, '#ff33aa', 14, 0, 1, Math.PI * 2);
+      world.particles.emitDebris(x, y, '#ffffff', 6, 0.8);
+    }
+    if (world && world.audio && typeof world.audio.ufoSpawn === 'function') {
+      world.audio.ufoSpawn();
+    }
+    return a;
+  };
+
   // SHIELD ALIEN. Cover is decided in GRID space (col/row), never in pixels:
   // col/row are set once in the Alien constructor and nothing ever moves
   // them, so cover cannot drift with the march, with a formation offset or
@@ -729,7 +775,7 @@
   Swarm.prototype.shieldFor = function (alien) {
     var s = this.shield;
     var R = C.ALIEN_CLASS.SHIELD.RADIUS;
-    if (!s || !s.alive || s === alien || alien.dive) { return null; }
+    if (!s || !s.alive || s === alien || alien.dive || alien.swoop || alien.isUfoAlien) { return null; }
     if (Math.abs(s.col - alien.col) > R || Math.abs(s.row - alien.row) > R) { return null; }
     return s;
   };
@@ -809,9 +855,11 @@
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
       if (!a.alive || a.dive || a.swoop) { continue; }
+      if (!this.isFrenzy() && !a.isUfoAlien && !a.soar) { continue; }
 
       if (!a.soar) {
-        var initHeading = ((a.col % 2 === 0 ? 0 : Math.PI) + (a.row * 0.6)) % (Math.PI * 2);
+        var colIdx = a.col >= 0 ? a.col : i;
+        var initHeading = ((colIdx % 2 === 0 ? 0 : Math.PI) + (a.row * 0.6)) % (Math.PI * 2);
         a.soar = {
           heading: initHeading,
           turnTimer: 0.4 + (i * 0.25) % 1.2,
@@ -862,7 +910,7 @@
       }
 
       if (world && world.particles && SI.chance(0.25)) {
-        world.particles.emitTrail(a.x, a.y - a.h / 2, '#ff3366', 6, 0.12);
+        world.particles.emitTrail(a.x, a.y - a.h / 2, a.isUfoAlien ? '#ff33aa' : '#ff3366', 6, 0.12);
       }
     }
   };
@@ -895,12 +943,12 @@
                 a.y + a.h / 2 + 4,
                 this.bulletSpeed * 1.15,
                 'alien',
-                '#ff3366'
+                a.isUfoAlien ? '#ff33aa' : '#ff3366'
               );
               b.vx = aimVx;
               world.spawnBullet(b);
               if (world.particles) {
-                world.particles.emitSparks(a.x, a.y + a.h / 2, '#ff3366', 8, 0, 1, 0.8);
+                world.particles.emitSparks(a.x, a.y + a.h / 2, a.isUfoAlien ? '#ff33aa' : '#ff3366', 8, 0, 1, 0.8);
               }
             }
           }
@@ -921,13 +969,21 @@
         if (a.swoop) {
           a.x = SI.clamp(a.x, C.FORMATION.EDGE_PAD, C.WORLD_W - C.FORMATION.EDGE_PAD);
           if (world && world.particles) {
-            world.particles.emitTrail(a.x, a.y - a.h / 2, '#ff3366', 8, 0.15);
+            world.particles.emitTrail(a.x, a.y - a.h / 2, a.isUfoAlien ? '#ff33aa' : '#ff3366', 8, 0.15);
           }
         }
       }
     }
 
-    if (!this.isFrenzy()) {
+    var hasUfoAliens = false;
+    for (i = 0; i < this.aliens.length; i++) {
+      if (this.aliens[i].alive && this.aliens[i].isUfoAlien) {
+        hasUfoAliens = true;
+        break;
+      }
+    }
+
+    if (!this.isFrenzy() && !hasUfoAliens) {
       return;
     }
 
@@ -935,11 +991,11 @@
     if (!activeSwooper) {
       this.eagleSwoopTimer -= dt;
       if (this.eagleSwoopTimer <= 0) {
-        this.eagleSwoopTimer = SI.rand(Fz.SWOOP_MIN_GAP, Fz.SWOOP_MAX_GAP);
+        this.eagleSwoopTimer = SI.rand((Fz && Fz.SWOOP_MIN_GAP) || 3.0, (Fz && Fz.SWOOP_MAX_GAP) || 6.0);
         var candidates = [];
         for (i = 0; i < this.aliens.length; i++) {
           a = this.aliens[i];
-          if (a.alive && !a.dive && !a.swoop && a.role !== 'kamikaze') {
+          if (a.alive && !a.dive && !a.swoop && a.role !== 'kamikaze' && (this.isFrenzy() || a.isUfoAlien)) {
             candidates.push(a);
           }
         }
@@ -947,11 +1003,12 @@
           var eagle = SI.pick(candidates);
           var playerX = (world && typeof world.playerX === 'number') ? world.playerX : C.WORLD_W / 2;
           var playerY = (C.PLAYER && C.PLAYER.Y) ? C.PLAYER.Y : 648;
-          var bankDir = (eagle.col % 2 === 0 ? 1 : -1);
+          var colIdx2 = eagle.col >= 0 ? eagle.col : 1;
+          var bankDir = (colIdx2 % 2 === 0 ? 1 : -1);
           var bankOffset = bankDir * SI.rand(60, 110);
           eagle.swoop = {
             t: 0,
-            duration: Fz.SWOOP_DURATION || 2.2,
+            duration: (Fz && Fz.SWOOP_DURATION) || 2.2,
             startX: eagle.x,
             startY: eagle.y,
             targetX: playerX,
@@ -960,7 +1017,7 @@
             fired: false
           };
           if (world && world.particles) {
-            world.particles.emitSparks(eagle.x, eagle.y, '#ff3366', 14, 0, 1, Math.PI);
+            world.particles.emitSparks(eagle.x, eagle.y, eagle.isUfoAlien ? '#ff33aa' : '#ff3366', 14, 0, 1, Math.PI);
           }
         }
       }
@@ -1001,7 +1058,7 @@
     var minX = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
-      if (!a.alive) { continue; }
+      if (!a.alive || a.isUfoAlien) { continue; }
       if (a.gx - a.w / 2 < minX) { minX = a.gx - a.w / 2; }
       if (a.gx + a.w / 2 > maxX) { maxX = a.gx + a.w / 2; }
       if (a.gy + a.h / 2 > maxY) { maxY = a.gy + a.h / 2; }
@@ -1083,12 +1140,11 @@
     // it is a plain `x = gx; y = gy`.
     this.updateFormation(dt, world);
 
-    // If frenzy is active, survivors decouple and soar independently
-    if (isFrenzy) {
-      this.updateSoaring(dt, world);
-    } else {
+    // If frenzy is active or UFO aliens are present, soar independently
+    this.updateSoaring(dt, world);
+    if (!isFrenzy) {
       for (i = 0; i < this.aliens.length; i++) {
-        if (this.aliens[i].soar) {
+        if (!this.aliens[i].isUfoAlien && this.aliens[i].soar) {
           this.aliens[i].soar = null;
         }
       }
@@ -1111,23 +1167,23 @@
       if (p) { delay *= p.fireScale; }
       this.fireTimer = Math.max(0.16, delay);
       // extraBullets widens the cap, but never past the WAVES table's own
-      // ceiling: the table stops ramping at wave 10 by design, and a
-      // personality is not allowed to raise late-wave difficulty above the
-      // number that design settled on. On a wave already at the ceiling this
-      // makes extraBullets a deliberate no-op.
-      var cap = this.maxBullets;
-      if (p && p.extraBullets) {
-        cap = Math.min(cap + p.extraBullets, C.COMMANDER.MAX_ALIEN_BULLETS);
-      }
+      // ceiling (the WAVES entry for wave 10 sets MAX_ALIEN_BULLETS).
+      var cap = Math.min(
+        this.maxBullets + (p ? p.extraBullets : 0),
+        C.COMMANDER.MAX_ALIEN_BULLETS
+      );
       if (world.alienBulletCount() < cap && SI.chance(0.86)) {
         var shooter = this.pickShooter(world);
         if (shooter) {
+          var bColor = (shooter.role === 'phase' && shooter.phased) ? C.COLORS.phaseAlien : C.COLORS.alienBullet;
+          var speedMult = (p ? p.bulletSpeedScale : 1) || 1;
+          var bulletSpeed = this.bulletSpeed * speedMult;
           world.spawnBullet(new Bullet(
             shooter.x,
             shooter.y + shooter.h / 2 + 4,
-            this.bulletSpeed,
+            bulletSpeed,
             'alien',
-            C.COLORS.alienBullet
+            bColor
           ));
           if (world.particles) {
             world.particles.emitSparks(shooter.x, shooter.y + shooter.h / 2, C.COLORS.alienBullet, 5, 0, 1, 0.6);
@@ -1369,7 +1425,7 @@
     if (!f) {
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive || a.swoop || (this.isFrenzy() && a.soar)) { continue; }
+        if (!a.alive || a.dive || a.swoop || a.isUfoAlien || (this.isFrenzy() && a.soar)) { continue; }
         a.x = a.gx;
         a.y = a.gy;
       }
@@ -1379,7 +1435,7 @@
     var isMurm = (f.kind === 'murmuration' || f.kind === 'wedge');
     for (i = 0; i < this.aliens.length; i++) {
       a = this.aliens[i];
-      if (!a.alive || a.dive || a.swoop || (this.isFrenzy() && a.soar)) { continue; }
+      if (!a.alive || a.dive || a.swoop || a.isUfoAlien || (this.isFrenzy() && a.soar)) { continue; }
       ox = a.fx * f.k;
       oy = a.fy * f.k;
       if (isMurm && f.k > 0) {
@@ -1422,9 +1478,10 @@
       a = this.aliens[i];
       // A committed rammer or swooper is out of the firing line:
       if (!a.alive || a.dive || a.swoop) { continue; }
-      var cur = byCol[a.col];
+      var key = a.isUfoAlien ? ('ufo_' + i) : a.col;
+      var cur = byCol[key];
       if (!cur || a.y > cur.y) {
-        byCol[a.col] = a;
+        byCol[key] = a;
       }
     }
     var list = [];

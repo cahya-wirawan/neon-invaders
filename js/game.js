@@ -112,6 +112,12 @@
       spawnAsteroid: function (ast) {
         self.hazards.push(ast);
       },
+      spawnAlienFromUfo: function (x, y) {
+        if (self.swarm) {
+          return self.swarm.spawnFromUfo(x, y, self.world);
+        }
+        return null;
+      },
       spawnBullet: function (b) { self.bullets.push(b); },
       shake: function (power, dur) { SI.FX.addShake(power, dur); },
       alienBulletCount: function () { return self.countBullets('alien'); },
@@ -119,6 +125,13 @@
       onInvasion: function () { self.invaded = true; }
     };
   }
+
+  Game.prototype.spawnAlienFromUfo = function (x, y) {
+    if (this.swarm) {
+      return this.swarm.spawnFromUfo(x, y, this.world);
+    }
+    return null;
+  };
 
   Game.prototype.countBullets = function (from) {
     var n = 0;
