@@ -5135,6 +5135,79 @@ scenario('48. Singularity Beam (spread_pierce Fused Weapon)', () => {
     });
   });
 
+  scenario('59. Alien Boss Encounter Minion Deployment & Independent Eagle Flight', () => {
+    withSeed(5901, () => {
+      const env = loadGame(JS_DIR);
+      const g = startedGame(env, 7); // Wave 7: Vanguard Mothership
+      const C = env.SI.CONFIG;
+
+      // (a) Configuration constants
+      check('(a) CONFIG.BOSS defines SPAWN_MIN_DELAY and SPAWN_MAX_DELAY',
+        C.BOSS.SPAWN_MIN_DELAY === 1.0 && C.BOSS.SPAWN_MAX_DELAY === 2.0);
+
+      // (b) Boss starts with no standard swarm initially
+      check('(b) Wave 7 starts with Boss active and swarm null',
+        g.boss !== null && g.swarm === null);
+
+      // (c) Boss deploys minion alien every 1-2 seconds
+      g.boss.spawnTimer = 0.05;
+      g.updatePlaying(0.1);
+      check('(c) Boss spawns minion when spawnTimer elapses',
+        g.swarm !== null && g.swarm.aliens.length === 1);
+
+      // (d) Deployed minion properties and soar initialization
+      const minion = g.swarm.aliens[0];
+      check('(d) Deployed minion is tagged isBossMinion and has soar initialized',
+        minion.isBossMinion === true && minion.alive === true &&
+        typeof minion.soar === 'object' && typeof minion.soar.heading === 'number');
+
+      // (e) Minion flies in independent 2D soaring flight inside arena bounds
+      const startX = minion.x;
+      const startY = minion.y;
+      g.swarm.updateSoaring(0.5, g.world);
+      check('(e) Boss minion moves in independent soaring trajectory',
+        (minion.x !== startX || minion.y !== startY) &&
+        minion.x >= 40 && minion.x <= 920 &&
+        minion.y >= 100 && minion.y <= 450);
+
+      // (f) Second minion deployed flies independently with distinct heading
+      g.boss.spawnTimer = 0.05;
+      g.updatePlaying(0.1);
+      check('(f) Multiple boss minions fly independently with distinct headings',
+        g.swarm.aliens.length === 2 &&
+        g.swarm.aliens[1].isBossMinion === true &&
+        g.swarm.aliens[1].soar.heading !== g.swarm.aliens[0].soar.heading);
+
+      // (g) Minion can launch predatory eagle swoop attacks aimed at player
+      g.swarm.eagleSwoopTimer = 0;
+      g.world.playerX = 480;
+      g.swarm.updateEagleSwoop(0.01, g.world);
+      const hasSwooper = g.swarm.aliens.some((a) => a.isBossMinion && a.swoop !== null);
+      check('(g) Boss minion can launch predatory swoop dive attack', hasSwooper);
+
+      // (h) Player bullet destroys boss minion and awards score
+      const targetMinion = g.swarm.aliens[1];
+      targetMinion.x = 820;
+      targetMinion.y = 420;
+      targetMinion.gx = 820;
+      targetMinion.gy = 420;
+      const shot = new env.SI.Bullet(820, 430, -720, 'player', '#ffffff');
+      shot.update(0.02, g.world);
+      g.bullets.push(shot);
+      const prevScore = g.score;
+      g.collide(g.world);
+      check('(h) Player bullet destroys boss minion and awards score',
+        targetMinion.alive === false && g.score > prevScore);
+
+      // (i) Boss defeat transitions directly to WAVE_CLEAR
+      g.boss.hp = 0;
+      g.boss.alive = false;
+      g.updatePlaying(0.016);
+      check('(i) Boss defeat triggers WAVE_CLEAR state',
+        g.state === env.SI.STATE.WAVE_CLEAR);
+    });
+  });
+
 if (baselineDir) {
   try { fs.rmSync(baselineDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
 }

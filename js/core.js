@@ -331,6 +331,8 @@
       H: 52,
       Y: 155,
       MARGIN: 80,
+      SPAWN_MIN_DELAY: 1.0,
+      SPAWN_MAX_DELAY: 2.0,
       CONFIGS: {
         7: {
           name: 'VANGUARD MOTHERSHIP',

@@ -118,6 +118,9 @@
         }
         return null;
       },
+      spawnAlienFromBoss: function (x, y, boss) {
+        return self.spawnAlienFromBoss(x, y, boss);
+      },
       spawnBullet: function (b) { self.bullets.push(b); },
       shake: function (power, dur) { SI.FX.addShake(power, dur); },
       alienBulletCount: function () { return self.countBullets('alien'); },
@@ -131,6 +134,14 @@
       return this.swarm.spawnFromUfo(x, y, this.world);
     }
     return null;
+  };
+
+  Game.prototype.spawnAlienFromBoss = function (x, y, boss) {
+    if (!this.swarm) {
+      this.swarm = new SI.Swarm(this.wave);
+      this.swarm.aliens.length = 0;
+    }
+    return this.swarm.spawnFromBoss(x, y, this.world, boss);
   };
 
   Game.prototype.countBullets = function (from) {

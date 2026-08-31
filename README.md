@@ -202,10 +202,10 @@ the same time. It's a substitution, not a fifth card — you still choose one of
 four, and it still replaces whatever you had, so the combined cannon can be
 traded away again on the next screen and can't be combined any further.
 
-At milestone waves (**Wave 7** and **Wave 14**), the standard swarm is replaced by
-a multi-phase **Alien Boss Encounter**: the **Vanguard Mothership** (Wave 7) and
-the **Dreadnought Sovereign** (Wave 14). Bosses field dual synchronized wing cannons,
-enter an enraged high-speed 3-way burst barrage below 50% HP, and display a dedicated
+At milestone waves (**Wave 7**, **Wave 14**, and **Wave 21**), the standard swarm is replaced by
+a multi-phase **Alien Boss Encounter**: the **Vanguard Mothership** (Wave 7),
+the **Dreadnought Sovereign** (Wave 14), and the **Hive Nexus** (Wave 21). Bosses field dual synchronized wing cannons,
+enter an enraged high-speed burst barrage below 50% HP, deploy independent soaring minion aliens every 1 to 2 seconds that dive in predatory eagle swoops, and display a dedicated
 live HUD health bar. See [`FEATURES.md`](FEATURES.md) for full details.
 
 ## Project layout

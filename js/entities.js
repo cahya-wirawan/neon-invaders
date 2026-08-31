@@ -469,6 +469,7 @@
     this.splitter = false;
     this.isMini = false;
     this.isUfoAlien = false;
+    this.isBossMinion = false;
     this.w = C.SWARM.ALIEN_W;
     this.h = C.SWARM.ALIEN_H;
     this.hitFlash = 0;
@@ -515,7 +516,9 @@
     } else if (this.role === 'splitter') {
       SI.FX.drawGlow(ctx, SI.FX.glow(C.COLORS.splitter || '#ffaa00'), this.x, this.y + bob, this.w * 2.6, 0.55);
     }
-    if (this.isUfoAlien) {
+    if (this.isBossMinion) {
+      SI.FX.drawGlow(ctx, SI.FX.glow(this.color || '#ff007f'), this.x, this.y + bob, this.w * 2.8, 0.65);
+    } else if (this.isUfoAlien) {
       SI.FX.drawGlow(ctx, SI.FX.glow('#ff33aa'), this.x, this.y + bob, this.w * 2.8, 0.65);
     }
     if (this.swoop) {
@@ -580,6 +583,12 @@
       ctx.fillStyle = '#eeddff';
       ctx.fillRect(ox - cw * 0.7, oy + ch * 0.6, cw * 0.7, ch * 2.2);
       ctx.fillRect(ox + this.w, oy + ch * 0.6, cw * 0.7, ch * 2.2);
+    } else if (this.isBossMinion) {
+      // Crowned boss minion swept spikes
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(ox + cw * 2.2, oy - ch * 0.9, cw * 1.2, ch * 1.2);
+      ctx.fillRect(ox + cw * 4.6, oy - ch * 1.4, cw * 1.2, ch * 1.6);
+      ctx.fillRect(ox + cw * 7.0, oy - ch * 0.9, cw * 1.2, ch * 1.2);
     } else if (this.isUfoAlien) {
       // Swept neon winglets
       ctx.fillStyle = '#ff88dd';
@@ -767,6 +776,44 @@
     return a;
   };
 
+  // BOSS-SPAWNED INDEPENDENT MINION:
+  // Drops an alien minion from the Alien Boss into independent eagle-like soaring flight.
+  Swarm.prototype.spawnFromBoss = function (x, y, world, boss) {
+    var row = 0;
+    var col = -1;
+    var type = (boss && boss.phase >= 2) ? 1 : 0;
+    var color = (boss && boss.coreColor) || '#ff007f';
+    var score = 30;
+    var a = new Alien(row, col, type, color, score);
+    a.x = x;
+    a.y = y;
+    a.gx = x;
+    a.gy = y;
+    a.fx = 0;
+    a.fy = 0;
+    a.isBossMinion = true;
+    a.isUfoAlien = true; // shares the independent soaring flight & swoop mechanics
+    a.alive = true;
+    var initHeading = SI.rand(0, Math.PI * 2);
+    a.soar = {
+      heading: initHeading,
+      turnTimer: SI.rand(0.6, 2.0),
+      turnRate: SI.rand(-2.4, 2.4)
+    };
+    a.swoop = null;
+    this.aliens.push(a);
+    this.total++;
+
+    if (world && world.particles) {
+      world.particles.emitSparks(x, y, color, 16, 0, 1, Math.PI * 2);
+      world.particles.emitDebris(x, y, '#ffffff', 6, 0.8);
+    }
+    if (world && world.audio && typeof world.audio.ufoSpawn === 'function') {
+      world.audio.ufoSpawn();
+    }
+    return a;
+  };
+
   // SHIELD ALIEN. Cover is decided in GRID space (col/row), never in pixels:
   // col/row are set once in the Alien constructor and nothing ever moves
   // them, so cover cannot drift with the march, with a formation offset or
@@ -775,7 +822,7 @@
   Swarm.prototype.shieldFor = function (alien) {
     var s = this.shield;
     var R = C.ALIEN_CLASS.SHIELD.RADIUS;
-    if (!s || !s.alive || s === alien || alien.dive || alien.swoop || alien.isUfoAlien) { return null; }
+    if (!s || !s.alive || s === alien || alien.dive || alien.swoop || alien.isUfoAlien || alien.isBossMinion) { return null; }
     if (Math.abs(s.col - alien.col) > R || Math.abs(s.row - alien.row) > R) { return null; }
     return s;
   };
@@ -855,7 +902,7 @@
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
       if (!a.alive || a.dive || a.swoop) { continue; }
-      if (!this.isFrenzy() && !a.isUfoAlien && !a.soar) { continue; }
+      if (!this.isFrenzy() && !a.isUfoAlien && !a.isBossMinion && !a.soar) { continue; }
 
       if (!a.soar) {
         var colIdx = a.col >= 0 ? a.col : i;
@@ -910,7 +957,8 @@
       }
 
       if (world && world.particles && SI.chance(0.25)) {
-        world.particles.emitTrail(a.x, a.y - a.h / 2, a.isUfoAlien ? '#ff33aa' : '#ff3366', 6, 0.12);
+        var trailColor = (a.isBossMinion || a.isUfoAlien) ? (a.color || '#ff33aa') : '#ff3366';
+        world.particles.emitTrail(a.x, a.y - a.h / 2, trailColor, 6, 0.12);
       }
     }
   };
@@ -927,6 +975,7 @@
         var sw = a.swoop;
         sw.t += dt;
         var p = sw.t / sw.duration;
+        var swooperColor = (a.isBossMinion || a.isUfoAlien) ? (a.color || '#ff33aa') : '#ff3366';
         if (p < 0.55) {
           // Phase 1: Predatory eagle swoop toward player target
           var u = p / 0.55;
@@ -943,12 +992,12 @@
                 a.y + a.h / 2 + 4,
                 this.bulletSpeed * 1.15,
                 'alien',
-                a.isUfoAlien ? '#ff33aa' : '#ff3366'
+                swooperColor
               );
               b.vx = aimVx;
               world.spawnBullet(b);
               if (world.particles) {
-                world.particles.emitSparks(a.x, a.y + a.h / 2, a.isUfoAlien ? '#ff33aa' : '#ff3366', 8, 0, 1, 0.8);
+                world.particles.emitSparks(a.x, a.y + a.h / 2, swooperColor, 8, 0, 1, 0.8);
               }
             }
           }
@@ -969,21 +1018,21 @@
         if (a.swoop) {
           a.x = SI.clamp(a.x, C.FORMATION.EDGE_PAD, C.WORLD_W - C.FORMATION.EDGE_PAD);
           if (world && world.particles) {
-            world.particles.emitTrail(a.x, a.y - a.h / 2, a.isUfoAlien ? '#ff33aa' : '#ff3366', 8, 0.15);
+            world.particles.emitTrail(a.x, a.y - a.h / 2, swooperColor, 8, 0.15);
           }
         }
       }
     }
 
-    var hasUfoAliens = false;
+    var hasSpecialAliens = false;
     for (i = 0; i < this.aliens.length; i++) {
-      if (this.aliens[i].alive && this.aliens[i].isUfoAlien) {
-        hasUfoAliens = true;
+      if (this.aliens[i].alive && (this.aliens[i].isUfoAlien || this.aliens[i].isBossMinion)) {
+        hasSpecialAliens = true;
         break;
       }
     }
 
-    if (!this.isFrenzy() && !hasUfoAliens) {
+    if (!this.isFrenzy() && !hasSpecialAliens) {
       return;
     }
 
@@ -995,7 +1044,7 @@
         var candidates = [];
         for (i = 0; i < this.aliens.length; i++) {
           a = this.aliens[i];
-          if (a.alive && !a.dive && !a.swoop && a.role !== 'kamikaze' && (this.isFrenzy() || a.isUfoAlien)) {
+          if (a.alive && !a.dive && !a.swoop && a.role !== 'kamikaze' && (this.isFrenzy() || a.isUfoAlien || a.isBossMinion)) {
             candidates.push(a);
           }
         }
@@ -1006,6 +1055,7 @@
           var colIdx2 = eagle.col >= 0 ? eagle.col : 1;
           var bankDir = (colIdx2 % 2 === 0 ? 1 : -1);
           var bankOffset = bankDir * SI.rand(60, 110);
+          var eagleColor = (eagle.isBossMinion || eagle.isUfoAlien) ? (eagle.color || '#ff33aa') : '#ff3366';
           eagle.swoop = {
             t: 0,
             duration: (Fz && Fz.SWOOP_DURATION) || 2.2,
@@ -1017,7 +1067,7 @@
             fired: false
           };
           if (world && world.particles) {
-            world.particles.emitSparks(eagle.x, eagle.y, eagle.isUfoAlien ? '#ff33aa' : '#ff3366', 14, 0, 1, Math.PI);
+            world.particles.emitSparks(eagle.x, eagle.y, eagleColor, 14, 0, 1, Math.PI);
           }
         }
       }
@@ -1058,7 +1108,7 @@
     var minX = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (var i = 0; i < this.aliens.length; i++) {
       var a = this.aliens[i];
-      if (!a.alive || a.isUfoAlien) { continue; }
+      if (!a.alive || a.isUfoAlien || a.isBossMinion) { continue; }
       if (a.gx - a.w / 2 < minX) { minX = a.gx - a.w / 2; }
       if (a.gx + a.w / 2 > maxX) { maxX = a.gx + a.w / 2; }
       if (a.gy + a.h / 2 > maxY) { maxY = a.gy + a.h / 2; }
@@ -1140,11 +1190,11 @@
     // it is a plain `x = gx; y = gy`.
     this.updateFormation(dt, world);
 
-    // If frenzy is active or UFO aliens are present, soar independently
+    // If frenzy is active or UFO/Boss minions are present, soar independently
     this.updateSoaring(dt, world);
     if (!isFrenzy) {
       for (i = 0; i < this.aliens.length; i++) {
-        if (!this.aliens[i].isUfoAlien && this.aliens[i].soar) {
+        if (!this.aliens[i].isUfoAlien && !this.aliens[i].isBossMinion && this.aliens[i].soar) {
           this.aliens[i].soar = null;
         }
       }
@@ -1425,7 +1475,7 @@
     if (!f) {
       for (i = 0; i < this.aliens.length; i++) {
         a = this.aliens[i];
-        if (!a.alive || a.dive || a.swoop || a.isUfoAlien || (this.isFrenzy() && a.soar)) { continue; }
+        if (!a.alive || a.dive || a.swoop || a.isUfoAlien || a.isBossMinion || (this.isFrenzy() && a.soar)) { continue; }
         a.x = a.gx;
         a.y = a.gy;
       }
@@ -1435,7 +1485,7 @@
     var isMurm = (f.kind === 'murmuration' || f.kind === 'wedge');
     for (i = 0; i < this.aliens.length; i++) {
       a = this.aliens[i];
-      if (!a.alive || a.dive || a.swoop || a.isUfoAlien || (this.isFrenzy() && a.soar)) { continue; }
+      if (!a.alive || a.dive || a.swoop || a.isUfoAlien || a.isBossMinion || (this.isFrenzy() && a.soar)) { continue; }
       ox = a.fx * f.k;
       oy = a.fy * f.k;
       if (isMurm && f.k > 0) {
@@ -1478,7 +1528,7 @@
       a = this.aliens[i];
       // A committed rammer or swooper is out of the firing line:
       if (!a.alive || a.dive || a.swoop) { continue; }
-      var key = a.isUfoAlien ? ('ufo_' + i) : a.col;
+      var key = (a.isUfoAlien || a.isBossMinion) ? ('minion_' + i) : a.col;
       var cur = byCol[key];
       if (!cur || a.y > cur.y) {
         byCol[key] = a;
@@ -1586,6 +1636,7 @@
     this.bulletSpeed = wcfg.bulletSpeed;
     this.baseFireRate = wcfg.fireRate;
     this.fireTimer = 1.0;
+    this.spawnTimer = SI.rand((bcfg && bcfg.SPAWN_MIN_DELAY) || 1.0, (bcfg && bcfg.SPAWN_MAX_DELAY) || 2.0);
     this.phase = 1;
     this.hitFlash = 0;
     this.alive = true;
@@ -1643,6 +1694,18 @@
     } else if (this.x > maxX) {
       this.x = maxX;
       this.vx = -Math.abs(this.vx);
+    }
+
+    // Minion deployment: drops a soaring alien minion every 1-2 seconds while flying
+    this.spawnTimer -= dt;
+    if (this.spawnTimer <= 0) {
+      this.spawnTimer = SI.rand(
+        (C.BOSS && C.BOSS.SPAWN_MIN_DELAY) || 1.0,
+        (C.BOSS && C.BOSS.SPAWN_MAX_DELAY) || 2.0
+      );
+      if (world && typeof world.spawnAlienFromBoss === 'function') {
+        world.spawnAlienFromBoss(this.x, this.y + this.h / 2, this);
+      }
     }
 
     // Fire logic

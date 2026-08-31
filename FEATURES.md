@@ -743,3 +743,13 @@ flow in `js/game.js`).
   - Grid bounds and formation calculations ignore UFO aliens so marching step-descent and invasion floors remain pristine.
   - Full combat resolution: UFO-spawned aliens are fully targetable by all weapons, fused beams, and EMP bombs, awards 30 points (scaled by active kill combos), and cleans up seamlessly on wave clear.
 
+## Alien Boss Encounter Minion Deployment (v2.0.0)
+
+- **[shipped]** **Boss Minion Spawning Mechanics (`CONFIG.BOSS.SPAWN_MIN_DELAY: 1.0`, `CONFIG.BOSS.SPAWN_MAX_DELAY: 2.0`)**:
+  - While flying during milestone Boss Battles (Wave 7 Vanguard Mothership, Wave 14 Dreadnought Sovereign, Wave 21 Hive Nexus), the Boss deploys a new minion alien from its hull every 1 to 2 seconds (`boss.spawnTimer`).
+  - Deployed minions are tagged with `isBossMinion = true`, featuring distinctive crowned silhouette spikes, core-matching neon coloration, and additive glow.
+- **[shipped]** **Independent 2D Soaring & Predatory Eagle Swoops**:
+  - Boss minions soar independently across the arena in random curving 2D flight paths ($X \in [40, 920]$, $Y \in [100, 450]$).
+  - Minions periodically execute predatory eagle swoop dives aimed at the player ship's $X$ coordinate, firing pulse bolts near apex before banking upward into recovery loops.
+  - Full combat integration: Minions can be destroyed by all player cannons, pierce lasers, fused weapons, and EMP bombs (awarding 30 points per kill), while direct contact costs 1 life. Defeating the boss clears the wave cleanly.
+

@@ -56,8 +56,9 @@ node scripts/check-game.js    # formations (Starling Murmuration) + upgrades + c
                               # phase aliens + CRT visual modes + Wave 21 Hive Nexus +
                               # Intelligent Frenzy & Eagle Swoops + Hyper-Graze/Phase Dash +
                               # Cosmic Asteroid Fields + Fleet Hangar + Glitch Incursion +
-                              # Drone Wingmen & Tesla Arcs + Mystery Saucer Alien Deployment,
-                              # headless, 58 scenarios (640 checks)
+                              # Drone Wingmen & Tesla Arcs + Mystery Saucer Alien Deployment +
+                              # Alien Boss Encounter Minion Deployment,
+                              # headless, 59 scenarios (649 checks)
 ```
 
 or just open `index.html` directly (`file://` works too, since scripts are
